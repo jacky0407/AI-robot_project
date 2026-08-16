@@ -45,6 +45,7 @@ create table public.chat_sessions (
   user_id uuid not null references public.users(id) on delete cascade,
   bot_id uuid not null references public.bots(id) on delete cascade,
   title text,
+  summary text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
@@ -55,6 +56,13 @@ create table public.messages (
   role text not null check (role in ('user', 'assistant', 'system')),
   content text not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Create STUDENT_PROFILES table (Long-Term Memory)
+create table public.student_profiles (
+  user_id uuid primary key references public.users(id) on delete cascade,
+  overall_summary text,
+  last_updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 -- ==========================================
@@ -68,6 +76,7 @@ alter table public.documents enable row level security;
 alter table public.document_chunks enable row level security;
 alter table public.chat_sessions enable row level security;
 alter table public.messages enable row level security;
+alter table public.student_profiles enable row level security;
 
 -- 因為我們採取純後端驗證 (FastAPI Backend)，
 -- 資料庫操作將由後端透過 Service Role Key 統一進行代理存取。
@@ -78,3 +87,4 @@ create policy "Deny all public access" on public.documents for all using (false)
 create policy "Deny all public access" on public.document_chunks for all using (false);
 create policy "Deny all public access" on public.chat_sessions for all using (false);
 create policy "Deny all public access" on public.messages for all using (false);
+create policy "Deny all public access" on public.student_profiles for all using (false);
