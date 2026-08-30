@@ -1,85 +1,185 @@
-# 教授專屬 AI 聊天機器人輔助教學平台
+# AI 支持之學前特殊教育與早期療育專業能力培訓平台
 
-這是一個專為學校教授設計的**智慧教學輔助解決方案**。系統結合了最新的生成式 AI 技術與 RAG（檢索增強生成），讓教授可以輕鬆建立專屬課程的 AI 助教機器人，並上傳專屬的課程教材（如 PDF、Word），為學生提供 24 小時不間斷的精準問答與學習陪伴。
+> 平台主持人：吳佩芳教授｜第一版目標交付：2027 年 1 月底
 
-## 🌟 系統核心特色
+本平台為以 AI 為核心的**專業能力培訓系統**，設計目標是讓學習者（師培生、在職教師）能在安全、可反覆的虛構情境中練習將理論轉化為實務操作，同時為教授提供完整的學習歷程分析與研究資料。
 
-- **多機器人系統**：教授可針對不同課程（如：微積分、線性代數）建立各自獨立的 AI 機器人。
-- **專屬知識庫 (RAG)**：每個機器人擁有獨立的向量知識庫。AI 只會根據該機器人專屬的文件進行回答，避免跨科目錯亂。
-- **高標準資安防護**：
-  - 採用純後端 HttpOnly Cookie 驗證，100% 免疫 XSS 攻擊。
-  - 採用 SSE (Server-Sent Events) 技術串流 AI 回覆，安全且防火牆友善。
-  - 資料庫實作 RLS (Row Level Security)，確保學生對話紀錄絕對隔離。
-- **即時學習分析**：後台提供詳細的對話統計與歷史調閱，幫助教授隨時掌握學生的學習痛點。
+平台並非一般線上教材網站或聊天機器人，而是以「**閱讀案例 → 獨立作答 → AI 依規準分析 → 分層提示 → 學生修正 → 教師複核 → 研究匯出**」為完整學習循環的培訓系統。
 
-## 🏗️ 技術架構
+---
 
-本專案採用**前後端完全分離**的 Monorepo 架構：
+## 🎯 第一版核心模組
 
-| 模組 | 使用技術 | 部署方案 |
+**學前 IEP 逐步撰寫模組**（第一個完整垂直切片），驗證上述完整學習循環，包含：
+- 多步驟學習路徑（現況描述 → 年度目標 → 短期目標 → 一致性檢核）
+- AI 依 Rubric 證據式評分與分層提示
+- 教師後台複核與最終判定
+- 學習歷程完整紀錄與 CSV 匯出
+
+---
+
+## 🏗️ 系統架構
+
+本專案採 **Monorepo**，前後端分離部署：
+
+```
+平台使用者 (瀏覽器)
+       │
+       ▼
+  [前端 Next.js]          部署於 Vercel
+       │  HTTPS + HttpOnly Cookie
+       ▼
+  [後端 Python FastAPI]   部署於 Render
+       │
+       ├── Supabase PostgreSQL (關聯式資料 + pgvector)
+       ├── Supabase Storage (上傳文件)
+       └── AI API 抽象層 (Gemini / OpenAI 可替換)
+```
+
+**技術選型：**
+
+| 層次 | 技術 | 部署 |
 |------|------|------|
-| **前端 (Frontend)** | `Next.js` (React), `Tailwind CSS`, `shadcn/ui` | Vercel (免費方案) |
-| **後端 (Backend)** | `Python FastAPI`, `LangChain` | Render (免費方案) |
-| **資料庫 (DB)** | `Supabase` (PostgreSQL, `pgvector`, Storage) | Supabase (BaaS) |
+| 前端 | Next.js (TypeScript), Tailwind CSS, shadcn/ui | Vercel (免費) |
+| 後端 | Python FastAPI, LangChain | Render (免費方案) |
+| 資料庫 | Supabase PostgreSQL + pgvector | Supabase (BaaS) |
+| 檔案儲存 | Supabase Storage (私有 Bucket) | Supabase |
+| AI 服務 | Google Gemini API（可替換 OpenAI） | API Key 僅存後端 |
+
+> **資安原則**：AI API Key 僅存於後端環境變數，絕不置於前端或版本控制系統。學生瀏覽器僅連線本平台後端，不直接呼叫任何 AI 服務。
+
+---
 
 ## 📂 專案目錄結構
 
 ```text
 Summer_project/
-├── frontend/             # 前端專案 (Next.js)
-│   ├── app/              # 學生聊天室與教授管理後台路由
-│   └── components/       # 共用 UI 元件 (shadcn-ui)
-├── backend/              # 後端專案 (Python FastAPI)
-│   ├── main.py           # API 進入點
-│   └── core/             # AI 邏輯與 RAG 文件向量化引擎
-├── supabase/             # 資料庫設計與資安
-│   ├── schema.sql        # 資料表建置與 RLS 規則
-│   └── README.md
-├── docs/                 # 技術規格與架構文件
-│   └── architecture_and_api.md
-└── CONTRIBUTING.md       # 團隊開發與 GitHub 協作規範
+├── frontend/                   # 前端（Next.js）
+│   ├── src/
+│   │   └── app/
+│   │       ├── (auth)/         # 登入、註冊頁面
+│   │       ├── (student)/      # 學生：大廳、練習介面
+│   │       └── (admin)/        # 教授/助理：工具建構、複核後台
+│   └── components/             # 共用 UI 元件
+│
+├── backend/                    # 後端（Python FastAPI）
+│   ├── main.py                 # API 進入點
+│   ├── api/                    # 路由模組
+│   │   ├── auth.py             # 登入、登出、驗證
+│   │   ├── tools.py            # AI 工具 CRUD
+│   │   ├── courses.py          # 課程與邀請碼管理
+│   │   ├── practice.py         # 練習提交與 AI 評分
+│   │   ├── review.py           # 教師複核
+│   │   └── export.py           # 資料匯出
+│   ├── core/
+│   │   ├── ai/                 # AI 評分引擎（可替換模型抽象層）
+│   │   └── privacy.py          # 敏感個資偵測
+│   ├── database/               # Supabase 連線與查詢
+│   └── requirements.txt
+│
+├── supabase/
+│   └── schema.sql              # 資料庫建置與 RLS 安全規則
+│
+├── docs/
+│   └── api.md                  # API 規格書（本文件）
+│
+├── README.md                   # 本文件
+├── CONTRIBUTING.md             # Git 協作規範
+└── TEAM_ROLES.md               # 三人分工表
 ```
 
-## 🚀 開發者指南 (Getting Started)
+---
 
-### 1. 前端環境設定 (Next.js)
+## 👥 使用者角色
 
-請確保您的電腦已安裝 [Node.js](https://nodejs.org/)。
+| 角色 | 說明 |
+|------|------|
+| **平台主持人（教授）** | 建立 AI 工具、Rubric、課程、案例；管理所有權限；查看完整分析；匯出研究資料 |
+| **助理** | 由主持人授權特定功能（如批次核准申請、複核評分）|
+| **學習者（學生）** | 加入課程、練習作答、查看 AI 回饋、使用分層提示 |
+
+**學習模式：**
+- **正式課程模式**：邀請碼加入，教師最終判定成績
+- **自主探索模式**：自行申請，直接取得 AI 回饋（標示非正式評分）
+
+---
+
+## 🚀 開發環境設定
+
+### 前提條件
+- Node.js 18+
+- Python 3.11+
+- 一個 Supabase 專案（免費方案即可）
+- Gemini API Key（向 Google AI Studio 申請）
+
+### 1. Clone 專案
 
 ```bash
-# 進入前端資料夾
+git clone https://github.com/your-org/Summer_project.git
+cd Summer_project
+```
+
+### 2. 前端設定
+
+```bash
 cd frontend
-
-# 安裝依賴套件
 npm install
-
-# 啟動本地開發伺服器
+cp .env.example .env.local
+# 編輯 .env.local，填入 Supabase URL 等前端公開設定
 npm run dev
+# 前端運行於 http://localhost:3000
 ```
-> 前端伺服器將預設運行於：`http://localhost:3000`
 
-### 2. 後端環境設定 (Python FastAPI)
-
-請確保您的電腦已安裝 Python 3.9+。建議使用虛擬環境 (venv)。
+### 3. 後端設定
 
 ```bash
-# 進入後端資料夾
 cd backend
 
-# 建立並啟動虛擬環境 (Windows)
+# 建立虛擬環境
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
 
-# 安裝依賴套件
 pip install -r requirements.txt
 
-# 啟動本地開發伺服器
+# 複製並填入環境變數（絕對不要 commit .env！）
+cp .env.example .env
+# 在 .env 填入：
+# SUPABASE_URL, SUPABASE_SERVICE_KEY, GEMINI_API_KEY, ENCRYPTION_KEY 等
+
 uvicorn main:app --reload
+# 後端運行於 http://localhost:8000
+# API 測試文件於 http://localhost:8000/docs
 ```
-> 後端伺服器將預設運行於：`http://localhost:8000`
-> API 測試文件 (Swagger UI) 位於：`http://localhost:8000/docs`
 
-## 🤝 貢獻與團隊協作規範
+### 4. 資料庫初始化
 
-團隊成員在開發新功能前，**請務必詳細閱讀 [CONTRIBUTING.md](./CONTRIBUTING.md)**。
-本專案嚴格限制直接推播至 `main` 分支，所有修改均須透過 Pull Request (PR) 並使用 Conventional Commits 慣例。
+在 Supabase 儀表板的 SQL Editor 執行：
+
+```bash
+supabase/schema.sql
+```
+
+---
+
+## 🔐 資安規範
+
+| 規範 | 說明 |
+|------|------|
+| API Key 管理 | 所有 Secret 僅存後端 `.env`，`.env` 已加入 `.gitignore` |
+| Cookie 安全 | 登入 Token 以 `HttpOnly; Secure; SameSite=Lax` Cookie 儲存 |
+| 資料隔離 | Supabase RLS 開啟，後端以 Service Role Key 統一操作 |
+| 個資保護 | 提交前自動偵測疑似個資（身分證、電話、Email）並警示 |
+| 傳輸加密 | 正式環境強制 HTTPS（Vercel + Render 均自動提供） |
+| SQL 防護 | 全程使用 Supabase SDK 參數化查詢，禁止手動拼接 SQL |
+
+---
+
+## 🤝 協作規範
+
+請在開始開發前詳細閱讀：
+- [CONTRIBUTING.md](./CONTRIBUTING.md)：Git 分支策略、Commit 格式規範、PR 規則
+- [TEAM_ROLES.md](./TEAM_ROLES.md)：三人分工與負責模組說明
+- [docs/api.md](./docs/api.md)：前後端 API 規格書
+
+> **重要**：所有新功能必須開新分支（`feature/xxx`），嚴禁直接 push 至 `main`。所有變更須透過 Pull Request 並自行確認 Diff 無誤後才可 Merge。
