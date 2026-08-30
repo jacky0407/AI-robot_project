@@ -686,6 +686,218 @@ data: {"total_score": 8, "max_score": 32, "percentage": 25.0, "passed": false, "
 
 ---
 
+## 十、教授後台監控：學生對答狀況 (Admin Monitoring)
+
+> 📌 **開會新增**：教授後台需能完整查看所有學生與各支機器人的對話紀錄、AI 評分結果與學習歷程，以支持教學決策。
+
+### `GET /api/admin/conversations`
+**權限**：HOST, ASSISTANT
+
+取得課程內所有學生與機器人的對答紀錄列表（支援多維度篩選）。
+
+**Query Parameters：**
+- `course_id`（必填）：課程 ID
+- `tool_id`（選填）：篩選特定機器人
+- `student_id`（選填）：篩選特定學生
+- `date_from`, `date_to`（選填）：日期範圍
+- `status`（選填）：`completed` | `in_progress` | `pending_review`
+- `page`, `limit`：分頁（預設 limit=20）
+
+**Response 200：**
+```json
+{
+  "data": {
+    "total": 142,
+    "items": [
+      {
+        "session_id": "uuid",
+        "student": {
+          "user_id": "uuid",
+          "display_name": "王小明"
+        },
+        "tool": {
+          "tool_id": "uuid",
+          "name": "現況描述練習家教"
+        },
+        "started_at": "2026-09-01T09:00:00Z",
+        "last_activity_at": "2026-09-01T09:42:00Z",
+        "submission_count": 3,
+        "latest_ai_score_percent": 81.2,
+        "hints_used": 2,
+        "status": "pending_review",
+        "has_pii_flag": false
+      }
+    ]
+  }
+}
+```
+
+---
+
+### `GET /api/admin/conversations/:session_id`
+**權限**：HOST, ASSISTANT
+
+查看單一學生與機器人的完整對答詳情，包含所有提交版本、AI 評分逐構面結果、分層提示使用紀錄與時間戳。
+
+**Response 200：**
+```json
+{
+  "data": {
+    "session_id": "uuid",
+    "student": { "display_name": "王小明" },
+    "tool": { "name": "現況描述練習家教" },
+    "case_title": "個案：小明",
+    "started_at": "2026-09-01T09:00:00Z",
+    "submissions": [
+      {
+        "submission_id": "uuid",
+        "version": 1,
+        "content": "小明，5歲，診斷為自閉症...",
+        "submitted_at": "2026-09-01T09:15:00Z",
+        "time_spent_seconds": 842,
+        "ai_evaluation": {
+          "total_percent": 25.0,
+          "confidence": 0.62,
+          "dimensions": [
+            {
+              "name": "功能性描述",
+              "score": 1,
+              "max_score": 4,
+              "reason": "僅列診斷名稱，無功能性描述",
+              "evidence": "「診斷為自閉症」"
+            },
+            {
+              "name": "去標籤化用語",
+              "score": 1,
+              "max_score": 4,
+              "reason": "使用否定句描述缺陷",
+              "evidence": "「無法與同伴互動」"
+            }
+          ]
+        },
+        "hints_requested": [
+          { "level": 1, "requested_at": "2026-09-01T09:20:00Z" }
+        ]
+      },
+      {
+        "submission_id": "uuid",
+        "version": 2,
+        "content": "小明在自由遊戲時能夠...",
+        "submitted_at": "2026-09-01T09:38:00Z",
+        "time_spent_seconds": 1380,
+        "ai_evaluation": {
+          "total_percent": 81.2,
+          "confidence": 0.89,
+          "dimensions": [...]
+        },
+        "hints_requested": []
+      }
+    ],
+    "teacher_evaluation": null,
+    "overall_status": "pending_review"
+  }
+}
+```
+
+---
+
+### `GET /api/admin/tools/:tool_id/analytics`
+**權限**：HOST, ASSISTANT
+
+查看特定機器人的整體學習分析（班級層級統計）。
+
+**Response 200：**
+```json
+{
+  "data": {
+    "tool_id": "uuid",
+    "tool_name": "現況描述練習家教",
+    "total_students": 28,
+    "completed_students": 19,
+    "avg_submissions_to_pass": 2.4,
+    "avg_score_first_attempt": 38.5,
+    "avg_score_final_attempt": 79.2,
+    "avg_time_minutes": 42.1,
+    "hint_usage_rate": 0.67,
+    "dimension_breakdown": [
+      {
+        "dimension": "功能性描述",
+        "avg_score": 2.8,
+        "max_score": 4,
+        "low_score_count": 8,
+        "common_error": "停留在診斷標籤層面，缺乏行為觀察"
+      },
+      {
+        "dimension": "去標籤化用語",
+        "avg_score": 1.9,
+        "max_score": 4,
+        "low_score_count": 15,
+        "common_error": "使用否定句描述缺陷行為"
+      }
+    ],
+    "students_needing_attention": [
+      {
+        "user_id": "uuid",
+        "display_name": "林小華",
+        "attempts": 6,
+        "latest_score_percent": 42.0,
+        "suggestion": "建議教師個別輔導"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### `GET /api/admin/students/:student_id/profile`
+**權限**：HOST, ASSISTANT
+
+查看特定學生的跨機器人整體學習畫像（在當前課程中使用所有機器人的情況）。
+
+**Response 200：**
+```json
+{
+  "data": {
+    "student": { "display_name": "王小明", "joined_at": "2026-09-01T00:00:00Z" },
+    "course_progress": {
+      "completed_tools": 3,
+      "total_tools": 10,
+      "overall_completion_percent": 30.0
+    },
+    "tools_summary": [
+      {
+        "tool_name": "現況描述練習家教",
+        "status": "passed",
+        "final_score_percent": 81.2,
+        "attempts": 2,
+        "passed_at": "2026-09-01T09:42:00Z"
+      },
+      {
+        "tool_name": "年度目標撰寫家教",
+        "status": "in_progress",
+        "latest_score_percent": 55.0,
+        "attempts": 3,
+        "passed_at": null
+      },
+      {
+        "tool_name": "短期目標設計家教",
+        "status": "locked",
+        "latest_score_percent": null,
+        "attempts": 0,
+        "passed_at": null
+      }
+    ],
+    "recurring_weaknesses": [
+      "去標籤化用語",
+      "與教育目標連結"
+    ]
+  }
+}
+```
+
+---
+
 ## 附錄：欄位命名慣例
 
 | 慣例 | 說明 |
@@ -700,3 +912,4 @@ data: {"total_score": 8, "max_score": 32, "percentage": 25.0, "passed": false, "
 ---
 
 > **此文件為前後端介接的唯一契約。** 任何 API 的新增、修改或廢棄，必須先更新此文件，由前後端確認後才能實作。如有異動請在 PR 中同步更新本文件。
+
