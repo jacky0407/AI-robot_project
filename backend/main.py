@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_settings
 from api.practice import router as practice_router
+from api import teacher
 
 settings = get_settings()
 
@@ -27,6 +28,7 @@ app.include_router(practice_router)
 # app.include_router(auth_router)
 # app.include_router(courses_router)
 # app.include_router(tools_router)
+app.include_router(teacher.router)
 
 
 @app.get("/")

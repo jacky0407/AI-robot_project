@@ -39,7 +39,7 @@ class GeminiProvider(BaseAIProvider):
 
     def __init__(self):
         self._client = None  # 懶惰初始化，第一次呼叫 API 時才建立
-        self.model_id = "gemini-2.0-flash"
+        self.model_id = "gemini-3.6-flash"
 
     @property
     def client(self):
