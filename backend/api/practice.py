@@ -10,21 +10,17 @@
 
 import json
 import logging
-import os
 import traceback
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from supabase import create_client, Client
 
 from core.ai.gemini_provider import GeminiProvider
 from core.ai.rubric_formatter import format_rubric_to_text
 from core.privacy import detect_pii
-
-from dotenv import load_dotenv
-load_dotenv()
+from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +29,6 @@ router = APIRouter(prefix="/api/practice", tags=["practice"])
 # AI Provider 單例
 ai_provider = GeminiProvider()
 
-# 初始化 Supabase Admin Client
-supabase_url = os.getenv("SUPABASE_URL", "")
-supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY", "")
-supabase: Client = create_client(supabase_url, supabase_service_key) if supabase_url and supabase_service_key else None
 
 
 # ──────────────────────────────────────────
@@ -89,8 +81,7 @@ async def submit_answer(
       5. 將評分結果存入 ai_evaluations
     """
     try:
-        if not supabase:
-            raise HTTPException(status_code=500, detail="Database client not configured")
+        db = get_supabase()
 
         # 步驟一：個資偵測
         pii_result = detect_pii(body.content)
@@ -105,17 +96,17 @@ async def submit_answer(
             )
 
         # 步驟二：從 Supabase 讀取真實工具設定與 Rubric
-        step_res = supabase.table("module_steps").select("*, ai_tools(*)").eq("id", body.step_id).single().execute()
+        step_res = db.table("module_steps").select("*, ai_tools(*)").eq("id", body.step_id).single().execute()
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
-        
+
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
         system_prompt = tool.get("system_prompt", "你是一位學前特殊教育的評分助理。")
         pass_threshold = 75
 
         # 將資料庫中的 JSON Rubric 轉換為文字供 AI Provider 使用
-        mock_rubric_dict = {
+        rubric_dict = {
             "pass_threshold_percent": pass_threshold,
             "dimensions": [
                 {
@@ -125,23 +116,23 @@ async def submit_answer(
                 } for r in rubric_criteria
             ]
         }
-        rubric_text = format_rubric_to_text(mock_rubric_dict)
+        rubric_text = format_rubric_to_text(rubric_dict)
 
         # 計算目前的 attempt_number
-        prev_attempts = supabase.table("step_attempts")\
+        prev_attempts = db.table("step_attempts")\
             .select("attempt_number")\
             .eq("user_id", body.user_id)\
             .eq("step_id", body.step_id)\
             .order("attempt_number", desc=True)\
             .limit(1)\
             .execute()
-        
+
         next_attempt_number = 1
-        if prev_attempts.data and len(prev_attempts.data) > 0:
+        if prev_attempts.data:
             next_attempt_number = prev_attempts.data[0]["attempt_number"] + 1
 
         # 寫入學生作答記錄 (step_attempts)
-        attempt_res = supabase.table("step_attempts").insert({
+        attempt_res = db.table("step_attempts").insert({
             "user_id": body.user_id,
             "module_id": body.module_id,
             "step_id": body.step_id,
@@ -153,7 +144,7 @@ async def submit_answer(
 
         if not attempt_res.data:
             raise HTTPException(status_code=500, detail="Failed to log student attempt")
-        
+
         attempt_id = attempt_res.data[0]["id"]
 
         # 步驟三 & 四：呼叫 AI 並以 SSE 串流回傳
@@ -171,23 +162,25 @@ async def submit_answer(
                         yield _sse_event("dimension_score", chunk["data"])
                     elif chunk["type"] == "score_complete":
                         final_data = chunk["data"]
-                        final_data["passed"] = final_data.get("percentage", 80) >= pass_threshold
+                        final_data["passed"] = final_data.get("percentage", 0) >= pass_threshold
                         yield _sse_event("score_complete", final_data)
 
                 # 步驟五：將評分結果寫入 ai_evaluations 資料表
                 if final_data:
-                    supabase.table("ai_evaluations").insert({
+                    db.table("ai_evaluations").insert({
                         "attempt_id": attempt_id,
-                        "total_score": final_data.get("total_score", 80),
+                        "total_score": int(final_data.get("total_score", 0)),
                         "dimension_scores": final_data.get("dimension_scores", []),
-                        "evidence_text": body.content[:100],
-                        "feedback_text": final_data.get("feedback_text", "請依建議持續修正。"),
+                        "evidence_text": body.content[:200],
+                        # ✅ 修正：AI 回傳的是 overall_feedback，不是 feedback_text
+                        "feedback_text": final_data.get("overall_feedback", ""),
                         "detected_errors": []
                     }).execute()
 
             except Exception as e:
-                logger.error(f"AI evaluation error: {e}")
-                yield _sse_event("error", {"message": "AI 評分失敗，請稍後再試"})
+                error_detail = traceback.format_exc()
+                logger.error(f"AI evaluation error:\n{error_detail}")
+                yield _sse_event("error", {"message": "AI 評分失敗", "detail": str(e)})
 
         return StreamingResponse(
             event_generator(),
@@ -197,12 +190,12 @@ async def submit_answer(
                 "X-Accel-Buffering": "no",
             },
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        # 強制在 CMD 終端機印出完整的紅字錯誤與行數！
-        print("========== 後端發生未預期錯誤 ==========")
         traceback.print_exc()
-        print("========================================")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/sessions/{session_id}/hints")
