@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
+from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
 from core.privacy import detect_pii
 from database.client import get_supabase
 
@@ -27,6 +28,9 @@ router = APIRouter(prefix="/api/practice", tags=["practice"])
 
 # 教學 Agent 單例（Phase 2：決策 + 評分 + 提示）
 tutor_agent = TutorAgent()
+
+# 整合 Agent 單例（Phase 3：跨步驟一致性檢核）
+coherence_agent = CoherenceAgent()
 
 
 
@@ -262,6 +266,78 @@ async def get_hint(session_id: str):
 @router.get("/sessions/{session_id}/history")
 async def get_session_history(session_id: str):
     return {"data": {"session_id": session_id, "submissions": []}}
+
+
+@router.post("/modules/{module_id}/coherence-check")
+async def check_module_coherence(module_id: str, user_id: str):
+    """
+    Phase 3：跨步驟整合一致性檢核（SSE 串流）。
+
+    當學生完成模組所有步驟後呼叫，
+    CoherenceAgent 會跨步驟檢查 IEP 前後一致性。
+
+    Query params:
+        user_id: 學生的 user_id
+
+    SSE 事件序列：
+        coherence_start  → 開始，告知共幾條規則
+        coherence_check  → 每條規則的結果（逐一）
+        coherence_complete → 整體結論與摘要
+    """
+    db = get_supabase()
+
+    # 讀取此模組此學生所有步驟的最新通過作答
+    steps_res = (
+        db.table("module_steps")
+        .select("id, step_order, step_title")
+        .eq("module_id", module_id)
+        .order("step_order")
+        .execute()
+    )
+    if not steps_res.data:
+        raise HTTPException(status_code=404, detail="Module not found or has no steps")
+
+    step_answers: list[StepAnswer] = []
+    for step in steps_res.data:
+        # 抓該步驟最新一筆已通過的作答
+        attempt_res = (
+            db.table("step_attempts")
+            .select("user_input_content, status")
+            .eq("user_id", user_id)
+            .eq("step_id", step["id"])
+            .order("attempt_number", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if attempt_res.data:
+            a = attempt_res.data[0]
+            step_answers.append(StepAnswer(
+                step_order=step["step_order"],
+                step_title=step["step_title"],
+                content=a["user_input_content"],
+                passed=(a["status"] == "passed"),
+            ))
+
+    if len(step_answers) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="至少需要完成 2 個步驟才能進行一致性檢核"
+        )
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        try:
+            async for chunk in coherence_agent.check_stream(step_answers):
+                yield _sse_event(chunk["type"], chunk["data"])
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            logger.error(f"CoherenceAgent error:\n{error_detail}")
+            yield _sse_event("error", {"message": "一致性檢核失敗", "detail": str(e)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ──────────────────────────────────────────
