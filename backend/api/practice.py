@@ -1,14 +1,11 @@
 """
-練習與 AI 評分 API 路由
+練習與 AI 評分 API 路由（已串接 Supabase 資料庫）
 
 負責：
   - 建立練習 Session
-  - 接收學生作答並觸發 AI 評分（SSE 串流回傳）
+  - 接收學生作答並觸發 AI 評分（SSE 串流回傳）並寫入資料庫
   - 提供分層提示
   - 查看練習版本歷程
-
-前置條件：成員二需先實作 auth dependency（get_current_user）
-          與資料庫查詢函數（在 database/ 目錄下）。
 """
 
 import json
@@ -22,23 +19,21 @@ from pydantic import BaseModel
 from core.ai.gemini_provider import GeminiProvider
 from core.ai.rubric_formatter import format_rubric_to_text
 from core.privacy import detect_pii
+# 引入我們剛寫好的資料庫操作模組
+from supabase.practice_repo import get_tool_and_case_by_ids, save_student_attempt_and_evaluation
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/practice", tags=["practice"])
 
-# AI Provider 單例（整個 app 共用一個）
 ai_provider = GeminiProvider()
 
-
-# ──────────────────────────────────────────
-# Request / Response Models
-# ──────────────────────────────────────────
 
 class CreateSessionRequest(BaseModel):
     tool_id: str
     case_id: str
-    course_id: str
+    module_id: str
+    step_id: str
 
 
 class SubmitAnswerRequest(BaseModel):
@@ -46,32 +41,29 @@ class SubmitAnswerRequest(BaseModel):
     version_note: str = ""
 
 
-# ──────────────────────────────────────────
-# Endpoints
-# ──────────────────────────────────────────
-
 @router.post("/sessions")
 async def create_session(
     body: CreateSessionRequest,
-    # current_user: dict = Depends(get_current_user),  # 等成員二實作後取消註解
+    # current_user: dict = Depends(get_current_user), 
 ):
-    """
-    建立新的練習 Session。
-    TODO: 等成員二實作 DB 層後，在此儲存 session 到 practice_sessions 表。
-    """
-    # 暫時回傳假資料，等 DB 層完成後替換
+    """建立新的練習 Session，從資料庫真實讀取工具與案例"""
+    try:
+        tool, case = get_tool_and_case_by_ids(body.tool_id, body.case_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="找不到指定的工具或案例設定")
+
     return {
         "data": {
-            "session_id": "temp-session-id",
+            "session_id": f"{body.module_id}-{body.step_id}", # 可對應實體 session id
             "tool": {
-                "name": "（待接資料庫）",
-                "opening_message": "歡迎！請閱讀下方案例並完成作答。",
+                "name": tool.get("title"),
+                "opening_message": f"歡迎進入 {tool.get('title')}。請閱讀下方案例並完成作答。",
             },
             "case": {
-                "title": "（待接資料庫）",
-                "content": "個案內容將從資料庫讀取...",
+                "title": case.get("title"),
+                "content": case.get("case_background"),
             },
-            "task_description": "任務說明將從資料庫讀取...",
+            "task_description": tool.get("target_competency"),
         }
     }
 
@@ -82,15 +74,16 @@ async def submit_answer(
     body: SubmitAnswerRequest,
     # current_user: dict = Depends(get_current_user),
 ):
-    """
-    學生提交作答。
-    流程：
-      1. 個資偵測
-      2. 從資料庫讀取工具設定（Rubric、System Prompt）
-      3. 呼叫 AI 評分引擎
-      4. 以 SSE 串流回傳評分結果
-      5. 將評分結果存入資料庫（ai_evaluations 表）
-    """
+    """學生提交作答，結合個資檢查、AI 串流評分與資料庫儲存"""
+    
+    # 模擬從 session_id 解析出對應的 tool_id / module_id / step_id / user_id
+    # 實務上可將 session 狀態暫存於 Redis 或由前端帶入
+    user_id = "temp-user-id" # 待接 get_current_user
+    tool_id = "a0000000-0000-0000-0000-000000000001" # 示範用 ID
+    module_id = "00000000-0000-0000-0000-000000000001"
+    step_id = "00000000-0000-0000-0000-000000000002"
+    case_id = "c0000000-0000-0000-0000-000000000001"
+
     # 步驟一：個資偵測
     pii_result = detect_pii(body.content)
     if pii_result.has_risk:
@@ -103,62 +96,46 @@ async def submit_answer(
             },
         )
 
-    # 步驟二：從資料庫讀取工具設定
-    # TODO: 等成員二實作 DB 層後，替換以下假資料
-    mock_rubric = {
-        "pass_threshold_percent": 75,
-        "dimensions": [
-            {
-                "name": "功能性描述",
-                "weight": 30,
-                "levels": [
-                    {"score": 4, "description": "完整描述學生的優勢與需求，有具體行為觀察"},
-                    {"score": 3, "description": "描述大致完整，但缺乏部分細節"},
-                    {"score": 2, "description": "描述籠統，缺乏行為觀察"},
-                    {"score": 1, "description": "未描述或僅列障礙類別"},
-                ],
-            },
-            {
-                "name": "去標籤化用語",
-                "weight": 20,
-                "levels": [
-                    {"score": 4, "description": "全程使用優勢本位語言"},
-                    {"score": 3, "description": "大部分符合"},
-                    {"score": 2, "description": "偶有標籤化描述"},
-                    {"score": 1, "description": "大量標籤化用語"},
-                ],
-            },
-        ],
-    }
-    mock_system_prompt = (
-        "你是一位學前特殊教育的評分助理。"
-        "請依照提供的評分規準，客觀分析學生作答並給出分數與具體回饋。"
-        "回饋語言要正向、具體，引用學生實際作答作為佐證。"
-    )
+    # 步驟二：從資料庫讀取真實工具設定 (Rubric & Prompt)
+    tool_data, _ = get_tool_and_case_by_ids(tool_id, case_id)
+    
+    rubric_criteria = tool_data.get("rubric_criteria", [])
+    system_prompt = tool_data.get("system_prompt", "你是一位特教評分助理。")
+    
+    # 組合 Rubric 文字供 AI 閱讀
+    rubric_text = format_rubric_to_text(rubric_criteria)
+    pass_threshold = 70 # 可由資料庫設定讀取
 
-    rubric_text = format_rubric_to_text(mock_rubric)
-    pass_threshold = mock_rubric.get("pass_threshold_percent", 75)
+    final_collected_data = {}
 
     # 步驟三 & 四：呼叫 AI 並以 SSE 串流回傳
     async def event_generator() -> AsyncGenerator[str, None]:
+        nonlocal final_collected_data
         try:
             yield _sse_event("score_start", {"session_id": session_id})
 
-            final_data = None
             async for chunk in ai_provider.evaluate_stream(
                 student_answer=body.content,
                 rubric_text=rubric_text,
-                system_prompt=mock_system_prompt,
+                system_prompt=system_prompt,
             ):
                 if chunk["type"] == "dimension_score":
                     yield _sse_event("dimension_score", chunk["data"])
                 elif chunk["type"] == "score_complete":
-                    final_data = chunk["data"]
-                    final_data["passed"] = final_data["percentage"] >= pass_threshold
-                    yield _sse_event("score_complete", final_data)
+                    final_collected_data = chunk["data"]
+                    final_collected_data["passed"] = final_collected_data.get("percentage", 0) >= pass_threshold
+                    yield _sse_event("score_complete", final_collected_data)
 
-            # 步驟五：將評分結果存入資料庫
-            # TODO: 等成員二實作 DB 層後，在此呼叫 db.save_ai_evaluation(...)
+            # 步驟五：將評分結果正式寫入資料庫
+            if final_collected_data:
+                save_student_attempt_and_evaluation(
+                    user_id=user_id,
+                    module_id=module_id,
+                    step_id=step_id,
+                    case_id=case_id,
+                    content=body.content,
+                    eval_data=final_collected_data
+                )
 
         except Exception as e:
             logger.error(f"AI evaluation error: {e}")
@@ -175,20 +152,14 @@ async def submit_answer(
 
 
 @router.get("/sessions/{session_id}/hints")
-async def get_hint(
-    session_id: str,
-    # current_user: dict = Depends(get_current_user),
-):
-    """
-    取得分層提示。
-    TODO: 等 DB 層實作後，依學生當前分數與已使用提示層級決定回傳內容。
-    """
+async def get_hint(session_id: str):
+    """取得分層提示（可對應查詢 prompt_logs 與 ai_tools 的 teaching_strategy）"""
     return {
         "data": {
             "available_level": 1,
             "hint": {
                 "level": 1,
-                "content": "（分層提示將從資料庫讀取）",
+                "content": "請嘗試從『環境互動』與『具體行為』兩個方向重新描述孩子當下的反應。",
             },
             "next_level_available": True,
             "next_level_requires": "student_request",
@@ -197,20 +168,11 @@ async def get_hint(
 
 
 @router.get("/sessions/{session_id}/history")
-async def get_session_history(
-    session_id: str,
-    # current_user: dict = Depends(get_current_user),
-):
-    """
-    取得練習的版本歷程。
-    TODO: 等 DB 層實作後，從 submissions 表讀取所有版本。
-    """
+async def get_session_history(session_id: str):
+    """取得練習的版本歷程（可從 step_attempts 讀取該學生的歷次嘗試）"""
+    # 實務上可在此加入 Supabase 查詢 step_attempts 帶出 AI 評分的語法
     return {"data": {"session_id": session_id, "submissions": []}}
 
-
-# ──────────────────────────────────────────
-# Helper
-# ──────────────────────────────────────────
 
 def _sse_event(event_type: str, data: dict) -> str:
     """將資料格式化為標準 SSE 格式"""
