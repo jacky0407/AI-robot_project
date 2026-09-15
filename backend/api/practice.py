@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.ai.agents.evaluator_agent import EvaluatorAgent
+from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.privacy import detect_pii
 from database.client import get_supabase
 
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/practice", tags=["practice"])
 
-# 評分 Agent 單例（Phase 1：多步驟評分）
-evaluator_agent = EvaluatorAgent()
+# 教學 Agent 單例（Phase 2：決策 + 評分 + 提示）
+tutor_agent = TutorAgent()
 
 
 
@@ -120,20 +120,61 @@ async def submit_answer(
             ],
         }
 
-        # 計算目前的 attempt_number
-        prev_attempts = db.table("step_attempts")\
-            .select("attempt_number")\
-            .eq("user_id", body.user_id)\
-            .eq("step_id", body.step_id)\
-            .order("attempt_number", desc=True)\
-            .limit(1)\
+        # ── 查詢學生歷程，建立 StudentContext ──────────────────────
+        prev_attempts = (
+            db.table("step_attempts")
+            .select("attempt_number")
+            .eq("user_id", body.user_id)
+            .eq("step_id", body.step_id)
+            .order("attempt_number", desc=True)
+            .limit(1)
             .execute()
+        )
 
         next_attempt_number = 1
         if prev_attempts.data:
             next_attempt_number = prev_attempts.data[0]["attempt_number"] + 1
 
-        # 寫入學生作答記錄 (step_attempts)
+        # 查詢上次分數（從最近一筆 ai_evaluation 取得）
+        last_score_percent: float | None = None
+        if next_attempt_number > 1:
+            prev_eval = (
+                db.table("step_attempts")
+                .select("id, ai_evaluations(total_score, dimension_scores)")
+                .eq("user_id", body.user_id)
+                .eq("step_id", body.step_id)
+                .order("attempt_number", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if prev_eval.data and prev_eval.data[0].get("ai_evaluations"):
+                latest_eval = prev_eval.data[0]["ai_evaluations"]
+                if isinstance(latest_eval, list) and latest_eval:
+                    latest_eval = latest_eval[0]
+                dim_scores = latest_eval.get("dimension_scores", [])
+                if dim_scores:
+                    total = sum(d.get("score", 0) for d in dim_scores)
+                    max_total = sum(d.get("max_score", 4) for d in dim_scores)
+                    last_score_percent = (total / max_total * 100) if max_total > 0 else None
+
+        # 查詢已使用的提示次數
+        hints_res = (
+            db.table("prompt_logs")
+            .select("id", count="exact")
+            .eq("attempt_id",
+                prev_attempts.data[0]["id"] if prev_attempts.data else "none")
+            .execute()
+        )
+        hints_used = hints_res.count or 0
+
+        student_context = StudentContext.from_db(
+            attempt_number=next_attempt_number,
+            last_score_percent=last_score_percent,
+            hints_used_count=hints_used,
+            pass_threshold=float(pass_threshold),
+        )
+
+        # ── 寫入學生作答記錄 ────────────────────────────────────────
         attempt_res = db.table("step_attempts").insert({
             "user_id": body.user_id,
             "module_id": body.module_id,
@@ -149,23 +190,35 @@ async def submit_answer(
 
         attempt_id = attempt_res.data[0]["id"]
 
-        # 呼叫 EvaluatorAgent 並以 SSE 串流回傳
+        # ── 呼叫 TutorAgent 並以 SSE 串流回傳 ──────────────────────
         async def event_generator() -> AsyncGenerator[str, None]:
             try:
-                yield _sse_event("score_start", {"session_id": session_id, "attempt_id": attempt_id})
+                yield _sse_event("score_start", {
+                    "session_id": session_id,
+                    "attempt_id": attempt_id,
+                    "attempt_number": next_attempt_number,
+                })
 
                 final_data = None
-                # ✅ Phase 1 升級：使用多步驟 EvaluatorAgent
-                async for chunk in evaluator_agent.evaluate_stream(
+                # ✅ Phase 2 升級：TutorAgent 決定要評分、給提示還是鼓勵
+                async for chunk in tutor_agent.process_stream(
                     student_answer=body.content,
                     rubric=rubric_dict,
                     system_prompt=system_prompt,
+                    student_context=student_context,
                 ):
                     yield _sse_event(chunk["type"], chunk["data"])
                     if chunk["type"] == "score_complete":
                         final_data = chunk["data"]
+                    elif chunk["type"] == "hint":
+                        # 記錄提示使用到 prompt_logs
+                        db.table("prompt_logs").insert({
+                            "attempt_id": attempt_id,
+                            "hint_level": chunk["data"]["level"],
+                            "hint_content": chunk["data"]["content"],
+                        }).execute()
 
-                # 將評分結果寫入 ai_evaluations 資料表
+                # 評分完成時，寫入 ai_evaluations
                 if final_data:
                     db.table("ai_evaluations").insert({
                         "attempt_id": attempt_id,
@@ -178,23 +231,20 @@ async def submit_answer(
 
             except Exception as e:
                 error_detail = traceback.format_exc()
-                logger.error(f"AI evaluation error:\n{error_detail}")
+                logger.error(f"TutorAgent error:\n{error_detail}")
                 yield _sse_event("error", {"message": "AI 評分失敗", "detail": str(e)})
-
 
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     except HTTPException:
         raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
