@@ -88,6 +88,35 @@
 }
 ```
 
+**400 Bad Request（欄位遺漏或未勾選條款）：**
+```json
+{
+  "error": {
+    "code": "INVALID_INPUT",
+    "message": "請確認必填欄位皆已填寫，並完整勾選服務條款與個資保護承諾"
+  }
+}
+```
+
+**400 Bad Request（密碼強度不足）：**
+```json
+{
+  "error": {
+    "code": "WEAK_PASSWORD",
+    "message": "密碼強度不足，長度需至少 8 碼且包含英數混合"
+  }
+}
+```
+
+**409 Conflict（信箱已被註冊）：**
+```json
+{
+  "error": {
+    "code": "EMAIL_ALREADY_EXISTS",
+    "message": "該電子信箱已被註冊，請直接登入或使用其他信箱"
+  }
+}
+```
 ---
 
 ### `POST /api/auth/login`
@@ -116,6 +145,35 @@
 ```
 > Set-Cookie: `access_token=...; HttpOnly; Secure; SameSite=Lax`
 
+**401 Unauthorized（帳號或密碼錯誤）[cite: 1, 2]：**
+```json
+{
+  "error": {
+    "code": "INVALID_CREDENTIALS",
+    "message": "電子信箱或密碼錯誤，請重新確認"
+  }
+}
+```
+
+**403 Forbidden（信箱未驗證）：**
+```json
+{
+  "error": {
+    "code": "EMAIL_NOT_VERIFIED",
+    "message": "帳號尚未完成信箱驗證，請至註冊信箱收取驗證信"
+  }
+}
+```
+
+**403 Forbidden（帳號已停用）：**
+```json
+{
+  "error": {
+    "code": "ACCOUNT_SUSPENDED",
+    "message": "此帳號因違反使用規範已暫時停用，請聯繫平台管理員"
+  }
+}
+```
 ---
 
 ### `POST /api/auth/logout`
@@ -149,6 +207,25 @@
 }
 ```
 
+**401 Unauthorized（憑證過期）：**
+```json
+{
+  "error": {
+    "code": "TOKEN_EXPIRED",
+    "message": "登入憑證已過期，請重新登入"
+  }
+}
+```
+
+**401 Unauthorized（無效或損毀的憑證）：**
+```json
+{
+  "error": {
+    "code": "INVALID_TOKEN",
+    "message": "身分驗證失敗，請重新登入"
+  }
+}
+```
 ---
 
 ### `POST /api/auth/forgot-password`
@@ -161,6 +238,15 @@
 { "email": "student@example.com" }
 ```
 
+**429 Too Many Requests（重設信發送頻率過高）：**
+```json
+{
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "重設密碼信件發送過於頻繁，請於 60 秒後再試"
+  }
+}
+```
 ---
 
 ## 二、帳號管理 (Users)
@@ -175,6 +261,15 @@
 - `role` (選填)：`student` | `assistant` | `host`
 - `page`, `limit`：分頁
 
+**403 Forbidden（非主持人或助理存取）：**
+```json
+{
+  "error": {
+    "code": "PERMISSION_DENIED",
+    "message": "權限不足，僅有課程主持人與助理可查看使用者清單"
+  }
+}
+```
 ---
 
 ### `PATCH /api/users/:user_id/status`
@@ -191,6 +286,35 @@
 ```
 > `status` 可為：`active` | `suspended` | `archived`
 
+**404 Not Found（找不到該使用者）：**
+```json
+{
+  "error": {
+    "code": "USER_NOT_FOUND",
+    "message": "指定的使用者不存在"
+  }
+}
+```
+
+**400 Bad Request（無法停用自己（防呆：避免主持人不小心把自己的帳號停權））：**
+```json
+{
+  "error": {
+    "code": "CANNOT_SUSPEND_SELF",
+    "message": "無法變更當前登入者自身的帳號狀態"
+  }
+}
+```
+
+**403 Forbidden（權限不足以修改該角色（例如助理不能去停用主持人的帳號））：**
+```json
+{
+  "error": {
+    "code": "INSUFFICIENT_PRIVILEGE",
+    "message": "您的權限不足以修改此層級之使用者狀態"
+  }
+}
+```
 ---
 
 ## 三、課程管理 (Courses)
@@ -205,42 +329,212 @@
 {
   "name": "學前特殊教育實習課程",
   "description": "IEP 撰寫能力培訓",
-  "invite_mode": "auto",
   "start_date": "2026-09-01",
   "end_date": "2027-01-31"
 }
 ```
-> `invite_mode`：`auto`（輸入邀請碼直接加入）| `review`（需審核）
 
 **Response 201：**
 ```json
 {
   "data": {
     "course_id": "uuid",
-    "invite_code": "IEP-2026A",
     "name": "學前特殊教育實習課程"
-  }
+  },
+  "message": "課程建立成功"
 }
 ```
 
 ---
 
-### `POST /api/courses/join`
-**權限**：STUDENT
+### `POST /api/courses/:course_id/invite-codes`
+**權限**：HOST
 
-使用邀請碼加入課程。
+為課程發行不同方案的邀請碼（區分「教師補助免費 Token」與「自費使用」）。
 
 **Request Body：**
 ```json
-{ "invite_code": "IEP-2026A" }
+{
+  "code": "IEP-2026-GRANT", // 代碼名稱（或由後端自動產生）
+  "plan_type": "sponsored", // "sponsored"（公費補助/老師提供） | "self_paid"（自費）
+  "token_quota": 50000, // 若為 sponsored，指定免費 Token 額度上限（self_paid 則為 0 或 null）
+  "max_uses": 35,
+  "valid_until": "2026-10-31T23:59:59Z"
+}
 ```
 
+**Response 201：**
+```json
+{
+  "data": {
+    "invite_code_id": "uuid",
+    "course_id": "uuid",
+    "code": "IEP-2026-GRANT",
+    "plan_type": "sponsored",
+    "token_quota": 50000,
+    "max_uses": 35,
+    "current_uses": 0,
+    "is_active": true
+  },
+  "message": "成功建立邀請碼"
+}
+```
+---
+
+### `GET /api/courses/:course_id/invite-codes`
+**權限**：HOST
+
+取得該課程目前已發行的所有邀請碼清單與名額使用狀況。
+
+**Response 200：**
+```json
+{
+  "data": [
+    {
+      "invite_code_id": "uuid",
+      "code": "IEP-2026-GRANT",
+      "plan_type": "sponsored",
+      "token_quota": 50000,
+      "max_uses": 35,
+      "current_uses": 28,
+      "is_active": true,
+      "valid_until": "2026-10-31T23:59:59Z"
+    },
+    {
+      "invite_code_id": "uuid",
+      "code": "IEP-2026-PAID",
+      "plan_type": "self_paid",
+      "token_quota": 0,
+      "max_uses": 100,
+      "current_uses": 12,
+      "is_active": true,
+      "valid_until": "2027-01-31T23:59:59Z"
+    }
+  ]
+}
+```
+---
+
+### `POST /api/courses/join`
+**權限**：STUDENT
+
+使用特定邀請碼加入課程。系統將依據邀請碼自動綁定學生的計費方案（公費補助或自費）。
+
+**Request Body：**
+```json
+{ "invite_code": "IEP-2026-GRANT" }
+```
+
+**Response 200：**
+```json
+{
+  "data": {
+    "course_id": "uuid",
+    "course_name": "學前特殊教育實習課程",
+    "membership": {
+      "plan_type": "sponsored", // "sponsored"（公費補助） | "self_paid"（自費）
+      "token_quota": 50000, // 總配發額度
+      "remaining_tokens": 50000, // 當前剩餘額度
+      "is_quota_exhausted": false // 是否已耗盡
+    },
+    "joined_at": "2026-09-15T08:30:00Z"
+  },
+  "message": "成功以【公費補助方案】加入課程！"
+}
+```
+
+**400 Bad Request（格式錯誤）：**
+```json
+{
+  "error": {
+    "code": "INVALID_FORMAT",
+    "message": "課程邀請碼格式不正確，請確認後重新輸入"
+  }
+}
+```
+
+**403 Forbidden（公費名額已滿）：**
+```json
+{
+  "error": {
+    "code": "CODE_MAX_USES_REACHED",
+    "message": "該公費補助名額已額滿，請聯繫指導教授或改用自費代碼加入"
+  }
+}
+```
+
+**403 Forbidden（代碼已過期）：**
+```json
+{
+  "error": {
+    "code": "CODE_EXPIRED",
+    "message": "該課程邀請碼已超過有效使用期限"
+  }
+}
+```
+
+**404 Not Found（找不到代碼）：**
+```json
+{
+  "error": {
+    "code": "INVALID_INVITE_CODE",
+    "message": "查無此課程代碼，請確認代碼是否輸入正確"
+  }
+}
+```
+
+**409 Conflict（重複加入）：**
+```json
+{
+  "error": {
+    "code": "ALREADY_JOINED",
+    "message": "您已加入過此課程，系統將為您直接導向學習工作台"
+  }
+}
+```
+---
+
+### `GET /api/courses/:course_id/my-quota`
+**權限**：STUDENT
+
+查詢學生在該課程內的 Token 配額與計費方案狀態。
+
+**Response 200：**
+```json
+{
+  "data": {
+    "course_id": "uuid",
+    "plan_type": "sponsored",
+    "token_quota": 50000,
+    "remaining_tokens": 34200,
+    "can_practice": true
+  }
+}
+```
 ---
 
 ### `GET /api/courses/:course_id/students`
 **權限**：HOST, ASSISTANT
 
 取得課程學生名單。
+
+**Response 200：**
+```json
+{
+  "data": [
+    {
+      "user_id": "uuid",
+      "display_name": "王小明",
+      "email": "student01@example.com",
+      "plan_type": "sponsored", // "sponsored" | "self_paid"
+      "token_quota": 50000,
+      "used_tokens": 15800,
+      "remaining_tokens": 34200,
+      "joined_at": "2026-09-15T08:30:00Z"
+    }
+  ]
+}
+```
 
 ---
 
