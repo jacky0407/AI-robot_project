@@ -55,3 +55,42 @@ git checkout -b fix/<簡短描述>
   3. 若程式邏輯或 API 規格有變動，必須同步更新相關的技術文件。
   4. 分支已對齊最新的 `main` 分支進度，確保沒有版本衝突 (Merge Conflicts)。
 - 確認上述事項無誤後（若團隊有要求互相 Code Review 則須等 Review 通過），才可進行 Merge。
+
+## 4. 單元測試規範 (Unit Tests)
+
+**所有新增的後端業務邏輯，都必須附上對應的單元測試才能合併進 `main`。**
+
+### 測試位置
+
+```
+backend/
+└── tests/
+    ├── test_privacy.py          ← 個資偵測模組
+    ├── test_rubric_formatter.py ← Rubric 格式化工具
+    └── test_gemini_provider.py  ← AI Provider 評分邏輯
+```
+
+### 執行測試指令
+
+```bash
+cd backend
+py -m pytest tests/ -v
+```
+
+所有測試必須 **全數通過（0 failed）** 才可送出 PR。
+
+### 什麼情況必須寫測試
+
+| 情況 | 要求 |
+|------|------|
+| 新增 `core/` 下的任何模組 | ✅ 必須附測試 |
+| 修改評分邏輯、個資偵測規則 | ✅ 必須更新對應測試 |
+| 修改 API 路由（`api/`）| ✅ 建議附測試（可 Mock DB）|
+| 只改文件、設定檔 | ❌ 不需要 |
+
+### 測試撰寫原則
+
+1. **不依賴外部服務**：測試不得真正呼叫 Gemini API 或 Supabase，一律使用 `unittest.mock`。
+2. **同時覆蓋正常與異常情境**：每個功能至少要有一個「應該成功」和一個「應該失敗/報錯」的測試。
+3. **測試名稱用中文描述意圖**：讓隊友一眼看出這個測試在驗證什麼。
+4. **async 測試用 `@pytest.mark.asyncio`** 標記。
