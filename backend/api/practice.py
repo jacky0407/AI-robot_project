@@ -17,8 +17,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.ai.gemini_provider import GeminiProvider
-from core.ai.rubric_formatter import format_rubric_to_text
+from core.ai.agents.evaluator_agent import EvaluatorAgent
 from core.privacy import detect_pii
 from database.client import get_supabase
 
@@ -26,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/practice", tags=["practice"])
 
-# AI Provider 單例
-ai_provider = GeminiProvider()
+# 評分 Agent 單例（Phase 1：多步驟評分）
+evaluator_agent = EvaluatorAgent()
 
 
 
@@ -103,20 +102,23 @@ async def submit_answer(
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
         system_prompt = tool.get("system_prompt", "你是一位學前特殊教育的評分助理。")
-        pass_threshold = 75
+        pass_threshold = tool.get("pass_score", 75)
 
-        # 將資料庫中的 JSON Rubric 轉換為文字供 AI Provider 使用
+        # 組裝 Rubric dict（直接傳給 EvaluatorAgent，不再轉成純文字）
         rubric_dict = {
             "pass_threshold_percent": pass_threshold,
             "dimensions": [
                 {
                     "name": r.get("dimension"),
                     "weight": r.get("max_score"),
-                    "levels": [{"score": r.get("max_score"), "description": r.get("description")}]
-                } for r in rubric_criteria
-            ]
+                    "levels": [
+                        {"score": lv, "description": r.get("description", "")}
+                        for lv in range(1, r.get("max_score", 4) + 1)
+                    ] if r.get("levels") is None else r.get("levels")
+                }
+                for r in rubric_criteria
+            ],
         }
-        rubric_text = format_rubric_to_text(rubric_dict)
 
         # 計算目前的 attempt_number
         prev_attempts = db.table("step_attempts")\
@@ -147,32 +149,29 @@ async def submit_answer(
 
         attempt_id = attempt_res.data[0]["id"]
 
-        # 步驟三 & 四：呼叫 AI 並以 SSE 串流回傳
+        # 呼叫 EvaluatorAgent 並以 SSE 串流回傳
         async def event_generator() -> AsyncGenerator[str, None]:
             try:
                 yield _sse_event("score_start", {"session_id": session_id, "attempt_id": attempt_id})
 
                 final_data = None
-                async for chunk in ai_provider.evaluate_stream(
+                # ✅ Phase 1 升級：使用多步驟 EvaluatorAgent
+                async for chunk in evaluator_agent.evaluate_stream(
                     student_answer=body.content,
-                    rubric_text=rubric_text,
+                    rubric=rubric_dict,
                     system_prompt=system_prompt,
                 ):
-                    if chunk["type"] == "dimension_score":
-                        yield _sse_event("dimension_score", chunk["data"])
-                    elif chunk["type"] == "score_complete":
+                    yield _sse_event(chunk["type"], chunk["data"])
+                    if chunk["type"] == "score_complete":
                         final_data = chunk["data"]
-                        final_data["passed"] = final_data.get("percentage", 0) >= pass_threshold
-                        yield _sse_event("score_complete", final_data)
 
-                # 步驟五：將評分結果寫入 ai_evaluations 資料表
+                # 將評分結果寫入 ai_evaluations 資料表
                 if final_data:
                     db.table("ai_evaluations").insert({
                         "attempt_id": attempt_id,
                         "total_score": int(final_data.get("total_score", 0)),
                         "dimension_scores": final_data.get("dimension_scores", []),
                         "evidence_text": body.content[:200],
-                        # ✅ 修正：AI 回傳的是 overall_feedback，不是 feedback_text
                         "feedback_text": final_data.get("overall_feedback", ""),
                         "detected_errors": []
                     }).execute()
@@ -181,6 +180,7 @@ async def submit_answer(
                 error_detail = traceback.format_exc()
                 logger.error(f"AI evaluation error:\n{error_detail}")
                 yield _sse_event("error", {"message": "AI 評分失敗", "detail": str(e)})
+
 
         return StreamingResponse(
             event_generator(),

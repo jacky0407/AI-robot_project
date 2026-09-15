@@ -2,6 +2,10 @@
 Gemini AI Provider 實作（使用新版 google-genai SDK）
 
 使用 Google Gemini API 實作 BaseAIProvider 的評分與提示生成邏輯。
+
+升級說明：
+  - 當呼叫方傳入 rubric_dict（結構化 Rubric）時，使用 EvaluatorAgent 多步驟評分
+  - 當只有純文字 rubric_text 時，退回原本的單次呼叫模式（向下相容）
 """
 
 import json
