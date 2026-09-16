@@ -3,9 +3,9 @@
 
 負責：
   - 建立練習 Session
-  - 接收學生作答並觸發 AI 評分（SSE 串流回傳）
+  - 接收學生作答並觸發 AI 評分（SSE 串流回傳）與資料庫寫入
   - 提供分層提示
-  - 查看練習版本歷程
+  - 查看練習版本歷程（已串接 step_attempts 與 ai_evaluations）
 """
 
 import json
@@ -31,7 +31,6 @@ tutor_agent = TutorAgent()
 
 # 整合 Agent 單例（Phase 3：跨步驟一致性檢核）
 coherence_agent = CoherenceAgent()
-
 
 
 # ──────────────────────────────────────────
@@ -79,9 +78,9 @@ async def submit_answer(
     學生提交作答：
       1. 個資偵測（PII Check）
       2. 從 Supabase 讀取真實的 step、ai_tools 與 Rubric 設定
-      3. 寫入 step_attempts 記錄
+      3. 計算嘗試次數並寫入 step_attempts 記錄
       4. 呼叫 AI 評分並以 SSE 串流回傳
-      5. 將評分結果存入 ai_evaluations
+      5. 串流結束後將評分結果存入 ai_evaluations
     """
     try:
         db = get_supabase()
@@ -230,8 +229,12 @@ async def submit_answer(
                         "dimension_scores": final_data.get("dimension_scores", []),
                         "evidence_text": body.content[:200],
                         "feedback_text": final_data.get("overall_feedback", ""),
-                        "detected_errors": []
+                        "detected_errors": final_data.get("detected_errors", [])
                     }).execute()
+
+                    # 同步更新 step_attempts 狀態為 passed 或 revision_required
+                    new_status = "passed" if final_data["passed"] else "revision_required"
+                    db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
 
             except Exception as e:
                 error_detail = traceback.format_exc()
@@ -243,6 +246,7 @@ async def submit_answer(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -264,8 +268,31 @@ async def get_hint(session_id: str):
 
 
 @router.get("/sessions/{session_id}/history")
-async def get_session_history(session_id: str):
-    return {"data": {"session_id": session_id, "submissions": []}}
+async def get_session_history(session_id: str, user_id: str, step_id: str):
+    """
+    查看練習版本歷程：
+    從資料庫讀取該學生針對特定 step 的歷次嘗試（step_attempts）與對應的 AI 評分（ai_evaluations）
+    """
+    try:
+        db = get_supabase()
+        
+        # 查詢該學生該步驟的所有嘗試與對應評分
+        attempts_res = db.table("step_attempts")\
+            .select("*, ai_evaluations(*)")\
+            .eq("user_id", user_id)\
+            .eq("step_id", step_id)\
+            .order("attempt_number", desc=False)\
+            .execute()
+
+        return {
+            "data": {
+                "session_id": session_id,
+                "submissions": attempts_res.data if attempts_res.data else []
+            }
+        }
+    except Exception as e:
+        logger.error(f"Get history error: {e}")
+        raise HTTPException(status_code=500, detail="無法取得歷史紀錄")
 
 
 @router.post("/modules/{module_id}/coherence-check")
