@@ -1,136 +1,223 @@
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-from database.client import get_supabase
+"""
+教師複核 API 路由
+
+對齊 supabase/schema.sql 的 teacher_reviews 定義：
+    attempt_id / teacher_id / decision / final_score / final_feedback / is_published
+
+設計原則（見 AGENTS.md）：
+    AI 初評（ai_evaluations）與教師判定（teacher_reviews）分開存放，永不互相覆蓋。
+    「是否已複核」以 step_attempts 底下有沒有對應的 teacher_reviews 判斷，
+    不在 ai_evaluations 上加旗標。
+"""
+
+import logging
 from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from database.client import get_supabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
-class DimensionOverride(BaseModel):
-    dimension: str
-    teacher_score: int
-    override_reason: str
+# 對應 schema.sql 的 CHECK 條件
+VALID_DECISIONS = ("accept_ai", "modify", "override", "request_retry")
+
 
 class JudgeRequest(BaseModel):
-    action: str  # accept, modify, reject
-    dimension_overrides: List[DimensionOverride] = []
-    teacher_comment: str = ""
-    require_redo: bool = False
+    # TODO: teacher_id 應改由 Supabase JWT 取得，不該由前端傳入（見 docs/KNOWN_GAPS.md #8）
+    teacher_id: str
+    decision: str = Field(description="accept_ai | modify | override | request_retry")
+    final_score: Optional[int] = None
+    final_feedback: str = ""
+    is_published: bool = False
+
+
+# ──────────────────────────────────────────
+# Endpoints
+# ──────────────────────────────────────────
 
 @router.get("/pending")
 async def get_pending_reviews(
-    course_id: Optional[str] = Query(None),
-    tool_id: Optional[str] = Query(None),
-    needs_attention: Optional[bool] = Query(None)
+    tool_id: Optional[str] = Query(None, description="只看某一支機器人的作答"),
+    needs_attention: Optional[bool] = Query(
+        None, description="True 只回傳 AI 判定未通過（revision_required）的作答"
+    ),
 ):
     """
-    從 Supabase 讀取 ai_evaluations JOIN step_attempts JOIN profiles
-    回傳等待複核的清單（ai_evaluations.teacher_review_id IS NULL）
+    列出「已有 AI 初評、但還沒有教師判定」的作答。
+
+    註：schema 中 learning_modules 沒有關聯到 courses，
+    因此目前無法依課程篩選，只提供 tool_id 與 needs_attention。
     """
     db = get_supabase()
-    
-    # Supabase doesn't support complex JOINs with filtering easily via the JS/Python client in a single clean query sometimes,
-    # but we can try selecting nested fields.
-    # Actually, we should select from ai_evaluations and inner join step_attempts.
-    # query = db.table("ai_evaluations").select("*, step_attempts(*, profiles(*))").is_("teacher_review_id", "null")
-    # For now, let's keep it simple as requested.
-    query = db.table("ai_evaluations").select(
-        "id, attempt_id, total_score, step_attempts(id, created_at, user_input_content, user_id, profiles(display_name))"
-    ).is_("teacher_review_id", "null")
-    
-    res = query.execute()
-    
-    # Format according to docs
+
+    res = (
+        db.table("step_attempts")
+        .select(
+            "id, created_at, status, attempt_number, user_id, user_input_content, "
+            "profiles(full_name, email), "
+            "module_steps(step_title, tool_id, ai_tools(title)), "
+            "ai_evaluations(id, total_score, feedback_text), "
+            "teacher_reviews(id)"
+        )
+        .order("created_at", desc=True)
+        .execute()
+    )
+
     data = []
-    for item in res.data:
-        attempt = item.get("step_attempts")
-        if not attempt:
+    for attempt in res.data or []:
+        evaluations = _as_list(attempt.get("ai_evaluations"))
+        reviews = _as_list(attempt.get("teacher_reviews"))
+
+        # 待複核 = 有 AI 初評、且尚無教師判定
+        if not evaluations or reviews:
             continue
-            
-        profile = attempt.get("profiles", {})
-        
+
+        step = attempt.get("module_steps") or {}
+        tool = step.get("ai_tools") or {}
+        profile = attempt.get("profiles") or {}
+        evaluation = evaluations[0]
+
+        if tool_id and step.get("tool_id") != tool_id:
+            continue
+        if needs_attention and attempt.get("status") != "revision_required":
+            continue
+
         data.append({
             "submission_id": attempt.get("id"),
-            "student": {"display_name": profile.get("display_name", "Unknown") if profile else "Unknown"},
-            "tool_name": "Unknown Tool", # Optional, hard to get without more joins
+            "student": {
+                "user_id": attempt.get("user_id"),
+                "full_name": profile.get("full_name", ""),
+            },
+            "step_title": step.get("step_title", ""),
+            "tool_name": tool.get("title", ""),
+            "attempt_number": attempt.get("attempt_number"),
             "submitted_at": attempt.get("created_at"),
-            "ai_total_percentage": item.get("total_score", 0),
-            "ai_confidence": 0.0,
-            "flags": []
+            "status": attempt.get("status"),
+            "ai_total_score": evaluation.get("total_score"),
+            "needs_attention": attempt.get("status") == "revision_required",
         })
-        
+
     return {"data": data}
+
 
 @router.get("/submissions/{attempt_id}")
 async def get_submission_detail(attempt_id: str):
     """
-    讀取單一作答的完整資訊：
-    - step_attempts 的 user_input_content
-    - 對應的 ai_evaluations（dimension_scores, feedback_text, total_score）
-    - prompt_logs（提示使用紀錄）
+    單一作答的完整資訊：學生原文、AI 初評、提示使用紀錄、既有教師判定。
     """
     db = get_supabase()
-    
-    # 1. step_attempts & ai_evaluations
-    attempt_res = db.table("step_attempts").select("*, ai_evaluations(*)").eq("id", attempt_id).execute()
+
+    attempt_res = (
+        db.table("step_attempts")
+        .select(
+            "*, profiles(full_name, email), "
+            "module_steps(step_title, pass_score, ai_tools(title, rubric_criteria)), "
+            "ai_evaluations(*), teacher_reviews(*)"
+        )
+        .eq("id", attempt_id)
+        .execute()
+    )
     if not attempt_res.data:
         raise HTTPException(status_code=404, detail="Submission not found")
-        
-    attempt_data = attempt_res.data[0]
-    eval_data = attempt_data.get("ai_evaluations", [])
-    if isinstance(eval_data, list) and len(eval_data) > 0:
-        eval_data = eval_data[0]
-        
-    # 2. prompt_logs
-    prompt_res = db.table("prompt_logs").select("*").eq("attempt_id", attempt_id).execute()
-    
+
+    attempt = attempt_res.data[0]
+    evaluations = _as_list(attempt.get("ai_evaluations"))
+    reviews = _as_list(attempt.get("teacher_reviews"))
+    evaluation = evaluations[0] if evaluations else None
+
+    prompt_res = (
+        db.table("prompt_logs")
+        .select("*")
+        .eq("attempt_id", attempt_id)
+        .order("created_at")
+        .execute()
+    )
+
+    step = attempt.get("module_steps") or {}
+
     return {
         "data": {
-            "submission_id": attempt_data.get("id"),
-            "content": attempt_data.get("user_input_content"),
-            "ai_evaluation": {
-                "dimension_scores": eval_data.get("dimension_scores", []) if eval_data else [],
-                "feedback_text": eval_data.get("feedback_text", "") if eval_data else "",
-                "total_score": eval_data.get("total_score", 0) if eval_data else 0
+            "submission_id": attempt.get("id"),
+            "student": attempt.get("profiles") or {},
+            "step": {
+                "step_title": step.get("step_title", ""),
+                "pass_score": step.get("pass_score"),
+                "tool": step.get("ai_tools") or {},
             },
-            "prompt_logs": prompt_res.data
+            "attempt_number": attempt.get("attempt_number"),
+            "status": attempt.get("status"),
+            "content": attempt.get("user_input_content"),
+            "ai_evaluation": {
+                "total_score": evaluation.get("total_score") if evaluation else None,
+                "dimension_scores": evaluation.get("dimension_scores", []) if evaluation else [],
+                "feedback_text": evaluation.get("feedback_text", "") if evaluation else "",
+                "evidence_text": evaluation.get("evidence_text", "") if evaluation else "",
+            },
+            "teacher_reviews": reviews,
+            "prompt_logs": prompt_res.data or [],
         }
     }
 
-@router.post("/submissions/{attempt_id}/judge")
+
+@router.post("/submissions/{attempt_id}/judge", status_code=201)
 async def judge_submission(attempt_id: str, body: JudgeRequest):
     """
-    寫入 teacher_reviews 資料表，欄位：
-    - attempt_id
-    - action
-    - teacher_comment
-    - dimension_overrides（JSONB）
-    - require_redo
-    - reviewed_at（now()）
+    寫入教師最終判定（teacher_reviews）。
+
+    不會修改 ai_evaluations——AI 初評永遠保留原始判斷。
+    只有 decision = request_retry 時，才把作答狀態改回 revision_required。
     """
+    if body.decision not in VALID_DECISIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_DECISION",
+                "message": f"decision 必須是 {', '.join(VALID_DECISIONS)} 其中之一",
+            },
+        )
+
     db = get_supabase()
-    
-    # Validate attempt_id
+
     attempt_res = db.table("step_attempts").select("id").eq("id", attempt_id).execute()
     if not attempt_res.data:
         raise HTTPException(status_code=404, detail="Submission not found")
-        
-    # Insert into teacher_reviews
-    review_data = {
+
+    review_res = db.table("teacher_reviews").insert({
         "attempt_id": attempt_id,
-        "action": body.action,
-        "teacher_comment": body.teacher_comment,
-        "dimension_overrides": [d.dict() for d in body.dimension_overrides],
-        "require_redo": body.require_redo,
-        "reviewed_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    res = db.table("teacher_reviews").insert(review_data).execute()
-    if not res.data:
+        "teacher_id": body.teacher_id,
+        "decision": body.decision,
+        "final_score": body.final_score,
+        "final_feedback": body.final_feedback,
+        "is_published": body.is_published,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+    if not review_res.data:
         raise HTTPException(status_code=500, detail="Failed to save review")
-        
-    # Optionally update ai_evaluations to set teacher_review_id
-    review_id = res.data[0]["id"]
-    db.table("ai_evaluations").update({"teacher_review_id": review_id}).eq("attempt_id", attempt_id).execute()
-    
-    return {"data": res.data[0]}
+
+    if body.decision == "request_retry":
+        db.table("step_attempts").update(
+            {"status": "revision_required"}
+        ).eq("id", attempt_id).execute()
+
+    return {"data": review_res.data[0]}
+
+
+# ──────────────────────────────────────────
+# Helper
+# ──────────────────────────────────────────
+
+def _as_list(value) -> list:
+    """
+    PostgREST 的巢狀關聯可能回傳 list、單一 dict 或 None，統一成 list。
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]

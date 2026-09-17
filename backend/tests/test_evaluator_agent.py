@@ -170,3 +170,129 @@ class TestEvaluatorAgentStream:
 
         # 最後應該還是有 score_complete
         assert chunks[-1]["type"] == "score_complete"
+
+
+# ==============================================================================
+# 加權計分（修正 KNOWN_GAPS #5）
+# ==============================================================================
+
+from core.ai.agents.evaluator_agent import compute_weighted_percentage
+
+
+class TestComputeWeightedPercentage:
+
+    def test_weights_are_applied(self):
+        """
+        80 分配分的構面拿滿分、20 分配分的構面拿 0（1/4 起跳這裡直接給 0），
+        結果應接近 80%，而不是兩構面的簡單平均 50%。
+        """
+        scores = [
+            {"score": 4, "max_score": 4, "weight": 80},
+            {"score": 0, "max_score": 4, "weight": 20},
+        ]
+        assert compute_weighted_percentage(scores) == pytest.approx(80.0)
+
+    def test_full_marks_is_one_hundred(self):
+        scores = [
+            {"score": 4, "max_score": 4, "weight": 40},
+            {"score": 4, "max_score": 4, "weight": 60},
+        ]
+        assert compute_weighted_percentage(scores) == pytest.approx(100.0)
+
+    def test_half_marks_is_fifty(self):
+        scores = [
+            {"score": 2, "max_score": 4, "weight": 30},
+            {"score": 2, "max_score": 4, "weight": 70},
+        ]
+        assert compute_weighted_percentage(scores) == pytest.approx(50.0)
+
+    def test_unequal_weights_differ_from_simple_average(self):
+        """權重不同的情況，結果必須和未加權平均不一樣"""
+        scores = [
+            {"score": 4, "max_score": 4, "weight": 90},
+            {"score": 1, "max_score": 4, "weight": 10},
+        ]
+        weighted = compute_weighted_percentage(scores)
+        simple = (4 / 4 + 1 / 4) / 2 * 100
+        assert weighted == pytest.approx(92.5)
+        assert weighted != pytest.approx(simple)
+
+    def test_no_weight_falls_back_to_raw_ratio(self):
+        """沒有 weight 時（GeminiProvider 舊路徑）退回總分比例"""
+        scores = [
+            {"score": 3, "max_score": 4},
+            {"score": 1, "max_score": 4},
+        ]
+        assert compute_weighted_percentage(scores) == pytest.approx(50.0)
+
+    def test_empty_scores_returns_zero(self):
+        assert compute_weighted_percentage([]) == 0.0
+
+    def test_missing_max_score_uses_default_scale(self):
+        scores = [{"score": 2, "weight": 100}]
+        assert compute_weighted_percentage(scores) == pytest.approx(50.0)
+
+
+class TestWeightedScoreComplete:
+
+    @pytest.mark.asyncio
+    async def test_score_complete_uses_weighted_total(self):
+        """
+        SAMPLE_RUBRIC 的權重是 40 / 20。
+        第一構面 4/4、第二構面 1/4 →
+        (1.0*40 + 0.25*20) / 60 * 100 = 75.0
+        """
+        agent = EvaluatorAgent()
+        high = json.dumps({
+            "dimension": "功能性描述", "score": 4, "max_score": 4,
+            "reason": "完整", "evidence": "主動互動",
+        })
+        low = json.dumps({
+            "dimension": "去標籤化用語", "score": 1, "max_score": 4,
+            "reason": "仍有標籤化用語", "evidence": "…",
+        })
+        synth = json.dumps({"overall_feedback": "再加油", "confidence": 0.8})
+        agent._llm = make_mock_llm([high, low, synth])
+
+        score_complete = None
+        async for chunk in agent.evaluate_stream(SAMPLE_ANSWER, SAMPLE_RUBRIC, "prompt"):
+            if chunk["type"] == "score_complete":
+                score_complete = chunk["data"]
+
+        assert score_complete["percentage"] == pytest.approx(75.0)
+        assert score_complete["max_total_score"] == 100.0
+        assert score_complete["passed"] is True      # 門檻 75
+
+    @pytest.mark.asyncio
+    async def test_dimension_score_carries_weight_from_rubric(self):
+        """權重由 Rubric 帶入，不採信 AI 自己回傳的值"""
+        agent = EvaluatorAgent()
+        forged = json.dumps({
+            "dimension": "功能性描述", "score": 3, "max_score": 4,
+            "weight": 999,                     # AI 亂填，應被覆蓋
+            "reason": "尚可", "evidence": "…",
+        })
+        synth = json.dumps({"overall_feedback": "良好", "confidence": 0.9})
+        agent._llm = make_mock_llm([forged, forged, synth])
+
+        dimension_events = []
+        async for chunk in agent.evaluate_stream(SAMPLE_ANSWER, SAMPLE_RUBRIC, "prompt"):
+            if chunk["type"] == "dimension_score":
+                dimension_events.append(chunk["data"])
+
+        assert [d["weight"] for d in dimension_events] == [40, 20]
+
+    @pytest.mark.asyncio
+    async def test_fallback_dimension_still_has_weight(self):
+        """JSON 解析失敗的降級結果也要帶權重，否則加權計算會少一項"""
+        agent = EvaluatorAgent()
+        synth = json.dumps({"overall_feedback": "已完成", "confidence": 0.6})
+        agent._llm = make_mock_llm(["壞掉的回應", "壞掉的回應", synth])
+
+        dimension_events = []
+        async for chunk in agent.evaluate_stream(SAMPLE_ANSWER, SAMPLE_RUBRIC, "prompt"):
+            if chunk["type"] == "dimension_score":
+                dimension_events.append(chunk["data"])
+
+        assert [d["weight"] for d in dimension_events] == [40, 20]
+        assert all(d["score"] == 1 for d in dimension_events)
