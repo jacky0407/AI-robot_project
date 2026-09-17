@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.config import get_settings
 from core.ai.base import EvaluationResult
-from core.ai.rubric_formatter import format_rubric_to_text
+from core.ai.rubric_formatter import format_rubric_to_text, DEFAULT_SCALE_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,31 @@ EVALUATOR_SYSTEM_PROMPT = """你是一位學前特殊教育的專業評分助理
    - < 0.7 = 作答不足或難以判斷，建議教師複核
 
 嚴格以 JSON 格式回傳，不得加入任何 markdown 標記。"""
+
+
+def compute_weighted_percentage(dimension_scores: list[dict]) -> float:
+    """
+    依構面權重計算總得分百分比。
+
+    每個構面先換算成得分率（score / max_score），再依 weight 加權平均。
+    這樣 max_score 可以是任意量表（4 級、5 級），weight 才是配分。
+
+    若所有構面都沒有 weight（例如 GeminiProvider 的舊路徑），
+    退回原本的「總分 / 總滿分」算法，維持向下相容。
+    """
+    total_weight = sum(float(d.get("weight") or 0) for d in dimension_scores)
+
+    if total_weight > 0:
+        acc = 0.0
+        for d in dimension_scores:
+            max_score = float(d.get("max_score") or DEFAULT_SCALE_MAX) or DEFAULT_SCALE_MAX
+            weight = float(d.get("weight") or 0)
+            acc += (float(d.get("score", 0)) / max_score) * weight
+        return acc / total_weight * 100
+
+    total = sum(float(d.get("score", 0)) for d in dimension_scores)
+    max_total = sum(float(d.get("max_score") or DEFAULT_SCALE_MAX) for d in dimension_scores)
+    return (total / max_total * 100) if max_total > 0 else 0.0
 
 
 class EvaluatorAgent:
@@ -168,7 +193,7 @@ class EvaluatorAgent:
         """對單一構面進行評分，返回結構化結果。"""
         dim_name = dimension.get("name", "未命名構面")
         levels = dimension.get("levels", [])
-        max_score = max(lv["score"] for lv in levels) if levels else 4
+        max_score = max(lv["score"] for lv in levels) if levels else DEFAULT_SCALE_MAX
 
         # 組裝單一構面的評分 prompt
         levels_text = "\n".join(
@@ -200,16 +225,22 @@ class EvaluatorAgent:
                 SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
             ])
-            return json.loads(response.content)
+            scored = json.loads(response.content)
         except json.JSONDecodeError:
             logger.warning(f"構面 {dim_name} JSON 解析失敗，使用預設值")
-            return {
+            scored = {
                 "dimension": dim_name,
                 "score": 1,
                 "max_score": max_score,
                 "reason": "評分失敗，請教師複核",
                 "evidence": "",
             }
+
+        # AI 不負責決定權重，一律由 Rubric 設定帶入，並確保量表上限正確
+        scored["weight"] = dimension.get("weight", 0)
+        scored["max_score"] = max_score
+        scored.setdefault("dimension", dim_name)
+        return scored
 
     async def _synthesize(
         self,
@@ -220,9 +251,16 @@ class EvaluatorAgent:
         system_prompt: str,
     ) -> EvaluationResult:
         """整合所有構面評分，生成整體回饋。"""
-        total = sum(d.get("score", 0) for d in dimension_scores)
-        max_total = sum(d.get("max_score", 4) for d in dimension_scores)
-        percentage = (total / max_total * 100) if max_total > 0 else 0
+        percentage = compute_weighted_percentage(dimension_scores)
+        has_weights = any(float(d.get("weight") or 0) > 0 for d in dimension_scores)
+
+        if has_weights:
+            # 有配分 → 總分即加權後的百分制得分，滿分固定 100
+            total = round(percentage, 1)
+            max_total = 100.0
+        else:
+            total = sum(float(d.get("score", 0)) for d in dimension_scores)
+            max_total = sum(float(d.get("max_score") or DEFAULT_SCALE_MAX) for d in dimension_scores)
 
         # 組裝各構面摘要給 AI 參考
         scores_summary = "\n".join(

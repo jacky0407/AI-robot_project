@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
+from core.ai.rubric_formatter import normalize_rubric
 from core.privacy import detect_pii
 from database.client import get_supabase
 
@@ -76,20 +77,28 @@ async def create_session(body: CreateSessionRequest):
     case_data = case_res.data[0]
     
     session_id = str(uuid.uuid4())
-    
+
+    # ⚠️ session_id 目前未落庫，submit 也不驗證它。
+    #    若要正式支援 Session，需新增 practice_sessions 表。
     return {
         "data": {
             "session_id": session_id,
             "tool": {
-                "name": tool_data.get("name", ""),
-                "opening_message": tool_data.get("opening_message", "")
+                "id": tool_data.get("id"),
+                # schema 的欄位是 title / role_instruction，不是 name / opening_message
+                "name": tool_data.get("title", ""),
+                "opening_message": tool_data.get("role_instruction", ""),
+                "target_competency": tool_data.get("target_competency", ""),
             },
             "case": {
+                "id": case_data.get("id"),
                 "title": case_data.get("title", ""),
-                "content": case_data.get("content", "")
+                # schema 的欄位是 case_background，不是 content
+                "content": case_data.get("case_background", ""),
+                "difficulty": case_data.get("difficulty", ""),
             },
-            "task_description": tool_data.get("task_description", ""),
-            "started_at": datetime.now(timezone.utc).isoformat()
+            "task_description": tool_data.get("target_competency", ""),
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
     }
 
@@ -130,28 +139,20 @@ async def submit_answer(
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
         system_prompt = tool.get("system_prompt", "你是一位學前特殊教育的評分助理。")
-        pass_threshold = tool.get("pass_score", 75)
+
+        # 通過門檻定義在 module_steps.pass_score，不在 ai_tools
+        pass_threshold = step_res.data.get("pass_score") or 75
 
         # 組裝 Rubric dict（直接傳給 EvaluatorAgent，不再轉成純文字）
-        rubric_dict = {
-            "pass_threshold_percent": pass_threshold,
-            "dimensions": [
-                {
-                    "name": r.get("dimension"),
-                    "weight": r.get("max_score"),
-                    "levels": [
-                        {"score": lv, "description": r.get("description", "")}
-                        for lv in range(1, r.get("max_score", 4) + 1)
-                    ] if r.get("levels") is None else r.get("levels")
-                }
-                for r in rubric_criteria
-            ],
-        }
+        # rubric_criteria 的 max_score 是「配分（權重）」，不是量表上限，
+        # 展開等級的邏輯統一放在 normalize_rubric()
+        rubric_dict = normalize_rubric(rubric_criteria, pass_threshold)
 
         # ── 查詢學生歷程，建立 StudentContext ──────────────────────
+        # 一次查回上一次嘗試的 id、次數與評分，避免重複往返
         prev_attempts = (
             db.table("step_attempts")
-            .select("attempt_number")
+            .select("id, attempt_number, ai_evaluations(total_score, dimension_scores)")
             .eq("user_id", body.user_id)
             .eq("step_id", body.step_id)
             .order("attempt_number", desc=True)
@@ -159,41 +160,22 @@ async def submit_answer(
             .execute()
         )
 
-        next_attempt_number = 1
-        if prev_attempts.data:
-            next_attempt_number = prev_attempts.data[0]["attempt_number"] + 1
+        last_attempt = prev_attempts.data[0] if prev_attempts.data else None
 
-        # 查詢上次分數（從最近一筆 ai_evaluation 取得）
-        last_score_percent: float | None = None
-        if next_attempt_number > 1:
-            prev_eval = (
-                db.table("step_attempts")
-                .select("id, ai_evaluations(total_score, dimension_scores)")
-                .eq("user_id", body.user_id)
-                .eq("step_id", body.step_id)
-                .order("attempt_number", desc=True)
-                .limit(1)
+        next_attempt_number = (last_attempt["attempt_number"] + 1) if last_attempt else 1
+        last_score_percent = _extract_last_score_percent(last_attempt)
+
+        # 查詢上一次嘗試已使用的提示次數（沒有前次嘗試就不用查，
+        # 否則會拿字串去比對 UUID 欄位而讓查詢直接報錯）
+        hints_used = 0
+        if last_attempt:
+            hints_res = (
+                db.table("prompt_logs")
+                .select("id", count="exact")
+                .eq("attempt_id", last_attempt["id"])
                 .execute()
             )
-            if prev_eval.data and prev_eval.data[0].get("ai_evaluations"):
-                latest_eval = prev_eval.data[0]["ai_evaluations"]
-                if isinstance(latest_eval, list) and latest_eval:
-                    latest_eval = latest_eval[0]
-                dim_scores = latest_eval.get("dimension_scores", [])
-                if dim_scores:
-                    total = sum(d.get("score", 0) for d in dim_scores)
-                    max_total = sum(d.get("max_score", 4) for d in dim_scores)
-                    last_score_percent = (total / max_total * 100) if max_total > 0 else None
-
-        # 查詢已使用的提示次數
-        hints_res = (
-            db.table("prompt_logs")
-            .select("id", count="exact")
-            .eq("attempt_id",
-                prev_attempts.data[0]["id"] if prev_attempts.data else "none")
-            .execute()
-        )
-        hints_used = hints_res.count or 0
+            hints_used = hints_res.count or 0
 
         student_context = StudentContext.from_db(
             attempt_number=next_attempt_number,
@@ -250,7 +232,7 @@ async def submit_answer(
                 if final_data:
                     db.table("ai_evaluations").insert({
                         "attempt_id": attempt_id,
-                        "total_score": int(final_data.get("total_score", 0)),
+                        "total_score": round(float(final_data.get("total_score", 0))),
                         "dimension_scores": final_data.get("dimension_scores", []),
                         "evidence_text": body.content[:200],
                         "feedback_text": final_data.get("overall_feedback", ""),
@@ -395,6 +377,35 @@ async def check_module_coherence(module_id: str, user_id: str):
 # ──────────────────────────────────────────
 # Helper
 # ──────────────────────────────────────────
+
+def _extract_last_score_percent(last_attempt: dict | None) -> float | None:
+    """
+    從上一次嘗試取出得分百分比，給 TutorAgent 判斷該評分還是給提示。
+
+    優先用 ai_evaluations.total_score（加權後的百分制得分）；
+    舊資料若沒有 total_score，才退回用 dimension_scores 換算。
+    """
+    if not last_attempt:
+        return None
+
+    evaluation = last_attempt.get("ai_evaluations")
+    if isinstance(evaluation, list):
+        evaluation = evaluation[0] if evaluation else None
+    if not evaluation:
+        return None
+
+    total_score = evaluation.get("total_score")
+    if total_score is not None:
+        return float(total_score)
+
+    dim_scores = evaluation.get("dimension_scores") or []
+    if not dim_scores:
+        return None
+
+    total = sum(float(d.get("score", 0)) for d in dim_scores)
+    max_total = sum(float(d.get("max_score") or 4) for d in dim_scores)
+    return (total / max_total * 100) if max_total > 0 else None
+
 
 def _sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
