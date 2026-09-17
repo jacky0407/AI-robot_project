@@ -749,16 +749,34 @@
 
 ```
 event: score_start
-data: {"session_id": "uuid", "submission_id": "uuid"}
+data: {"session_id": "uuid", "attempt_id": "uuid", "attempt_number": 1}
+
+event: tutor_decision
+data: {"action": "evaluate", "attempt_number": 1, "last_score_percent": null}
+  → action 可為："evaluate" | "give_hint" | "encourage" | "escalate"
+
+（若 action="evaluate" 或 "encourage"，繼續以下事件）
+event: analysis_start
+data: {"total_dimensions": 2}
 
 event: dimension_score
-data: {"dimension": "功能性描述", "score": 2, "max": 4, "reason": "...", "evidence": "「診斷為自閉症」"}
-
-event: dimension_score
-data: {"dimension": "去標籤化用語", "score": 1, "max": 4, "reason": "...", "evidence": "「無法與同伴互動」"}
+data: {"dimension": "功能性描述", "score": 3, "max_score": 4, "reason": "...", "evidence": "...", "progress": "1/2"}
 
 event: score_complete
-data: {"total_score": 8, "max_score": 32, "percentage": 25.0, "passed": false, "needs_teacher_review": true, "overall_feedback": "..."}
+data: {"total_score": 6, "max_total_score": 8, "percentage": 75.0, "passed": true, "needs_teacher_review": false, "overall_feedback": "...", "confidence": 0.9, "dimension_scores": [...]}
+
+（若 action="give_hint"）
+event: hint
+data: {"level": 1, "content": "...", "message": "先依照提示修改後，再重新提交作答。"}
+
+（若 action="encourage"）
+event: encouragement
+data: {"message": "你已經非常接近通過標準了！..."}
+接著繼續 analysis_start → dimension_score × N → score_complete
+
+（若 action="escalate"）
+event: escalation
+data: {"message": "你已嘗試 4 次，建議與老師討論後再繼續練習。", "suggest_teacher_review": true}
 ```
 
 > **注意**：AI 評分結果（`ai_evaluations` 表）與教師最終判定（`teacher_evaluations` 表）**分開儲存，互不覆蓋**。
@@ -790,7 +808,30 @@ data: {"total_score": 8, "max_score": 32, "percentage": 25.0, "passed": false, "
 ### `GET /api/practice/sessions/:session_id/history`
 **權限**：STUDENT, HOST, ASSISTANT
 
-取得某次練習的完整版本歷程（所有提交版本與對應評分）。
+取得本次練習的所有提交歷程（包含每次提交內容與對應評分）。
+
+---
+
+### `POST /api/practice/modules/:module_id/coherence-check`
+**權限**：STUDENT
+
+當學生完成模組所有步驟後呼叫，跨步驟檢查 IEP 前後一致性。回傳 SSE 串流。
+
+**Query Parameters：**
+- `user_id`（必填）
+
+**Response**：`Content-Type: text/event-stream`
+
+```
+event: coherence_start
+data: {"total_checks": 3, "total_steps": 7}
+
+event: coherence_check
+data: {"check_name": "優勢與目標對應", "is_ok": false, "problem": "步驟1描述的口語優勢未在步驟3目標中呈現", "suggestion": "修改步驟3，將優勢納入目標設計", "go_to_step_order": 3, "progress": "1/3"}
+
+event: coherence_complete
+data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "strengths": ["需求與策略對應"], "issues": [{"check_name": "...", "problem": "...", "suggestion": "...", "go_to_step_order": 3}], "summary": "發現 1 處跨步驟不一致，建議修改步驟 3。"}
+```
 
 ---
 

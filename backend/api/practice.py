@@ -56,15 +56,40 @@ class SubmitAnswerRequest(BaseModel):
 # Endpoints
 # ──────────────────────────────────────────
 
-@router.post("/sessions")
+import uuid
+from datetime import datetime, timezone
+
+@router.post("/sessions", status_code=201)
 async def create_session(body: CreateSessionRequest):
+    db = get_supabase()
+    
+    # 1. 取得 tool info
+    tool_res = db.table("ai_tools").select("*").eq("id", body.tool_id).execute()
+    if not tool_res.data:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    tool_data = tool_res.data[0]
+    
+    # 2. 取得 case info
+    case_res = db.table("tool_cases").select("*").eq("id", body.case_id).execute()
+    if not case_res.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+    case_data = case_res.data[0]
+    
+    session_id = str(uuid.uuid4())
+    
     return {
         "data": {
-            "session_id": "temp-session-id",
+            "session_id": session_id,
             "tool": {
-                "name": "AI 特教助理",
-                "opening_message": "歡迎！請閱讀下方案例並完成作答。",
+                "name": tool_data.get("name", ""),
+                "opening_message": tool_data.get("opening_message", "")
             },
+            "case": {
+                "title": case_data.get("title", ""),
+                "content": case_data.get("content", "")
+            },
+            "task_description": tool_data.get("task_description", ""),
+            "started_at": datetime.now(timezone.utc).isoformat()
         }
     }
 

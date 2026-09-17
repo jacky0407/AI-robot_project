@@ -1,13 +1,9 @@
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from supabase import create_client
-from core.config import get_settings
+from database.client import get_supabase
 
 router = APIRouter(prefix="/api/teacher", tags=["Teacher Management"])
 
-def get_supabase():
-    settings = get_settings()
-    return create_client(settings.supabase_url, settings.supabase_service_role_key)
 
 @router.get("/tools")
 async def list_ai_tools():
