@@ -11,7 +11,6 @@ type ViewState = "auth" | "student_workspace" | "teacher_dashboard";
 const ROUTES = {
   staff: "/admin/tools", // owner / assistant
   student: "/student/modules", // 其他（學生）
-  onboarding: "/onboarding", // 第一次登入，尚未完成註冊
 };
 
 export default function Home() {
@@ -47,7 +46,7 @@ export default function Home() {
   const redirectByRole = async (userId: string) => {
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("role, registration_completed")
+      .select("role")
       .eq("id", userId)
       .single();
 
@@ -63,12 +62,6 @@ export default function Home() {
       await supabase.auth.signOut();
       setAuthError("此帳號沒有教師/工作人員權限，請改用學生身分登入");
       return false;
-    }
-
-    // 還沒完成註冊（第一次登入）：先補完基本資料與同意條款
-    if (!profile.registration_completed) {
-      router.push(ROUTES.onboarding);
-      return true;
     }
 
     router.push(isStaff ? ROUTES.staff : ROUTES.student);
@@ -100,8 +93,6 @@ export default function Home() {
     const errorParam = params.get("error");
     if (errorParam === "link_expired") {
       setAuthError("驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。");
-    } else if (errorParam === "profile") {
-      setAuthError("無法讀取使用者資料，請稍後再試或聯絡管理員");
     } else if (errorParam === "auth") {
       setAuthError("登入驗證失敗，請再試一次");
     }
@@ -156,14 +147,7 @@ export default function Home() {
       });
 
       if (error || !data.user) {
-        const msg = error?.message ?? "請再試一次";
-        setAuthError(
-          "登入失敗：" +
-            msg +
-            (msg.includes("Invalid login credentials")
-              ? "（信箱或密碼錯誤；若此信箱是用 Google 註冊的，請改按上方「使用 Google 帳號登入」）"
-              : "")
-        );
+        setAuthError("登入失敗：" + (error?.message ?? "請再試一次"));
         setSubmitting(false);
         return;
       }
@@ -184,18 +168,7 @@ export default function Home() {
     });
 
     if (error) {
-      setAuthError(
-        error.message.toLowerCase().includes("already registered")
-          ? "此信箱已經註冊過。若當初是用 Google 註冊，請按上方「使用 Google 帳號」登入。"
-          : "註冊失敗：" + error.message
-      );
-      setSubmitting(false);
-      return;
-    }
-
-    // 開啟信箱驗證時，重複註冊不會回傳錯誤，而是 identities 為空陣列
-    if (data.user && data.user.identities && data.user.identities.length === 0) {
-      setAuthError("此信箱已經註冊過。若當初是用 Google 註冊，請按上方「使用 Google 帳號」登入。");
+      setAuthError("註冊失敗：" + error.message);
       setSubmitting(false);
       return;
     }
@@ -536,46 +509,9 @@ export default function Home() {
             </button>
           </div>
 
-          {/* 登入 / 註冊 切換頁籤 */}
-          <div style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)", marginBottom: "16px" }}>
-            {[
-              { label: "登入", value: true },
-              { label: "註冊", value: false },
-            ].map((tab) => (
-              <button
-                key={tab.label}
-                type="button"
-                onClick={() => {
-                  setIsLoginMode(tab.value);
-                  setAuthError("");
-                  setInfoMsg("");
-                }}
-                style={{
-                  flex: 1,
-                  padding: "8px 0",
-                  borderRadius: "8px",
-                  border: "none",
-                  fontSize: "13px",
-                  fontWeight: "bold",
-                  cursor: "pointer",
-                  backgroundColor: isLoginMode === tab.value ? (selectedRole === "student" ? "#2563eb" : "#16a34a") : "transparent",
-                  color: isLoginMode === tab.value ? "#fff" : "#94a3b8",
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
           <h2 style={{ fontSize: "18px", fontWeight: "bold", margin: "0 0 16px 0" }}>
             {isLoginMode ? "登入您的帳號" : "註冊新帳號"}
           </h2>
-
-          {!isLoginMode && selectedRole === "teacher" && (
-            <p style={{ fontSize: "12px", color: "#fbbf24", margin: "0 0 16px 0", lineHeight: 1.5 }}>
-              教師／工作人員帳號註冊後，需由管理員開通權限才能進入後台。
-            </p>
-          )}
 
           {/* Google 登入按鈕 */}
           <button
@@ -590,7 +526,7 @@ export default function Home() {
               <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
               <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
             </svg>
-            {googleLoading ? "跳轉中..." : isLoginMode ? "使用 Google 帳號登入" : "使用 Google 帳號註冊"}
+            {googleLoading ? "跳轉中..." : "使用 Google 帳號登入"}
           </button>
 
           <div style={{ display: "flex", alignItems: "center", gap: "12px", margin: "16px 0", fontSize: "12px", color: "#64748b" }}>
