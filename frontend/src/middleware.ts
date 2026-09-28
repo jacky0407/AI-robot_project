@@ -30,25 +30,45 @@ export async function middleware(request: NextRequest) {
   )
 
   // 取得當前登入者
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
   const pathname = request.nextUrl.pathname
 
-  // 1. 若未登入且不是在登入頁，強制導回 /login
-  if (!user && !pathname.startsWith('/login')) {
-    return NextResponse.redirect(new URL('/login', request.url))
+  // 登入頁（根路徑 /）與 OAuth 回呼一律放行
+  const isPublicPath = pathname === '/' || pathname.startsWith('/auth')
+
+  // 1. 若未登入且不是公開頁面，強制導回登入頁 /
+  if (!user && !isPublicPath) {
+    return NextResponse.redirect(new URL('/', request.url))
   }
 
-  // 2. 若使用者試圖進入 /admin 後台，檢查是否為 owner 或 assistant
-  if (user && pathname.startsWith('/admin')) {
+  if (user) {
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, registration_completed')
       .eq('id', user.id)
       .single()
 
-    // 如果不是管理角色，強制踢回學生學習頁面
-    if (!profile || (profile.role !== 'owner' && profile.role !== 'assistant')) {
-      return NextResponse.redirect(new URL('/student/modules', request.url))
+    const isStaff = profile?.role === 'owner' || profile?.role === 'assistant'
+
+    if (pathname.startsWith('/onboarding')) {
+      // 2. 已完成註冊的人不需要再填一次，直接送去對應頁面
+      if (profile?.registration_completed) {
+        return NextResponse.redirect(
+          new URL(isStaff ? '/admin/tools' : '/student/modules', request.url)
+        )
+      }
+    } else {
+      // 3. 還沒完成註冊，不能進入系統內頁
+      if (!profile?.registration_completed) {
+        return NextResponse.redirect(new URL('/onboarding', request.url))
+      }
+
+      // 4. /admin 後台只有 owner / assistant 可以進入
+      if (pathname.startsWith('/admin') && !isStaff) {
+        return NextResponse.redirect(new URL('/student/modules', request.url))
+      }
     }
   }
 
@@ -56,5 +76,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/admin/:path*', '/student/:path*'],
+  matcher: ['/admin/:path*', '/student/:path*', '/onboarding'],
 }

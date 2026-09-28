@@ -23,11 +23,16 @@ app.add_middleware(
 )
 
 # 掛載路由
+from api.privacy import router as privacy_router
+from api.review import router as review_router
+
 app.include_router(practice_router)
 # TODO: 等成員二實作後，在此加入其他 router
 # app.include_router(auth_router)
 # app.include_router(courses_router)
 # app.include_router(tools_router)
+app.include_router(privacy_router)
+app.include_router(review_router)
 app.include_router(teacher.router)
 
 

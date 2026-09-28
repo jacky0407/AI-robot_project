@@ -1,4 +1,28 @@
 -- ==============================================================================
+-- 種子資料（僅供本地開發／示範環境）
+--
+-- ⚠️ 正式環境絕對不要執行這個檔案：裡面有公開的測試帳號密碼。
+-- ⚠️ 執行前請先跑過 schema.sql。
+--
+-- 測試帳號（密碼皆為 Test1234!）：
+--   prof.wu@platform.edu        role = owner    教授
+--   student.test@platform.edu   role = student  學生
+--
+-- 若登入仍失敗（GoTrue 版本對 auth.users 的必填欄位要求不同），
+-- 請改到 Supabase Dashboard → Authentication → Users 手動設定密碼。
+--
+-- 固定 UUID 對照：
+--   a0000001-… 機器人：步驟1 案例資料整理教練
+--   a0000002-… 機器人：步驟2 功能性現況撰寫教練
+--   b0000001-… 模組：學前 IEP 逐步撰寫模組
+--   c1111111-… 課程：115學年度 學前特教IEP實務工作坊
+--   ca5e0001-… 案例A：小明
+-- ==============================================================================
+
+-- crypt() / gen_salt() 需要 pgcrypto
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ==============================================================================
 -- 1. 建立測試用帳號 (包含教授與學生)
 -- ==============================================================================
 INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
@@ -9,7 +33,7 @@ VALUES
         'authenticated',
         'authenticated',
         'prof.wu@platform.edu',
-        '',
+        crypt('Test1234!', gen_salt('bf')),
         NOW(),
         '{"provider":"email","providers":["email"]}',
         '{"full_name":"吳佩芳教授","role":"owner"}',
@@ -22,7 +46,7 @@ VALUES
         'authenticated',
         'authenticated',
         'student.test@platform.edu',
-        '',
+        crypt('Test1234!', gen_salt('bf')),
         NOW(),
         '{"provider":"email","providers":["email"]}',
         '{"full_name":"測試學生","role":"student"}',
@@ -65,7 +89,7 @@ ON CONFLICT (course_id, user_id) DO NOTHING;
 INSERT INTO public.tool_cases (id, title, difficulty, case_background, known_info, is_synthetic)
 VALUES 
     (
-        'case-0001-0000-0000-000000000001',
+        'ca5e0001-0000-0000-0000-000000000001',
         '案例A：4歲中度語言發展遲緩幼兒「小明」',
         'basic',
         '小明（4歲2個月），就讀幼兒園中班。在幼兒園自然情境中，常以拉扯同儕或尖叫表達需求；能聽懂2步驟簡單指令，但口語表達僅限單詞（如：要、餅乾、抱）。在積木角能專注建構20分鐘，具備良好的視覺空間優勢與動作協調能力。家長非常期待小明能融入團體並主動用口語表達需求。',
@@ -81,7 +105,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.ai_tools (id, title, domain, target_competency, role_instruction, system_prompt, rubric_criteria, version, status, created_by)
 VALUES 
     (
-        'tool-0001-0000-0000-000000000001',
+        'a0000001-0000-0000-0000-000000000001',
         '步驟1：案例資料整理教練',
         '學前IEP',
         '客觀事實與推論區分能力',
@@ -97,7 +121,7 @@ VALUES
         'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     ),
     (
-        'tool-0002-0000-0000-000000000002',
+        'a0000002-0000-0000-0000-000000000002',
         '步驟2：功能性現況撰寫教練',
         '學前IEP',
         '自然情境功能性現況撰寫',
@@ -120,7 +144,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.learning_modules (id, title, description, domain, is_published)
 VALUES 
     (
-        'mod-0001-0000-0000-000000000001',
+        'b0000001-0000-0000-0000-000000000001',
         '學前個別化教育計畫 (IEP) 逐步撰寫模組',
         '從案例資料整理到跨步驟一致性檢核的完整專業能力培訓',
         '學前IEP',
@@ -132,16 +156,16 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.module_steps (module_id, tool_id, step_order, step_title, pass_score, pass_forward_keys)
 VALUES 
     (
-        'mod-0001-0000-0000-000000000001',
-        'tool-0001-0000-0000-000000000001',
+        'b0000001-0000-0000-0000-000000000001',
+        'a0000001-0000-0000-0000-000000000001',
         1,
         '步驟1：案例資料整理與客觀事實萃取',
         70,
         '["structured_facts", "missing_info"]'::jsonb
     ),
     (
-        'mod-0001-0000-0000-000000000001',
-        'tool-0002-0000-0000-000000000002',
+        'b0000001-0000-0000-0000-000000000001',
+        'a0000002-0000-0000-0000-000000000002',
         2,
         '步驟2：自然情境功能性現況撰寫',
         70,
