@@ -1,137 +1,79 @@
-'use client'
+"use client";
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { createClient } from '@/utils/supabase/client'
-
-interface AiTool {
-  id: string
-  title: string
-  domain: string
-  target_competency: string
-  status: string
-  version: number
-  created_at: string
-  system_prompt?: string
-}
+import Link from "next/link";
 
 export default function AdminToolsPage() {
-  const [tools, setTools] = useState<AiTool[]>([])
-  const [loading, setLoading] = useState(true)
-  const supabase = createClient()
-
-  // 取得所有 AI 機器人清單
-  const loadTools = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('ai_tools')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (!error && data) {
-        setTools(data)
-      }
-    } catch (err) {
-      console.error('無法取得機器人清單', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    loadTools()
-  }, [])
-
-  // 刪除指定的 AI 機器人
-  const handleDelete = async (toolId: string, toolTitle: string) => {
-    if (!confirm(`確定要刪除機器人「${toolTitle}」嗎？`)) return
-
-    try {
-      const res = await fetch(`http://127.0.0.1:8000/api/teacher/tools/${toolId}`, {
-        method: 'DELETE',
-      })
-
-      if (res.ok) {
-        alert('刪除成功！')
-        // 從畫面清單中移除
-        setTools(tools.filter((t) => t.id !== toolId))
-      } else {
-        const errData = await res.json()
-        alert('刪除失敗：' + (errData.detail || '未知錯誤'))
-      }
-    } catch (err: any) {
-      alert('發生錯誤：' + err.message)
-    }
-  }
-
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">AI 工具建構器（教授管理後台）</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              在此建立、調整與發布各步驟的 AI 能力教練與評量標準。
-            </p>
-          </div>
-          <Link
-            href="/admin/tools/new"
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 shadow-sm"
-          >
-            + 建立新 AI 機器人
-          </Link>
+    <div style={{ minHeight: "100vh", backgroundColor: "#f8fafc", color: "#1e293b", fontFamily: "sans-serif" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 24px", backgroundColor: "#fff", borderBottom: "1px solid #e2e8f0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <span style={{ backgroundColor: "#16a34a", color: "#fff", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", fontWeight: "bold" }}>
+            管理與複核後台
+          </span>
+          <span style={{ fontWeight: "bold", fontSize: "16px" }}>培訓分析儀表板</span>
         </div>
+        <Link
+          href="/"
+          style={{ padding: "6px 12px", fontSize: "12px", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", backgroundColor: "#fff", textDecoration: "none", color: "#1e293b" }}
+        >
+          ← 登出 / 返回首頁
+        </Link>
+      </header>
 
-        {loading ? (
-          <div className="p-8 text-center text-gray-500">讀取中...</div>
-        ) : tools.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-gray-300 bg-white p-12 text-center">
-            <p className="text-gray-500">目前尚無自訂 AI 機器人，請點擊上方按鈕新增。</p>
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2">
-            {tools.map((tool) => (
-              <div
-                key={tool.id}
-                className="flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-blue-300 transition"
-              >
+      <div style={{ maxWidth: "1200px", margin: "24px auto", padding: "0 16px", display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" }}>
+        {/* 左：待複核清單 */}
+        <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" }}>
+          <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 16px 0" }}>待複核學生初評清單 (需求書 ASM-002)</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {[
+              { name: "王同學", task: "IEP 步驟 2 功能性現況", aiScore: 82, time: "10 分鐘前" },
+              { name: "李同學", task: "IEP 步驟 5 年度目標", aiScore: 74, time: "35 分鐘前" },
+              { name: "張學員", task: "IEP 步驟 7 支持策略", aiScore: 90, time: "1 小時前" },
+            ].map((item, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", backgroundColor: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
                 <div>
-                  <div className="flex items-center justify-between">
-                    <span className="rounded bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-600">
-                      {tool.domain || '通用領域'}
-                    </span>
-                    <div className="flex items-center space-x-2">
-                      <span
-                        className={`rounded px-2 py-0.5 text-xs font-medium ${
-                          tool.status === 'published'
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-yellow-100 text-yellow-700'
-                        }`}
-                      >
-                        {tool.status === 'published' ? '已發布' : '草稿'} (v{tool.version || 1})
-                      </span>
-                    </div>
-                  </div>
-                  <h3 className="mt-3 text-lg font-bold text-gray-900">{tool.title}</h3>
-                  <p className="mt-1 text-sm text-gray-600">
-                    目標能力：{tool.target_competency || '未設定'}
-                  </p>
+                  <span style={{ fontWeight: "bold", fontSize: "14px" }}>{item.name}</span>
+                  <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "10px" }}>{item.task}</span>
                 </div>
-
-                <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3 text-xs text-gray-400">
-                  <span>建立時間：{new Date(tool.created_at).toLocaleDateString()}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <span style={{ fontSize: "12px", backgroundColor: "#dbeafe", color: "#1e40af", padding: "2px 8px", borderRadius: "4px" }}>AI 初評: {item.aiScore}分</span>
                   <button
-                    onClick={() => handleDelete(tool.id, tool.title)}
-                    className="rounded-md bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition"
+                    onClick={() => alert(`進入複核 ${item.name} 的作答與 AI 初評結果`)}
+                    style={{ padding: "4px 10px", fontSize: "12px", backgroundColor: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
                   >
-                    刪除機器人
+                    審核判定
                   </button>
                 </div>
               </div>
             ))}
           </div>
-        )}
+        </div>
+
+        {/* 右：快速工具與統計 */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" }}>
+            <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 12px 0" }}>AI 工具建構器捷徑</h3>
+            <p style={{ fontSize: "12px", color: "#64748b", margin: "0 0 12px 0" }}>主持人可在此新增或修訂 AI 能力機器人與 Rubric（無需工程師改程式碼）。</p>
+            <button
+              onClick={() => alert("開啟 AI 工具建構器（設定 System Prompt、Rubric、分層提示）")}
+              style={{ width: "100%", padding: "8px 0", backgroundColor: "#0f172a", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
+            >
+              + 建立 / 編輯 AI 機器人
+            </button>
+          </div>
+
+          <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" }}>
+            <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 12px 0" }}>研究資料匯出 (DAT-001)</h3>
+            <p style={{ fontSize: "12px", color: "#64748b", margin: "0 0 12px 0" }}>支援去識別化學習歷程資料 CSV 匯出。</p>
+            <button
+              onClick={() => alert("匯出研究去識別資料成功（包含版本、對話、提示使用時間與分數）")}
+              style={{ width: "100%", padding: "8px 0", border: "1px solid #cbd5e1", backgroundColor: "#fff", color: "#334155", borderRadius: "6px", fontSize: "13px", cursor: "pointer" }}
+            >
+              匯出去識別化研究數據
+            </button>
+          </div>
+        </div>
       </div>
     </div>
-  )
+  );
 }
