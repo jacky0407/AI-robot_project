@@ -442,3 +442,215 @@ class TestPersistence:
 
         payload = fake_db.find("step_attempts", "update")[0]["payload"]
         assert payload["status"] == "revision_required"
+
+
+# ==============================================================================
+# LLM 邏輯系統：confidence 落庫、真實佐證、錯誤分類、分層提示
+# ==============================================================================
+
+from unittest.mock import AsyncMock as _AsyncMock
+
+from core.ai.error_detector import ErrorDetector
+from core.ai.hint_engine import HintEngine
+
+TAXONOMY = [
+    {"code": "diagnosis_only", "label": "僅列診斷名稱",
+     "description": "只寫障礙類別", "severity": "high"},
+]
+
+TEACHING_STRATEGY = {
+    "hints": [
+        {"level": 1, "trigger": "score_below_threshold", "content": "你觀察到哪個行為？"},
+        {"level": 2, "trigger": "student_request", "content": "包含情境、行為、頻率"},
+    ],
+    "personalize": False,
+}
+
+
+def step_row_with(**tool_overrides) -> dict:
+    """複製 STEP_ROW 並覆寫 ai_tools 欄位"""
+    row = json.loads(json.dumps(STEP_ROW))
+    row["ai_tools"].update(tool_overrides)
+    return row
+
+
+def _fake_message(content):
+    class _M:
+        def __init__(self, c):
+            self.content = c
+    return _M(content)
+
+
+def submit_with_agents(
+    fake_db,
+    llm_responses,
+    *,
+    body=None,
+    detector_llm=None,
+    hint_llm=None,
+):
+    """跑一次 submit，並替換錯誤偵測器與提示引擎的 LLM"""
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=fake_db):
+        practice.tutor_agent._evaluator._llm = mock_llm(llm_responses)
+        practice.error_detector = ErrorDetector(llm=detector_llm or _AsyncMock())
+        practice.tutor_agent._hints = HintEngine(llm=hint_llm or _AsyncMock())
+        res = client.post(
+            "/api/practice/sessions/test-session/submit",
+            json=body or BODY,
+        )
+    events = parse_sse(res.text) if res.status_code == 200 else []
+    return res, events
+
+
+FULL_RESPONSES = [
+    dim_response("客觀事實辨識", 3),
+    dim_response("推論與假設區分", 3),
+    dim_response("缺漏資訊提問", 3),
+    json.dumps({"overall_feedback": "整體不錯", "confidence": 0.42}),
+]
+
+
+class TestConfidencePersistence:
+
+    def test_confidence_is_written(self):
+        """
+        api.md 的規格有 confidence，舊 schema 沒有欄位，Agent 算完就丟掉。
+        現在必須落庫，教師端才看得到「AI 對這次評分沒把握」。
+        """
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["confidence"] == pytest.approx(0.42)
+
+    def test_low_confidence_flags_teacher_review(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["needs_teacher_review"] is True
+
+    def test_high_confidence_does_not_flag(self):
+        responses = FULL_RESPONSES[:-1] + [
+            json.dumps({"overall_feedback": "很清楚", "confidence": 0.95})
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, responses)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["needs_teacher_review"] is False
+
+
+class TestEvidenceText:
+
+    def test_stores_ai_evidence_not_raw_answer(self):
+        """
+        回歸測試：evidence_text 舊版存的是學生作答前 200 字，那不是證據。
+        應該存 AI 各構面實際引用的原文。
+        """
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        evidence = fake_db.find("ai_evaluations", "insert")[0]["payload"]["evidence_text"]
+        assert evidence != CLEAN_ANSWER[:200]
+        assert "積木角" in evidence          # dim_response 裡的 evidence
+        assert "客觀事實辨識" in evidence     # 標注是哪個構面
+
+
+class TestErrorDetection:
+
+    def test_no_taxonomy_skips_llm(self):
+        """教授沒定義 error_taxonomy 時不該多燒一次 API 額度"""
+        detector_llm = _AsyncMock()
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES, detector_llm=detector_llm)
+
+        assert detector_llm.ainvoke.await_count == 0
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["detected_errors"] == []
+
+    def test_detected_errors_written_and_streamed(self):
+        detector_llm = _AsyncMock()
+        detector_llm.ainvoke = _AsyncMock(return_value=_fake_message(json.dumps({
+            "detected": [{"code": "diagnosis_only", "evidence": "「診斷為自閉症」",
+                          "explanation": "只寫診斷"}]
+        })))
+        fake_db = FakeSupabase(step_row_with(error_taxonomy=TAXONOMY), prev_attempts=[])
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES, detector_llm=detector_llm)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert [e["code"] for e in payload["detected_errors"]] == ["diagnosis_only"]
+        assert payload["detected_errors"][0]["severity"] == "high"
+
+        # 前端要能即時顯示
+        assert "errors_detected" in dict(events)
+
+    def test_detection_failure_does_not_break_scoring(self):
+        """錯誤分類掛掉時，評分結果仍要寫入"""
+        detector_llm = _AsyncMock()
+        detector_llm.ainvoke = _AsyncMock(side_effect=RuntimeError("掛了"))
+        fake_db = FakeSupabase(step_row_with(error_taxonomy=TAXONOMY), prev_attempts=[])
+        res, _ = submit_with_agents(fake_db, FULL_RESPONSES, detector_llm=detector_llm)
+
+        assert res.status_code == 200
+        assert fake_db.find("ai_evaluations", "insert")
+
+
+class TestHintPersistence:
+
+    PREV = [{
+        "id": "attempt-prev",
+        "attempt_number": 1,
+        "user_input_content": "小明有自閉症。",
+        "ai_evaluations": [{
+            "total_score": 45,
+            "dimension_scores": [
+                {"dimension": "功能性描述", "score": 1, "max_score": 4, "reason": "只列診斷"},
+            ],
+        }],
+    }]
+
+    def test_teacher_hint_is_used_and_logged_with_trigger(self):
+        """上次 45 分 → GIVE_HINT；應該用教授寫的提示並記下 trigger / source"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.PREV,
+            hints_count=0,
+        )
+        _, events = submit_with_agents(fake_db, [])
+
+        hint = dict(events)["hint"]
+        assert hint["content"] == "你觀察到哪個行為？"
+        assert hint["source"] == "teacher"
+
+        logged = fake_db.find("prompt_logs", "insert")[0]["payload"]
+        assert logged["hint_trigger"] == "score_below_threshold"
+        assert logged["hint_source"] == "teacher"
+
+    def test_second_level_needs_student_request(self):
+        """第 2 層是 student_request，學生沒要就不給 → 改為直接評分"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.PREV,
+            hints_count=1,
+        )
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES)
+
+        names = [e for e, _ in events]
+        assert "hint" not in names
+        assert "score_complete" in names
+
+    def test_student_requested_hint_unlocks_next_level(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.PREV,
+            hints_count=1,
+        )
+        _, events = submit_with_agents(
+            fake_db, [], body={**BODY, "request_hint": True}
+        )
+
+        hint = dict(events)["hint"]
+        assert hint["level"] == 2
+        assert hint["trigger"] == "student_request"

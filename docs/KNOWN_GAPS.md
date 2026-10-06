@@ -1,7 +1,7 @@
 # 已知落差與技術債
 
 > 掃描時間：2026-09-17｜基準 commit `62f57f4`
-> 標 ✅ 的項目已在「第一批修正」中處理完畢（見 [CHANGELOG.md](./CHANGELOG.md)）。
+> 標 ✅ 的項目已在「第一批修正」中處理完畢（行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md) 第 10 節）。
 > 其餘項目仍待處理，標 🔴 者會在執行時直接失敗。
 
 ---
@@ -178,7 +178,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 `/student/practice` 用 `await res.text()` 一次讀完整個串流，等同於同步等待，
 「AI 逐構面即時評分」的體驗完全消失。解析後也只是 `JSON.stringify` 顯示原文。
 
-修法與範例程式見 [FRONTEND.md](./FRONTEND.md#studentpractice--練習室)。
+修法與範例程式見 [ARCHITECTURE.md](./ARCHITECTURE.md) 第 5 節。
 
 ---
 
@@ -200,7 +200,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 `schema.sql` 中沒有任何 `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY`。
 前端 anon key 是公開資訊，目前任何人都能直接讀寫 `profiles`、`ai_tools`、`module_steps`、`tool_cases`。
 
-建議的策略清單見 [DATABASE.md](./DATABASE.md#6-rls-現況)。
+建議至少：`profiles` 只能讀自己；`ai_tools` 學生只讀 published、寫入限 owner/assistant；學習歷程表學生只讀自己的、寫入一律走後端；`teacher_reviews` 限 owner/assistant。
 
 ---
 
@@ -230,16 +230,16 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ## 11. 🟡 寫死的設定
 
-| 位置 | 內容 |
-|------|------|
-| `frontend/src/app/student/practice/page.tsx` | `http://127.0.0.1:8000` |
-| `frontend/src/app/admin/tools/page.tsx` | `http://127.0.0.1:8000` |
-| `frontend/src/app/student/practice/page.tsx` | session id `temp-session-id` |
-| `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 |
-| `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 |
-| `backend/api/practice.py` | `/hints` 端點整段回傳值 |
+| 位置 | 內容 | 狀態 |
+|------|------|------|
+| `frontend/src/app/student/practice/page.tsx` | `http://127.0.0.1:8000` | 待處理 |
+| `frontend/src/app/admin/tools/page.tsx` | `http://127.0.0.1:8000` | 待處理 |
+| `frontend/src/app/student/practice/page.tsx` | session id `temp-session-id` | 待處理 |
+| `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 | ✅ 已刪除，改用 `HintEngine` |
+| `backend/api/practice.py` | `/hints` 端點整段回傳值 | ✅ 已接真實資料 |
+| `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 | 待處理（E 批次）|
 
-前兩項應抽成 `NEXT_PUBLIC_API_URL`，後三項應改讀資料庫（`ai_tools.teaching_strategy`）。
+前三項應抽成 `NEXT_PUBLIC_API_URL`；`CoherenceAgent` 的規則應改讀資料庫讓教授可自訂。
 
 ---
 
@@ -247,8 +247,8 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 項目 | 狀況 |
 |------|------|
-| `ai_tools.teaching_strategy` | 無程式碼讀取 |
-| `ai_tools.error_taxonomy` | 無程式碼讀取；`ai_evaluations.detected_errors` 恆為 `[]` |
+| `ai_tools.teaching_strategy` | ✅ 已接上 `HintEngine`，見 [LLM_SYSTEM.md](./LLM_SYSTEM.md) |
+| `ai_tools.error_taxonomy` | ✅ 已接上 `ErrorDetector`，`detected_errors` 會寫入 |
 | `ai_tools.max_cost_limit` | 無程式碼檢查 |
 | `ai_evaluations.ai_cost` | 恆為 0.0 |
 | `ai_evaluations.suggested_next_step` | 從未寫入 |
@@ -268,7 +268,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 項目 | 說明 |
 |------|------|
-| `ai_evaluations.evidence_text` | 存的是學生作答前 200 字，不是 AI 引用的佐證。AI 的佐證其實已在 `dimension_scores[].evidence` 裡 |
+| ~~`ai_evaluations.evidence_text`~~ | ✅ 已改存 AI 各構面實際引用的原文 |
 | `GeminiProvider.evaluate_stream()` | `score_complete` 的 `passed` 寫死 `False`，註解說「由呼叫方補上」但無人補 |
 | `review.py` 的 `d.dict()` | Pydantic v2 已棄用，應改 `d.model_dump()` |
 | `frontend/src/app/layout.tsx` | metadata 仍是 `create-next-app` 預設值（`title: "Create Next App"`） |
@@ -282,12 +282,56 @@ pass_threshold = step_res.data.get("pass_score") or 75
 ## 14. 建議處理順序
 
 ```
-✅ 第一批（已完成）  → #1 review 欄位、#2 KeyError、#3 session 欄位、#10 seed.sql
-                      外加 #4 pass_score、#5 Rubric levels
-   第二批（安全）    → #8 API 身分驗證、#9 RLS
-   第三批（體驗）    → #7 前端 SSE
-   第四批（可部署）  → #11 環境變數、#6 回應格式
-   第五批（補需求）  → #12 未使用欄位對應的功能
+✅ 第一批（已完成）    → #1 review 欄位、#2 KeyError、#3 session 欄位、#10 seed.sql
+                        外加 #4 pass_score、#5 Rubric levels
+✅ 第二批 LLM（已完成）→ 分層提示、錯誤分類、confidence、scale_type、逾時重試
+   第三批（安全）      → #8 API 身分驗證、#9 RLS      ← 目前最該做的
+   第四批（體驗）      → #7 前端 SSE
+   第五批（可部署）    → #11 環境變數、#6 回應格式
+   第六批（補需求）    → 成本控管、跨步驟傳遞、Coherence 規則入庫
 ```
 
-第一批的完整異動見 [CHANGELOG.md](./CHANGELOG.md)。
+LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆異動看 `git log`。
+
+---
+
+## 15. 尚未實作的功能
+
+**後端**
+
+- `api/auth.py`、`api/courses.py`、`api/tools.py`、`api/export.py` — `main.py` 中以 TODO 註解預留，檔案不存在
+- 課程與邀請碼（建立、加入、審核、每日額度）
+- 自主探索模式的額度控管（`tool_permissions` 表無人使用）
+- 表單與前後測（`forms` / `form_responses`）
+- 研究資料 CSV 匯出（`/api/export/*`）
+- 研究倫理同意書流程（`/api/consent`）
+- 教授後台監控 API（`/api/admin/conversations`、`/api/admin/tools/{id}/analytics`）
+- AI 成本記錄（`ai_evaluations.ai_cost` 恆為 0；`ai_tools.max_cost_limit` 無人檢查）
+- RAG／pgvector（schema 已啟用 extension，無任何向量欄位與檢索邏輯）
+
+**前端**
+
+- 註冊頁、忘記密碼
+- 課程加入（輸入邀請碼）
+- 分層提示 UI（逐層解鎖）— 後端 `/hints` 已可用，缺畫面
+- 教師複核後台介面
+- 機器人編輯頁、案例管理、提示設定（GPTs Builder 的其他分頁）
+- 作答版本比對介面
+
+**安全與部署**
+
+- Supabase RLS 規則（`schema.sql` 完全沒有 `ENABLE ROW LEVEL SECURITY`）
+- 後端 API 的身分驗證（目前所有端點無任何權限檢查，`user_id` 由前端傳入）
+- Vercel / Render 部署設定
+
+---
+
+> 這份清單原本是獨立文件，已併入本文件，不再單獨維護。
+
+---
+
+## 文件與程式碼的關係
+
+`docs/api.md` 是**目標規格**，描述第一版完成時應有的樣子；
+`ARCHITECTURE.md` 描述**現在程式碼實際長什麼樣**。
+兩者不一致時**以程式碼為準**，並把差異記到本文件。

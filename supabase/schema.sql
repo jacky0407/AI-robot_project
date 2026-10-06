@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS public.ai_tools (
     role_instruction TEXT NOT NULL,        -- AI 角色與目標
     system_prompt TEXT NOT NULL,           -- 詳細系統指令
     teaching_strategy JSONB DEFAULT '{}'::jsonb, -- 教學策略 (引導時點、提示層級設定)
-    rubric_criteria JSONB DEFAULT '[]'::jsonb,   -- Rubric 評分規準與構面
+    rubric_criteria JSONB DEFAULT '[]'::jsonb,   -- Rubric 評分規準與構面（max_score 為配分/權重）
+    scale_type TEXT CHECK (scale_type IN ('4_point', '5_point', '100_point', 'pass_fail')) DEFAULT '4_point',
     error_taxonomy JSONB DEFAULT '[]'::jsonb,    -- 錯誤分類定義
     max_cost_limit FLOAT DEFAULT 0.5,      -- 單次任務成本上限 ($)
     version INT DEFAULT 1,
@@ -142,6 +143,8 @@ CREATE TABLE IF NOT EXISTS public.ai_evaluations (
     evidence_text TEXT,                    -- AI 引用的學生作答原文證據
     detected_errors JSONB DEFAULT '[]'::jsonb, -- 偵測到的錯誤類型清單
     feedback_text TEXT NOT NULL,           -- AI 正向具體回饋
+    confidence FLOAT,                      -- AI 對本次評分的自評信心值 0~1
+    needs_teacher_review BOOLEAN DEFAULT false, -- confidence 過低時為 true
     suggested_next_step TEXT,              -- 建議下一步
     ai_cost FLOAT DEFAULT 0.0,             -- 單次呼叫估算成本
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
@@ -165,6 +168,8 @@ CREATE TABLE IF NOT EXISTS public.prompt_logs (
     attempt_id UUID NOT NULL REFERENCES public.step_attempts(id) ON DELETE CASCADE,
     hint_level INT NOT NULL,               -- 提示層級 (1:重新思考, 2:方向, 3:結構, 4:局部範例...)
     hint_content TEXT NOT NULL,            -- 提示內容
+    hint_trigger TEXT CHECK (hint_trigger IN ('score_below_threshold', 'student_request')), -- 自動給 or 學生主動要
+    hint_source TEXT CHECK (hint_source IN ('teacher', 'generated')),  -- 教授撰寫 or AI 依 Rubric 生成
     student_reaction TEXT,                 -- 學生查看後的反應或下一步
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
