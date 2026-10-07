@@ -167,7 +167,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 端點 | 目前回傳 |
 |------|---------|
-| `GET /api/teacher/tools` | 直接回陣列（未包 `data`） |
+| ~~`GET /api/teacher/tools`~~ | ✅ 已改為 `{"data": [...]}` |
 | `DELETE /api/teacher/tools/{id}` | `{"success": true, "message": "..."}` |
 | 其他 | `{"data": ...}` ✅ |
 
@@ -237,7 +237,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 | `frontend/src/app/student/practice/page.tsx` | session id `temp-session-id` | 待處理 |
 | `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 | ✅ 已刪除，改用 `HintEngine` |
 | `backend/api/practice.py` | `/hints` 端點整段回傳值 | ✅ 已接真實資料 |
-| `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 | 待處理（E 批次）|
+| `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 | 🟡 步驟編號已改對九步驟（3→5、3→7、5→8），內容待教授確認；入庫待 E 批次 |
 
 前三項應抽成 `NEXT_PUBLIC_API_URL`；`CoherenceAgent` 的規則應改讀資料庫讓教授可自訂。
 
@@ -253,11 +253,12 @@ pass_threshold = step_res.data.get("pass_score") or 75
 | `ai_evaluations.ai_cost` | 恆為 0.0 |
 | `ai_evaluations.suggested_next_step` | 從未寫入 |
 | `module_steps.pass_forward_keys` | 步驟間資料傳遞未實作 |
-| `module_steps.require_teacher_review` | 無程式碼讀取 |
+| `module_steps.require_teacher_review` | ✅ `/api/review/pending` 已讀取（`review_reasons: step_requires_review`）；但尚無「審核前不能進下一步」的解鎖邏輯 |
 | `step_attempts.structured_data` | 從未寫入 |
 | `prompt_logs.student_reaction` | 從未寫入 |
 | `tool_permissions` / `forms` / `form_responses` | 整張表無人使用 |
 | `backend/core/ai/tools/evaluation_tools.py` | 四個 LangChain tool 未被任何 Agent 掛載 |
+| `core/ai/base.py` / `gemini_provider.py` | `BaseAIProvider` 只有 `GeminiProvider` 繼承，而實際評分流程（各 Agent）直接用 LangChain 建 client，沒有經過這層抽象。AGENTS.md 的「換模型只改 `gemini_provider.py`」目前不成立；換模型請改 `.env` 的 `GEMINI_MODEL` |
 | `supabase/practice_repo.py` | 早期資料存取層，沒有任何檔案 import 它 |
 | `requirements.txt` 的 `sse-starlette` | 實際使用 FastAPI `StreamingResponse` 手刻 SSE |
 | pgvector extension | 已啟用，但無任何向量欄位或檢索邏輯 |
@@ -327,6 +328,43 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 ---
 
 > 這份清單原本是獨立文件，已併入本文件，不再單獨維護。
+
+---
+
+## 16. ✅ 已修正 — AI 與教師複核之間的落差（2026-10）
+
+| 問題 | 修法 | 回歸測試 |
+|------|------|---------|
+| 自動分層提示永遠停在第 1 層 | 已用提示數改為整個步驟累計；60～門檻區間交給 `HintEngine` 依 `max_auto_hints` 決定 | `test_practice_api.py::TestHintProgression`、`test_tutor_agent.py` |
+| 只拿到提示的作答也算進「轉介老師」次數 | 改算「被評分過」的次數（`StudentContext.evaluated_attempts`） | `test_tutor_agent.py::test_hint_only_attempts_do_not_count_toward_escalation` |
+| 被轉介（escalate）的學生不會出現在複核佇列 | 新增 `step_attempts.tutor_action`（migration 003），佇列納入 escalate | `test_review_api.py::TestPendingQueue` |
+| 只給提示 / 轉介的作答狀態停在 `submitted` | 改為 `revision_required` | `TestTutorActionPersistence` |
+| 複核 API 看不到 `confidence`、`needs_teacher_review`、`detected_errors` | pending / detail 都回傳，並依 `review_reasons` 排序 | `test_review_api.py` |
+| Coherence 步驟編號與九步驟不符；0 條規則時回「恭喜完成」 | 改編號；0 條規則時 `overall_coherent = null` 並說明缺哪些步驟 | `test_coherence_agent.py` |
+| 刪除仍被步驟使用的機器人回 500 | 回 409 `TOOL_IN_USE` | `test_teacher_api.py` |
+| （實測）沒跑 migration 003 時待複核清單整個 500 | 退回不含 `tutor_action` 的查詢 | `test_review_api.py::test_works_before_migration_003` |
+| （實測）資料庫既有的 `error_taxonomy` 用 `error_code` / `name`，被解析成空清單、錯誤偵測靜默關閉 | 解析器兩種命名都接受 | `test_error_detector.py::test_accepts_error_code_and_name_from_existing_data` |
+
+> 需要先跑 `supabase/migrations/003_tutor_action.sql`。沒跑時寫入 `tutor_action` 失敗只會記 log、評分照常；
+> 待複核清單照常運作，但看不到被轉介（escalate）的作答。
+
+---
+
+## 17. 🔴 Gemini 免費額度與延遲（2026-10 實測）
+
+| 現象 | 數據 |
+|------|------|
+| 免費方案額度 | `gemini-3.5-flash` **每專案每天 20 次請求**（429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`） |
+| 一次評分用掉的請求數 | 構面數 + 1，有 `error_taxonomy` 再 +1；逾時重試也算 → 一天大約只夠 4–6 次學生提交 |
+| 延遲（預設思考模式） | 只要求回「OK」就 11–53 秒；評一個構面 27–49 秒 |
+| 結果 | `llm_utils` 單次逾時 30 秒 → 常逾時重試，重試又再吃額度；錯誤偵測兩次都逾時就被靜默略過 |
+| 尖峰時段 | 另有 503 `UNAVAILABLE`（模型需求過高），LangChain 內建重試會把等待拉長 |
+
+**待決定**（影響評分品質與成本，需要成員三與教授決定）：
+
+1. 上課前改用付費方案，或改用額度較高的模型（改 `.env` 的 `GEMINI_MODEL` 即可）
+2. 調高 `llm_utils.DEFAULT_TIMEOUT_SECONDS`（例如 90 秒），避免「已經在算了卻被切斷重來」反而多吃額度
+3. 評分 / 錯誤偵測改用較低的思考等級（`thinking_config={"thinking_level": "low"}`），延遲可降到 2 秒內，但評分品質尚未比較
 
 ---
 

@@ -27,11 +27,12 @@ EXPECTED_TABLES = [
     "forms", "form_responses", "research_consents",
 ]
 
-# migration 001 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
+# migration 001 / 003 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
 EXPECTED_COLUMNS = {
     "ai_evaluations": ["confidence", "needs_teacher_review"],
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
+    "step_attempts": ["tutor_action"],
 }
 
 PLACEHOLDERS = {
@@ -168,7 +169,7 @@ def main() -> int:
 
     if missing_columns:
         print(f"  {FAIL} 缺少欄位：{', '.join(missing_columns)}")
-        print("     → 請執行 supabase/migrations/001_llm_logic.sql")
+        print("     → 請依序執行 supabase/migrations/ 底下尚未跑過的 migration")
         return 1
     print(f"  {OK} 欄位齊全")
 
@@ -197,15 +198,22 @@ def main() -> int:
         tools = db.table("ai_tools").select(
             "title, rubric_criteria, teaching_strategy, error_taxonomy"
         ).execute()
+        from core.ai.error_detector import parse_error_taxonomy
+        from core.ai.hint_engine import parse_teaching_strategy
+
         for tool in tools.data or []:
             title = (tool.get("title") or "未命名")[:28]
             rubric = tool.get("rubric_criteria") or []
-            strategy = (tool.get("teaching_strategy") or {}).get("hints") or []
-            taxonomy = tool.get("error_taxonomy") or []
+            # 用系統實際的解析器計算，格式不對的項目不算——這樣才看得出「填了但沒生效」
+            plan = parse_teaching_strategy(tool.get("teaching_strategy"))
+            raw_taxonomy = tool.get("error_taxonomy") or []
+            taxonomy = parse_error_taxonomy(raw_taxonomy)
             print(f"  {title}")
-            print(f"      Rubric 構面 {len(rubric)}｜分層提示 {len(strategy)} 層｜錯誤分類 {len(taxonomy)} 項")
-            if not strategy:
-                print(f"      {WARN} 沒有分層提示，系統會依 Rubric 即時生成")
+            print(f"      Rubric 構面 {len(rubric)}｜分層提示 {plan.total_levels} 層｜錯誤分類 {len(taxonomy)} 項")
+            if not plan.total_levels:
+                print(f"      {WARN} 沒有可用的分層提示（需要 hints[].content），系統會依 Rubric 即時生成")
+            if len(taxonomy) < len(raw_taxonomy):
+                print(f"      {WARN} 錯誤分類有 {len(raw_taxonomy) - len(taxonomy)} 項格式無法辨識（需要 code/label 或 error_code/name）")
 
     print(f"\n{OK} 全部檢查通過，可以啟動後端了：uvicorn main:app --reload\n")
     return 0

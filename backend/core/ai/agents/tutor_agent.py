@@ -38,6 +38,16 @@ class StudentContext:
     pass_threshold: float        # 通過門檻（百分比）
     last_dimension_scores: list[dict] = field(default_factory=list)  # 上次各構面評分
     requested_hint: bool = False  # 學生是否主動要求提示
+    # 先前「真的有評分」的作答次數。只拿到提示、沒評分的作答不算——
+    # 否則每給一次提示就多佔一次額度，學生還沒用到第 2 層提示就被轉介老師。
+    # None 表示呼叫端沒提供，退回用 attempt_number - 1（假設每次都有評分）。
+    evaluated_attempts: int | None = None
+
+    @property
+    def prior_evaluations(self) -> int:
+        if self.evaluated_attempts is not None:
+            return self.evaluated_attempts
+        return max(self.attempt_number - 1, 0)
 
     @classmethod
     def from_db(
@@ -48,6 +58,7 @@ class StudentContext:
         pass_threshold: float = 75.0,
         last_dimension_scores: list[dict] | None = None,
         requested_hint: bool = False,
+        evaluated_attempts: int | None = None,
     ) -> "StudentContext":
         return cls(
             attempt_number=attempt_number,
@@ -56,6 +67,7 @@ class StudentContext:
             pass_threshold=pass_threshold,
             last_dimension_scores=last_dimension_scores or [],
             requested_hint=requested_hint,
+            evaluated_attempts=evaluated_attempts,
         )
 
 
@@ -67,14 +79,17 @@ class TutorAgent:
     ┌─────────────────────────────────┬──────────────┐
     │ 情況                            │ 行動         │
     ├─────────────────────────────────┼──────────────┤
-    │ 第一次作答                       │ EVALUATE     │
+    │ 第一次作答 / 上次只拿到提示沒評分 │ EVALUATE     │
     │ 上次分數 >= 門檻                  │ EVALUATE     │
     │ 接近門檻（差 <10%）且嘗試 <=3 次  │ ENCOURAGE    │
-    │ 分數 60~門檻，且未用過提示        │ GIVE_HINT    │
-    │ 分數 60~門檻，提示已用過          │ EVALUATE     │
-    │ 分數 < 60%，嘗試 <= 3 次         │ GIVE_HINT    │
-    │ 分數 < 60%，嘗試 > 3 次          │ ESCALATE     │
+    │ 分數 60~門檻                      │ GIVE_HINT    │
+    │ 分數 < 60%，評分過 <= 2 次        │ GIVE_HINT    │
+    │ 分數 < 60%，評分過 >= 3 次        │ ESCALATE     │
     └─────────────────────────────────┴──────────────┘
+
+    GIVE_HINT 只是「該給提示了」的決策；要不要真的給、給第幾層，
+    由 HintEngine 依教授的 teaching_strategy（max_auto_hints、trigger）決定。
+    沒有可給的提示時改為直接評分，所以不會無限給提示。
     """
 
     def __init__(self, hint_engine: HintEngine | None = None):
@@ -99,14 +114,13 @@ class TutorAgent:
         if threshold - score < 10 and ctx.attempt_number <= 3:
             return TutorAction.ENCOURAGE
 
-        # 分數 60% 以上但未達門檻
+        # 分數 60% 以上但未達門檻 → 給下一層提示；
+        # 提示給完（或下一層要學生主動要求）時 HintEngine 回 None，改為評分
         if score >= 60:
-            if ctx.hints_used_count == 0:
-                return TutorAction.GIVE_HINT
-            return TutorAction.EVALUATE  # 給過提示了，直接評分
+            return TutorAction.GIVE_HINT
 
-        # 分數低於 60%
-        if ctx.attempt_number <= 3:
+        # 分數低於 60%：已經被評分 3 次以上仍然很低 → 建議找老師
+        if ctx.prior_evaluations <= 2:
             return TutorAction.GIVE_HINT
         return TutorAction.ESCALATE
 

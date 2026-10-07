@@ -65,6 +65,10 @@ def parse_error_taxonomy(error_taxonomy: list | None) -> list[dict]:
     把資料庫的 `ai_tools.error_taxonomy` 整理成可用的清單。
 
     容錯：非 list、元素非 dict、缺 code 或 label 的項目一律跳過。
+
+    相容兩種欄位命名（api.md 沒有定義格式，隊友在後台用的是後者）：
+      code / label              ← docs/LLM_SYSTEM.md 的格式
+      error_code / name         ← 資料庫既有資料的格式
     """
     if not isinstance(error_taxonomy, list):
         return []
@@ -73,8 +77,8 @@ def parse_error_taxonomy(error_taxonomy: list | None) -> list[dict]:
     for item in error_taxonomy:
         if not isinstance(item, dict):
             continue
-        code = (item.get("code") or "").strip()
-        label = (item.get("label") or "").strip()
+        code = str(item.get("code") or item.get("error_code") or "").strip()
+        label = str(item.get("label") or item.get("name") or "").strip()
         if not code or not label:
             continue
 

@@ -50,7 +50,7 @@ Summer_project/
 │   │   ├── privacy.py          PII 正規表達式
 │   │   └── ai/                 ← 見 LLM_SYSTEM.md
 │   ├── database/client.py      get_supabase()
-│   └── tests/                  191 個單元測試
+│   └── tests/                  222 個單元測試
 ├── frontend/src/
 │   ├── middleware.ts           登入守門 + 角色守門
 │   ├── utils/supabase/         browser / server client
@@ -76,11 +76,12 @@ Summer_project/
       normalize_rubric()：max_score 是配分，量表由 scale_type 決定
 [3] 查上一次嘗試 → attempt_number、上次分數、已用提示數
 [4] INSERT step_attempts（status = submitted）
-[5] SSE：score_start → tutor_decision
-[6] TutorAgent 四選一
+[5] SSE：score_start → tutor_decision（決策寫入 step_attempts.tutor_action）
+[6] TutorAgent 四選一（規則見 LLM_SYSTEM.md 6.1）
       EVALUATE / ENCOURAGE → 逐構面評分 → score_complete
       GIVE_HINT            → 提示（拿不出來就改評分）
-      ESCALATE             → 建議找老師
+      ESCALATE             → 建議找老師（會進教師複核佇列）
+      只給提示 / 轉介       → UPDATE step_attempts.status → revision_required
 [7] 有 score_complete 時：
       錯誤分類偵測 → errors_detected
       INSERT ai_evaluations（含 confidence）
@@ -101,11 +102,11 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | `GET /api/practice/sessions/{id}/history` | ✅ | |
 | `POST /api/practice/modules/{id}/coherence-check` | ✅ | SSE，至少 2 步驟有作答 |
 | `POST /api/privacy/detect` | ✅ | |
-| `GET /api/review/pending` | ✅ | 有 AI 初評但無教師判定者 |
+| `GET /api/review/pending` | ✅ | 無教師判定，且有 AI 初評或被轉介（escalate）；`review_reasons` 非空者排前面 |
 | `GET /api/review/submissions/{id}` | ✅ | |
 | `POST /api/review/submissions/{id}/judge` | ✅ | `decision`：accept_ai / modify / override / request_retry |
-| `GET /api/teacher/tools` | ✅ | ⚠️ 直接回陣列，未包 `{data}` |
-| `DELETE /api/teacher/tools/{id}` | ✅ | |
+| `GET /api/teacher/tools` | ✅ | 回 `{data: [...]}` |
+| `DELETE /api/teacher/tools/{id}` | ✅ | 仍被步驟使用時回 409 `TOOL_IN_USE` |
 | `GET /api/health` | ✅ | |
 
 `main.py` 以註解預留、**檔案不存在**：`auth`、`courses`、`tools`、`export`。
@@ -178,6 +179,7 @@ while (true) {
 | `ai_evaluations.total_score` | 加權後的百分制得分 0–100 |
 | `ai_evaluations` 無 `teacher_review_id` | 刻意的：是否已複核看有無對應 `teacher_reviews` |
 | `step_attempts` 無 `course_id` | 違反共同規範，見 KNOWN_GAPS |
+| `step_attempts.tutor_action` | TutorAgent 決策；只有 `evaluate` / `encourage` 會有對應的 `ai_evaluations` |
 
 **觸發器**：`auth.users` 新增一筆時，自動建立 `profiles`（role 預設 student）並產生匿名研究編號 `SPED-xxxxxxxx`。
 

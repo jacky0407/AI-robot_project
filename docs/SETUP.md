@@ -42,7 +42,8 @@
 
 SQL Editor → New query → 貼上 `supabase/schema.sql` 整份 → **Run** → 看到 `Success. No rows returned`。
 
-> 全新資料庫**不用**跑 `001_llm_logic.sql`，那是給已經建過舊版資料庫的人補欄位用的。
+> 全新資料庫**不用**跑 `001_llm_logic.sql`、`003_tutor_action.sql`，那是給已經建過舊版資料庫的人補欄位用的。
+> 已經有資料庫的人：`001`、`003` 都要跑（可重複執行）；`py check_setup.py` 會列出還缺哪些欄位。
 
 ### 開放資料表權限（必跑）
 

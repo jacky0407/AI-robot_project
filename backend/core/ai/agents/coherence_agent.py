@@ -24,40 +24,45 @@ logger = logging.getLogger(__name__)
 
 
 # ── 預設的跨步驟一致性檢核規則 ──────────────────────────────────────────
-# 每條規則描述「哪個步驟的哪個面向」應該和「哪個步驟的哪個面向」相呼應
+# 每條規則描述「哪個步驟的哪個面向」應該和「哪個步驟的哪個面向」相呼應。
+#
+# 步驟編號依需求書的學前 IEP 九步驟（與前端 /student/modules 的步驟列一致）：
+#   1 案例整理  2 功能性現況  3 優勢與需求  4 優先排序  5 年度目標
+#   6 短期目標  7 支持策略    8 評量監測    9 一致性檢核
+# ⚠️ 規則內容與對應步驟仍待教授確認；之後應改為由資料庫設定（KNOWN_GAPS #11）。
 DEFAULT_COHERENCE_CHECKS = [
     {
         "name": "優勢與目標對應",
         "description": (
-            "步驟 1 描述的學生優勢，應在步驟 3 的 IEP 目標中被充分運用。"
+            "步驟 3 描述的幼兒優勢，應在步驟 5 的年度目標中被充分運用。"
             "若目標完全忽略了優勢，代表目標設計可能過於缺陷導向。"
         ),
-        "source_step_order": 1,
-        "source_aspect": "學生優勢描述",
-        "target_step_order": 3,
-        "target_aspect": "IEP 長期目標",
+        "source_step_order": 3,
+        "source_aspect": "幼兒優勢描述",
+        "target_step_order": 5,
+        "target_aspect": "年度目標",
     },
     {
         "name": "需求與策略對應",
         "description": (
-            "步驟 2 確認的特殊需求，應在步驟 5 的教學策略中有具體回應。"
+            "步驟 3 確認的特殊需求，應在步驟 7 的支持策略中有具體回應。"
             "每個重要需求都應有至少一個對應策略。"
         ),
-        "source_step_order": 2,
-        "source_aspect": "特殊需求清單",
-        "target_step_order": 5,
-        "target_aspect": "教學策略說明",
+        "source_step_order": 3,
+        "source_aspect": "特殊需求",
+        "target_step_order": 7,
+        "target_aspect": "支持策略",
     },
     {
         "name": "目標與評量對應",
         "description": (
-            "步驟 3 的 IEP 目標應可被步驟 7 的評量方式具體測量。"
+            "步驟 5 的年度目標應可被步驟 8 的評量方式具體測量。"
             "目標若無法量化或觀察，評量設計就沒有意義。"
         ),
-        "source_step_order": 3,
-        "source_aspect": "IEP 目標（含標準）",
-        "target_step_order": 7,
-        "target_aspect": "評量方式與標準",
+        "source_step_order": 5,
+        "source_aspect": "年度目標（含標準）",
+        "target_step_order": 8,
+        "target_aspect": "評量方式與監測標準",
     },
 ]
 
@@ -95,7 +100,7 @@ class CoherenceIssue:
 @dataclass
 class CoherenceResult:
     """整體一致性檢核結果"""
-    overall_coherent: bool
+    overall_coherent: bool | None   # None = 沒有任何規則可執行，無法下結論
     issues: list[CoherenceIssue]
     strengths: list[str]    # 做得好的地方
     summary: str            # 整體摘要
@@ -186,9 +191,16 @@ class CoherenceAgent:
                 },
             }
 
-        # 整體一致性判斷
-        overall_coherent = all(issue.is_ok for issue in issues)
         failed_issues = [iss for iss in issues if not iss.is_ok]
+
+        # 一條規則都沒跑到時不能說「一致」——那等於沒檢查卻給出通過的結論。
+        # overall_coherent 回 None，摘要說明還缺哪些步驟。
+        if not valid_checks:
+            overall_coherent = None
+            summary = self._build_insufficient_summary(step_map)
+        else:
+            overall_coherent = all(issue.is_ok for issue in issues)
+            summary = self._build_summary(overall_coherent, failed_issues)
 
         yield {
             "type": "coherence_complete",
@@ -206,7 +218,7 @@ class CoherenceAgent:
                     }
                     for iss in failed_issues
                 ],
-                "summary": self._build_summary(overall_coherent, failed_issues),
+                "summary": summary,
             },
         }
 
@@ -259,6 +271,19 @@ class CoherenceAgent:
             suggestion=data.get("suggestion", ""),
             go_to_step_order=target.step_order,
         )
+
+    def _build_insufficient_summary(self, step_map: dict[int, StepAnswer]) -> str:
+        """沒有任何規則可執行時，告訴學生要先完成哪些步驟。"""
+        needed = sorted({
+            order
+            for c in self.checks
+            for order in (c["source_step_order"], c["target_step_order"])
+            if order not in step_map
+        })
+        if not needed:
+            return "目前沒有可執行的跨步驟檢核規則。"
+        step_list = "、".join(f"步驟 {s}" for s in needed)
+        return f"尚未進行一致性檢核：需要先完成 {step_list} 的作答，才能比對前後是否一致。"
 
     def _build_summary(
         self,

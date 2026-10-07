@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS public.step_attempts (
     user_input_content TEXT NOT NULL,      -- 學生獨立作答內容 / 結構化輸出
     structured_data JSONB DEFAULT '{}'::jsonb, -- 結構化欄位 (傳遞給下一步用)
     status TEXT CHECK (status IN ('draft', 'submitted', 'passed', 'revision_required')) DEFAULT 'draft',
+    tutor_action TEXT CHECK (tutor_action IN ('evaluate', 'give_hint', 'encourage', 'escalate')), -- TutorAgent 決策；escalate 會進教師複核佇列
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
