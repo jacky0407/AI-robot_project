@@ -1,15 +1,17 @@
 "use client";
 
-<<<<<<< HEAD
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-=======
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
->>>>>>> origin/feature/signup_and_login
 
 type RoleType = "student" | "teacher" | null;
+
+// /auth/callback 失敗時會帶 ?error=xxx 導回首頁
+const CALLBACK_ERRORS: Record<string, string> = {
+  link_expired: "驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。",
+  profile: "無法讀取使用者資料，請稍後再試或聯絡管理員",
+  auth: "登入驗證失敗，請再試一次",
+};
 
 // 登入成功後的導向頁面（依 profiles.role 決定）；路徑改這裡即可
 const ROUTES = {
@@ -18,7 +20,16 @@ const ROUTES = {
   onboarding: "/onboarding", // 第一次登入，尚未完成註冊
 };
 
+// useSearchParams 需要包在 Suspense 裡，頁面其他部分才能預先渲染
 export default function Home() {
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
+  );
+}
+
+function HomeContent() {
   const router = useRouter();
   const [selectedRole, setSelectedRole] = useState<RoleType>(null);
   const [isLoginMode, setIsLoginMode] = useState(true);
@@ -30,21 +41,12 @@ export default function Home() {
     password: "",
   });
 
-<<<<<<< HEAD
-=======
-  // 學生工作區的練習狀態
-  const [currentStep, setCurrentStep] = useState(2);
-  const [studentAnswer, setStudentAnswer] = useState("");
-  const [unlockedPrompt, setUnlockedPrompt] = useState(1);
-  const [evalResult, setEvalResult] = useState<any>(null);
-
   // Google 登入相關狀態
   const supabase = createClient();
   const [googleLoading, setGoogleLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const router = useRouter();
 
   // 依資料庫 profiles.role 導向（身分以資料庫為準，不是以畫面上選的卡片為準）
   const redirectByRole = async (userId: string) => {
@@ -98,17 +100,10 @@ export default function Home() {
   };
 
   // 若從 /auth/callback 失敗導回（/?error=auth），顯示錯誤訊息
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const errorParam = params.get("error");
-    if (errorParam === "link_expired") {
-      setAuthError("驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。");
-    } else if (errorParam === "profile") {
-      setAuthError("無法讀取使用者資料，請稍後再試或聯絡管理員");
-    } else if (errorParam === "auth") {
-      setAuthError("登入驗證失敗，請再試一次");
-    }
-  }, []);
+  // 直接由網址推導，不在 effect 裡 setState（避免多一次 render）
+  const searchParams = useSearchParams();
+  const callbackError = CALLBACK_ERRORS[searchParams.get("error") ?? ""] ?? "";
+  const shownError = authError || callbackError;
 
   // Google 登入：會整頁跳轉到 Google，之後由 /auth/callback 接手
   const handleGoogleLogin = async () => {
@@ -129,7 +124,6 @@ export default function Home() {
     }
   };
 
->>>>>>> origin/feature/signup_and_login
   const handleSelectRole = (role: RoleType) => {
     setSelectedRole(role);
     setIsLoginMode(true);
@@ -140,15 +134,6 @@ export default function Home() {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-<<<<<<< HEAD
-  // 登入送出處理（轉跳到對應的獨立路由）
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (selectedRole === "student") {
-      router.push("/student/modules");
-    } else {
-      router.push("/admin/tools");
-=======
   // 信箱登入 / 註冊（原本是直接切換畫面的模擬版本，現在改為串接 Supabase）
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -179,7 +164,6 @@ export default function Home() {
       const ok = await redirectByRole(data.user.id);
       if (!ok) setSubmitting(false);
       return;
->>>>>>> origin/feature/signup_and_login
     }
 
     // ---- 註冊 ----（不傳 role：新帳號一律是學生，教師由後台手動升級）
@@ -187,7 +171,7 @@ export default function Home() {
       email: formData.email,
       password: formData.password,
       options: {
-        data: { full_name: formData.name, profession: formData.profession },
+        data: { full_name: formData.name }, // 職業在 /onboarding 填寫
         emailRedirectTo: `${window.location.origin}/auth/callback`,
       },
     });
@@ -237,9 +221,6 @@ export default function Home() {
         </p>
       </div>
 
-<<<<<<< HEAD
-      {/* 狀態 A：雙卡片選擇入口 */}
-=======
       {/* 已登入提示：可繼續使用或登出（測試其他帳號時請先登出） */}
       {existingUser && (
         <div style={{ width: "100%", maxWidth: "380px", marginBottom: "16px", padding: "12px 14px", borderRadius: "8px", backgroundColor: "rgba(56, 189, 248, 0.12)", border: "1px solid rgba(56, 189, 248, 0.4)", color: "#bae6fd", fontSize: "13px" }}>
@@ -264,9 +245,9 @@ export default function Home() {
       )}
 
       {/* Google 登入錯誤訊息 */}
-      {authError && (
+      {shownError && (
         <div style={{ width: "100%", maxWidth: "380px", marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", backgroundColor: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#fca5a5", fontSize: "13px" }}>
-          {authError}
+          {shownError}
         </div>
       )}
 
@@ -278,7 +259,6 @@ export default function Home() {
       )}
 
       {/* 狀態 A：雙卡片選擇 */}
->>>>>>> origin/feature/signup_and_login
       {selectedRole === null && (
         <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", justifyContent: "center" }}>
           {/* 學生卡片 */}

@@ -1,13 +1,134 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { createClient } from "@/utils/supabase/client";
+import { streamSSE } from "@/utils/api";
+
+type Step = {
+  id: string;
+  module_id: string;
+  step_order: number;
+  step_title: string;
+  pass_score: number | null;
+};
+
+type Module = {
+  id: string;
+  title: string;
+  description: string | null;
+  steps: Step[];
+};
+
+type AttemptStatus = "draft" | "submitted" | "passed" | "revision_required";
+
+type CoherenceIssue = { check_name: string; problem: string; suggestion: string; go_to_step_order: number };
+
+type CoherenceResult = {
+  overall_coherent: boolean | null; // null：作答的步驟還不夠，沒有任何規則可檢核
+  summary: string;
+  strengths: string[];
+  issues: CoherenceIssue[];
+};
+
+const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: string }> = {
+  draft: { text: "草稿", color: "#475569", bg: "#f1f5f9" },
+  submitted: { text: "評分中", color: "#92400e", bg: "#fef3c7" },
+  passed: { text: "已通過", color: "#166534", bg: "#dcfce7" },
+  revision_required: { text: "需修改", color: "#9a3412", bg: "#ffedd5" },
+};
 
 export default function StudentModulesPage() {
-  const [currentStep, setCurrentStep] = useState(2);
-  const [studentAnswer, setStudentAnswer] = useState("");
-  const [unlockedPrompt, setUnlockedPrompt] = useState(1);
-  const [evalResult, setEvalResult] = useState<any>(null);
+  const router = useRouter();
+  const [supabase] = useState(() => createClient());
+
+  const [userId, setUserId] = useState("");
+  const [modules, setModules] = useState<Module[]>([]);
+  const [statusByStep, setStatusByStep] = useState<Record<string, AttemptStatus>>({});
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const [checkingModule, setCheckingModule] = useState<string | null>(null);
+  const [coherence, setCoherence] = useState<Record<string, CoherenceResult | string>>({});
+
+  useEffect(() => {
+    const load = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        router.replace("/");
+        return;
+      }
+      setUserId(user.id);
+
+      const { data: moduleRows, error: moduleError } = await supabase
+        .from("learning_modules")
+        .select("id, title, description, module_steps(id, module_id, step_order, step_title, pass_score)")
+        .eq("is_published", true)
+        .order("created_at");
+
+      if (moduleError) {
+        setErrorMsg("讀取課程模組失敗：" + moduleError.message);
+        setLoading(false);
+        return;
+      }
+
+      setModules(
+        (moduleRows ?? []).map((m) => ({
+          id: m.id,
+          title: m.title,
+          description: m.description,
+          steps: [...((m.module_steps as Step[]) ?? [])].sort((a, b) => a.step_order - b.step_order),
+        }))
+      );
+
+      // 每個步驟取最新一次作答的狀態（attempt_number 由大到小，第一筆就是最新）
+      const { data: attempts } = await supabase
+        .from("step_attempts")
+        .select("step_id, status, attempt_number")
+        .eq("user_id", user.id)
+        .order("attempt_number", { ascending: false });
+
+      const latest: Record<string, AttemptStatus> = {};
+      for (const a of attempts ?? []) {
+        if (!(a.step_id in latest)) latest[a.step_id] = a.status as AttemptStatus;
+      }
+      setStatusByStep(latest);
+      setLoading(false);
+    };
+
+    load();
+  }, [supabase, router]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.push("/");
+    router.refresh();
+  };
+
+  const runCoherenceCheck = async (moduleId: string) => {
+    setCheckingModule(moduleId);
+    setCoherence((prev) => ({ ...prev, [moduleId]: "檢核中…" }));
+    try {
+      await streamSSE(
+        `/api/practice/modules/${moduleId}/coherence-check?user_id=${encodeURIComponent(userId)}`,
+        { method: "POST" },
+        (event, data) => {
+          if (event === "coherence_complete") {
+            setCoherence((prev) => ({ ...prev, [moduleId]: data as unknown as CoherenceResult }));
+          } else if (event === "error") {
+            setCoherence((prev) => ({ ...prev, [moduleId]: `檢核失敗：${String(data.message ?? "")}` }));
+          }
+        }
+      );
+    } catch (err) {
+      setCoherence((prev) => ({ ...prev, [moduleId]: err instanceof Error ? err.message : "檢核失敗" }));
+    } finally {
+      setCheckingModule(null);
+    }
+  };
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f8fafc", color: "#1e293b", fontFamily: "sans-serif" }}>
@@ -17,117 +138,91 @@ export default function StudentModulesPage() {
           <span style={{ backgroundColor: "#2563eb", color: "#fff", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", fontWeight: "bold" }}>
             學生實踐端
           </span>
-          <span style={{ fontWeight: "bold", fontSize: "15px" }}>學前 IEP 逐步撰寫：案例 小宇（自閉症特質）</span>
+          <span style={{ fontWeight: "bold", fontSize: "15px" }}>我的培訓模組</span>
         </div>
-        <Link
-          href="/"
-          style={{ padding: "6px 12px", fontSize: "12px", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", backgroundColor: "#fff", textDecoration: "none", color: "#1e293b" }}
+        <button
+          onClick={handleSignOut}
+          style={{ padding: "6px 12px", fontSize: "12px", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", backgroundColor: "#fff", color: "#1e293b" }}
         >
-          ← 登出 / 返回首頁
-        </Link>
+          登出
+        </button>
       </header>
 
-      {/* 步驟橫條 */}
-      <div style={{ display: "flex", gap: "8px", padding: "10px 24px", backgroundColor: "#fff", borderBottom: "1px solid #e2e8f0", overflowX: "auto" }}>
-        {["1.案例整理", "2.功能性現況", "3.優勢與需求", "4.優先排序", "5.年度目標", "6.短期目標", "7.支持策略", "8.評量監測", "9.一致性檢核"].map((step, idx) => (
-          <button
-            key={step}
-            onClick={() => setCurrentStep(idx + 1)}
-            style={{
-              padding: "6px 12px",
-              borderRadius: "6px",
-              border: "none",
-              fontSize: "12px",
-              cursor: "pointer",
-              fontWeight: currentStep === idx + 1 ? "bold" : "normal",
-              backgroundColor: currentStep === idx + 1 ? "#2563eb" : "#f1f5f9",
-              color: currentStep === idx + 1 ? "#fff" : "#475569"
-            }}
-          >
-            {step}
-          </button>
-        ))}
-      </div>
+      <main style={{ maxWidth: "960px", margin: "0 auto", padding: "24px 16px", display: "flex", flexDirection: "column", gap: "20px" }}>
+        {loading && <p style={{ color: "#64748b", fontSize: "14px" }}>載入模組中…</p>}
 
-      {/* 工作區主體 */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1fr", gap: "16px", padding: "16px", maxWidth: "1400px", margin: "0 auto" }}>
-        {/* 左：案例情境 */}
-        <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "16px", border: "1px solid #e2e8f0" }}>
-          <h3 style={{ fontSize: "14px", fontWeight: "bold", borderBottom: "1px solid #e2e8f0", paddingBottom: "8px", margin: "0 0 12px 0" }}>
-            步驟 {currentStep} 案例資料
-          </h3>
-          <p style={{ fontSize: "13px", lineHeight: "1.6", color: "#475569" }}>
-            <strong>幼兒基本資料：</strong>小宇，4歲2個月。<br /><br />
-            <strong>日常情境觀察：</strong>角落時間常獨自排列積木，他人拿取時會推人；點心時間能自行用湯匙進食，但若未按固定座位入座會尖叫。<br /><br />
-            <strong style={{ color: "#2563eb" }}>本步驟任務：</strong>請撰寫小宇在自然情境中的「功能性現況」初稿。
-          </p>
-        </div>
-
-        {/* 中：獨立作答 */}
-        <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "16px", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column" }}>
-          <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 12px 0" }}>學生獨立作答區</h3>
-          <textarea
-            rows={12}
-            value={studentAnswer}
-            onChange={(e) => setStudentAnswer(e.target.value)}
-            placeholder="請輸入現況描述（例：小宇在點心與角落情境下的參與度與支持需求...）"
-            style={{ width: "100%", padding: "12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline: "none", resize: "none" }}
-          />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
-            <span style={{ fontSize: "12px", color: "#64748b" }}>字數：{studentAnswer.length} 字</span>
-            <button
-              onClick={() => {
-                setEvalResult({
-                  score: 85,
-                  feedback: "已能客觀陳述自然情境，建議具體指出視覺提示之介入方式。",
-                  evidence: `依作答：「${studentAnswer.slice(0, 25)}...」`
-                });
-              }}
-              style={{ padding: "8px 16px", backgroundColor: "#2563eb", color: "#fff", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "13px" }}
-            >
-              送出並進行 AI 初評
-            </button>
+        {errorMsg && (
+          <div style={{ padding: "10px 14px", borderRadius: "8px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: "13px" }}>
+            {errorMsg}
           </div>
-        </div>
+        )}
 
-        {/* 右：分層提示與 AI 回饋 */}
-        <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "16px", border: "1px solid #e2e8f0" }}>
-          <h3 style={{ fontSize: "14px", fontWeight: "bold", borderBottom: "1px solid #e2e8f0", paddingBottom: "8px", margin: "0 0 12px 0" }}>
-            AI 規準分析與分層提示
-          </h3>
-          {evalResult ? (
-            <div style={{ backgroundColor: "#eff6ff", border: "1px solid #bfdbfe", padding: "12px", borderRadius: "8px", marginBottom: "16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold", color: "#1e3a8a", fontSize: "13px" }}>
-                <span>AI 證據初評</span>
-                <span>{evalResult.score} 分</span>
+        {!loading && !errorMsg && modules.length === 0 && (
+          <p style={{ color: "#64748b", fontSize: "14px" }}>目前沒有已發布的培訓模組。</p>
+        )}
+
+        {modules.map((mod) => {
+          const result = coherence[mod.id];
+          return (
+            <section key={mod.id} style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" }}>
+              <h2 style={{ fontSize: "17px", fontWeight: "bold", margin: "0 0 4px 0" }}>{mod.title}</h2>
+              {mod.description && <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 16px 0" }}>{mod.description}</p>}
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {mod.steps.map((step) => {
+                  const status = statusByStep[step.id];
+                  const badge = status ? STATUS_LABEL[status] : null;
+                  return (
+                    <Link
+                      key={step.id}
+                      href={`/student/practice?step_id=${step.id}&module_id=${mod.id}`}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", borderRadius: "8px", border: "1px solid #e2e8f0", backgroundColor: "#f8fafc", textDecoration: "none", color: "#1e293b" }}
+                    >
+                      <span style={{ fontSize: "14px" }}>
+                        <strong style={{ color: "#2563eb", marginRight: "8px" }}>{step.step_order}.</strong>
+                        {step.step_title}
+                      </span>
+                      <span style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", color: "#64748b" }}>
+                        {step.pass_score != null && <span>門檻 {step.pass_score} 分</span>}
+                        <span style={{ padding: "2px 8px", borderRadius: "9999px", color: badge?.color ?? "#64748b", backgroundColor: badge?.bg ?? "#f1f5f9" }}>
+                          {badge?.text ?? "未作答"}
+                        </span>
+                      </span>
+                    </Link>
+                  );
+                })}
+                {mod.steps.length === 0 && <p style={{ fontSize: "13px", color: "#94a3b8" }}>此模組尚未設定步驟。</p>}
               </div>
-              <p style={{ fontSize: "12px", margin: "8px 0", color: "#334155" }}>{evalResult.feedback}</p>
-              <span style={{ fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>{evalResult.evidence}</span>
-            </div>
-          ) : (
-            <p style={{ fontSize: "12px", color: "#94a3b8" }}>送出作答後將產生分析回饋。</p>
-          )}
 
-          <div style={{ marginTop: "12px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-              <span style={{ fontSize: "12px", fontWeight: "bold" }}>分層提示（第 {unlockedPrompt}/3 層）</span>
-              {unlockedPrompt < 3 && (
+              {/* 跨步驟一致性檢核（CoherenceAgent） */}
+              <div style={{ marginTop: "16px", borderTop: "1px solid #e2e8f0", paddingTop: "14px" }}>
                 <button
-                  onClick={() => setUnlockedPrompt((p) => p + 1)}
-                  style={{ fontSize: "11px", color: "#2563eb", border: "none", background: "none", cursor: "pointer", textDecoration: "underline" }}
+                  onClick={() => runCoherenceCheck(mod.id)}
+                  disabled={checkingModule !== null || !userId}
+                  style={{ padding: "8px 14px", borderRadius: "8px", border: "none", backgroundColor: "#0f172a", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: checkingModule ? "not-allowed" : "pointer", opacity: checkingModule ? 0.6 : 1 }}
                 >
-                  展開下一層提示
+                  {checkingModule === mod.id ? "檢核中…" : "跨步驟一致性檢核"}
                 </button>
-              )}
-            </div>
-            <div style={{ fontSize: "12px", backgroundColor: "#f8fafc", padding: "8px", borderRadius: "6px", border: "1px solid #e2e8f0", lineHeight: "1.5" }}>
-              {unlockedPrompt === 1 && "第 1 層【重新思考】：請確認描述是否包含幼兒的參與度而非僅有情緒反應？"}
-              {unlockedPrompt === 2 && "第 2 層【方向提示】：建議寫出幼兒能獨立完成的部分，以及需要成人介入支持的具體時機。"}
-              {unlockedPrompt === 3 && "第 3 層【結構提示】：建議採用「在 [作息活動] 中，幼兒能 [現有能力]，但在 [困難節點] 時需要 [支持方式]」之句型。"}
-            </div>
-          </div>
-        </div>
-      </div>
+
+                {typeof result === "string" && <p style={{ fontSize: "13px", color: "#475569", marginTop: "10px" }}>{result}</p>}
+
+                {result && typeof result === "object" && (
+                  <div style={{ marginTop: "12px", padding: "12px", borderRadius: "8px", fontSize: "13px", lineHeight: 1.6, backgroundColor: result.overall_coherent === null ? "#f8fafc" : result.overall_coherent ? "#f0fdf4" : "#fff7ed", border: "1px solid #e2e8f0" }}>
+                    <p style={{ margin: 0, fontWeight: "bold" }}>{result.summary}</p>
+                    {result.issues.map((iss) => (
+                      <div key={iss.check_name} style={{ marginTop: "8px" }}>
+                        <strong>{iss.check_name}</strong>（建議修改步驟 {iss.go_to_step_order}）
+                        <div>{iss.problem}</div>
+                        <div style={{ color: "#2563eb" }}>{iss.suggestion}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </main>
     </div>
   );
 }

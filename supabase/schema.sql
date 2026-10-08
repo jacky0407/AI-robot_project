@@ -15,8 +15,12 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     full_name TEXT,
     role TEXT CHECK (role IN ('owner', 'assistant', 'student', 'explorer')) DEFAULT 'student',
     is_active BOOLEAN DEFAULT true,
+    profession TEXT,                                   -- 職業 / 身分（/onboarding 填寫）
+    registration_completed BOOLEAN NOT NULL DEFAULT false, -- 是否已完成 /onboarding；false 時 middleware 導回 /onboarding
+    terms_accepted_at TIMESTAMPTZ,                     -- 同意服務條款與隱私權政策的時間
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
+-- complete_registration() 定義在 supabase/migrations/004_registration.sql
 
 -- 課程表 (正式課程模式)
 CREATE TABLE IF NOT EXISTS public.courses (
