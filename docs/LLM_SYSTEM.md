@@ -97,6 +97,13 @@
 > ⚠️ 這個結構是本專案自訂的——`error_taxonomy` 在 schema 一直存在，
 > 但 `docs/api.md` 從未定義過它的格式。若教授有不同想法，
 > 改 `error_detector.parse_error_taxonomy()` 即可，不影響評分流程。
+>
+> 也接受 `error_code` / `name` 這組欄位名（資料庫既有機器人用的是這組）。
+> 格式無法辨識的項目會被略過，`py check_setup.py` 會列出「填了但沒生效」的項目數。
+
+> ⚠️ `teaching_strategy` 只寫 `{"hint_levels": ["重新思考", "提供方向"]}`（只有層級名稱、沒有內容）
+> **不算**教授撰寫的提示——系統不會把名稱當成提示內容，仍走 AI 依 Rubric 生成的路線。
+> 要讓學生看到教授寫的提示，請用上面 `hints[].content` 的格式。
 
 分數告訴教授「這個學生做得好不好」，錯誤分類才告訴教授「全班最常卡在哪一關」。
 
@@ -173,6 +180,36 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 
 前端因此可以顯示「還有 2 層提示可用」而不自動扣掉，學生按下去才算數。
 
+**已用提示數是「整個步驟」累計的**（同一學生、同一步驟的所有作答加總），
+不是只算上一次作答。給提示的那次作答不評分，若只算上一次，下一輪會從 0 重算，
+第 2 層以後永遠出不來。提示內容依最近一次**有評分**的作答找最弱構面。
+
+---
+
+## 6.1 TutorAgent 決策規則
+
+| 情況 | 行動 |
+|------|------|
+| 第一次作答，或上一次只拿到提示沒評分 | 評分 |
+| 上次分數 ≥ 門檻 | 評分 |
+| 差門檻不到 10 分，且嘗試 ≤ 3 次 | 鼓勵 + 評分 |
+| 分數 60～門檻 | 給下一層提示 |
+| 分數 < 60，先前**被評分** ≤ 2 次 | 給下一層提示 |
+| 分數 < 60，先前**被評分** ≥ 3 次 | 建議找老師（escalate） |
+
+- 「給提示」只是決策；給不給、給第幾層由 `HintEngine` 依 `teaching_strategy` 決定
+  （`max_auto_hints`、`trigger`）。沒有可給的提示時**改為直接評分**，不會無限給提示。
+- 只拿到提示、沒評分的作答**不算**進轉介老師的次數。
+- 每次決策寫入 `step_attempts.tutor_action`（migration 003）。`escalate` 的作答沒有 AI 初評，
+  但會出現在 `/api/review/pending`，`review_reasons` 含 `escalated`。
+- 只給提示或轉介、沒有評分的作答，狀態改為 `revision_required`（不會停在 `submitted`）。
+
+## 6.2 跨步驟一致性檢核
+
+預設規則依九步驟編號（3 優勢與需求 → 5 年度目標、3 → 7 支持策略、5 → 8 評量監測），
+**仍待教授確認**。學生的作答湊不出任何一條規則時，`coherence_complete.overall_coherent`
+回 `null`，摘要說明還缺哪些步驟——不會在沒檢查的情況下回「一致」。
+
 ---
 
 ## 7. 學習歷程記錄
@@ -188,8 +225,16 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 「系統自動給的提示」和「學生自己判斷需要而要求的提示」在學習歷程分析上意義完全不同，
 所以分開記錄。
 
-`ai_evaluations` 記下 `confidence` 與 `needs_teacher_review`，
-教師複核佇列可以優先排「AI 自己沒把握」的那些。
+`ai_evaluations` 記下 `confidence` 與 `needs_teacher_review`；`/api/review/pending` 依此排序，
+`review_reasons` 會標出要優先處理的原因：
+
+| 值 | 來源 |
+|----|------|
+| `escalated` | `step_attempts.tutor_action = 'escalate'`（TutorAgent 建議找老師） |
+| `low_confidence` | `ai_evaluations.needs_teacher_review`（信心值 < 0.7） |
+| `step_requires_review` | `module_steps.require_teacher_review`（教授設定的強制審核點） |
+
+`/api/review/submissions/{id}` 也會回傳 `confidence`、`needs_teacher_review`、`detected_errors` 與 `tutor_action`。
 
 ---
 
@@ -215,13 +260,15 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 
 | 檔案 | 測試數 |
 |------|-------|
-| `test_llm_utils.py` | 21 |
+| `test_llm_utils.py` | 26 |
 | `test_hint_engine.py` | 31 |
 | `test_error_detector.py` | 16 |
 | `test_rubric_formatter.py` | 22 |
 | `test_evaluator_agent.py` | 16 |
-| `test_tutor_agent.py` | 14 |
-| `test_practice_api.py` | 26 |
+| `test_tutor_agent.py` | 16 |
+| `test_coherence_agent.py` | 12 |
+| `test_practice_api.py` | 36 |
+| `test_review_api.py` | 11 |
 
 全部 mock LLM，不消耗 Gemini 額度、不碰資料庫。詳見 [CONTRIBUTING.md](./CONTRIBUTING.md) 的測試章節。
 

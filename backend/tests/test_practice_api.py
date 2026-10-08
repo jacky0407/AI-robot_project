@@ -63,6 +63,10 @@ class FakeTable:
         self.filters.append((column, value))
         return self
 
+    def in_(self, column, values):
+        self.filters.append((column, tuple(values)))
+        return self
+
     def order(self, *args, **kwargs):
         return self
 
@@ -112,10 +116,22 @@ def _project(row: dict, selected: str) -> dict:
 
 
 class FakeSupabase:
-    def __init__(self, step_row: dict, prev_attempts: list, hints_count: int = 0):
+    def __init__(
+        self,
+        step_row: dict,
+        prev_attempts: list,
+        hints_count: int = 0,
+        *,
+        hint_logs: dict[str, int] | None = None,
+        fail_tutor_action_update: bool = False,
+    ):
         self.step_row = step_row
         self.prev_attempts = prev_attempts
         self.hints_count = hints_count
+        # 給了 hint_logs（attempt_id → 提示數）時，prompt_logs 的 count
+        # 會依查詢條件真的去加總，才能抓到「只算上一次作答」這類錯誤
+        self.hint_logs = hint_logs
+        self.fail_tutor_action_update = fail_tutor_action_update
         self.calls: list[dict] = []
 
     def table(self, name):
@@ -130,7 +146,13 @@ class FakeSupabase:
             # —— 這樣才能真實重現「只選了 attempt_number 卻讀 id」的錯誤
             return FakeResult([_project(row, q.selected) for row in self.prev_attempts])
         if key == ("prompt_logs", "select"):
-            return FakeResult([], count=self.hints_count)
+            if self.hint_logs is None:
+                return FakeResult([], count=self.hints_count)
+            ids: set[str] = set()
+            for column, value in q.filters:
+                if column == "attempt_id":
+                    ids.update(value if isinstance(value, tuple) else (value,))
+            return FakeResult([], count=sum(self.hint_logs.get(i, 0) for i in ids))
         if key == ("step_attempts", "insert"):
             return FakeResult([{"id": "attempt-new"}])
         if key == ("ai_evaluations", "insert"):
@@ -138,6 +160,8 @@ class FakeSupabase:
         if key == ("prompt_logs", "insert"):
             return FakeResult([{"id": "log-new"}])
         if key == ("step_attempts", "update"):
+            if self.fail_tutor_action_update and "tutor_action" in (q.payload or {}):
+                raise RuntimeError('column "tutor_action" does not exist')
             return FakeResult([{"id": "attempt-new"}])
         return FakeResult([])
 
@@ -209,6 +233,15 @@ def parse_sse(text: str) -> list[tuple[str, dict]]:
         if event is not None:
             events.append((event, data))
     return events
+
+
+def status_updates(fake_db: FakeSupabase) -> list[str]:
+    """step_attempts 的 status 更新（另有一筆 tutor_action 更新，這裡排除）"""
+    return [
+        c["payload"]["status"]
+        for c in fake_db.find("step_attempts", "update")
+        if "status" in c["payload"]
+    ]
 
 
 def submit(fake_db: FakeSupabase, llm_responses: list[str], body: dict = None):
@@ -323,7 +356,7 @@ class TestSecondAttempt:
         submit(fake_db, responses)
 
         call = fake_db.find("prompt_logs", "select")[0]
-        assert ("attempt_id", "attempt-prev") in call["filters"]
+        assert ("attempt_id", ("attempt-prev",)) in call["filters"]
 
     def test_attempt_number_increments(self):
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=self.PREV, hints_count=1)
@@ -432,16 +465,14 @@ class TestPersistence:
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
         submit(fake_db, self.RESPONSES)
 
-        payload = fake_db.find("step_attempts", "update")[0]["payload"]
-        assert payload["status"] == "passed"
+        assert status_updates(fake_db) == ["passed"]
 
     def test_status_updated_to_revision_required(self):
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
         submit(fake_db, [dim_response("A", 1), dim_response("B", 1),
                          dim_response("C", 1), SYNTH_RESPONSE])
 
-        payload = fake_db.find("step_attempts", "update")[0]["payload"]
-        assert payload["status"] == "revision_required"
+        assert status_updates(fake_db) == ["revision_required"]
 
 
 # ==============================================================================
@@ -654,3 +685,190 @@ class TestHintPersistence:
         hint = dict(events)["hint"]
         assert hint["level"] == 2
         assert hint["trigger"] == "student_request"
+
+
+# ──────────────────────────────────────────
+# 分層提示要能逐層往下（整個步驟累計）
+# ──────────────────────────────────────────
+
+AUTO_THREE_LEVELS = {
+    "hints": [
+        {"level": 1, "trigger": "score_below_threshold", "content": "第一層：你觀察到哪個行為？"},
+        {"level": 2, "trigger": "score_below_threshold", "content": "第二層：補上情境與頻率"},
+        {"level": 3, "trigger": "score_below_threshold", "content": "第三層：參考句型"},
+    ],
+    "max_auto_hints": 3,
+    "personalize": False,
+}
+
+LOW_DIMS = [{"dimension": "客觀事實辨識", "score": 1, "max_score": 4, "reason": "只列診斷"}]
+
+# 新到舊：第 3 次評分 45 分；第 2 次只拿到提示（沒評分）；第 1 次評分 40 分
+HISTORY_AFTER_ONE_HINT = [
+    {"id": "attempt-3", "attempt_number": 3, "user_input_content": "改過的作答",
+     "ai_evaluations": [{"total_score": 45, "dimension_scores": LOW_DIMS}]},
+    {"id": "attempt-2", "attempt_number": 2, "user_input_content": "第二版",
+     "ai_evaluations": []},
+    {"id": "attempt-1", "attempt_number": 1, "user_input_content": "小明有自閉症。",
+     "ai_evaluations": [{"total_score": 40, "dimension_scores": LOW_DIMS}]},
+]
+
+
+class TestHintProgression:
+
+    def test_hints_used_counts_whole_step_not_only_last_attempt(self):
+        """
+        回歸：舊版只算「上一次作答」的 prompt_logs。給提示那次不評分，
+        下一輪上一次作答換成評分那次 → hints_used 又變 0 → 永遠只拿到第 1 層。
+        """
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},      # 第 1 層提示記在第 2 次作答底下
+        )
+        _, events = submit_with_agents(fake_db, [])
+
+        hint = dict(events)["hint"]
+        assert hint["level"] == 2
+        assert hint["content"].startswith("第二層")
+
+    def test_prompt_logs_queried_for_all_attempts_of_step(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},
+        )
+        submit_with_agents(fake_db, [])
+
+        call = fake_db.find("prompt_logs", "select")[0]
+        assert ("attempt_id", ("attempt-3", "attempt-2", "attempt-1")) in call["filters"]
+
+    def test_all_levels_used_falls_back_to_evaluation(self):
+        """三層都給過了 → 不再硬擠提示，改為直接評分"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-1": 1, "attempt-2": 2},
+        )
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES)
+
+        names = [e for e, _ in events]
+        assert "hint" not in names
+        assert "score_complete" in names
+
+
+# ──────────────────────────────────────────
+# TutorAgent 決策落庫（給教師複核佇列用）
+# ──────────────────────────────────────────
+
+class TestTutorActionPersistence:
+
+    LOW_PREV = [{"id": "attempt-prev", "attempt_number": 1,
+                 "ai_evaluations": [{"total_score": 45, "dimension_scores": LOW_DIMS}]}]
+
+    def _updates(self, fake_db) -> list[dict]:
+        return [c["payload"] for c in fake_db.find("step_attempts", "update")]
+
+    def test_evaluate_decision_is_recorded(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        assert {"tutor_action": "evaluate"} in self._updates(fake_db)
+
+    def test_hint_only_attempt_becomes_revision_required(self):
+        """只給提示沒評分的作答，狀態不能永遠停在 submitted"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.LOW_PREV,
+        )
+        _, events = submit_with_agents(fake_db, [])
+
+        assert "hint" in dict(events)
+        updates = self._updates(fake_db)
+        assert {"tutor_action": "give_hint"} in updates
+        assert {"status": "revision_required"} in updates
+        assert fake_db.find("ai_evaluations", "insert") == []
+
+    def test_escalation_is_recorded_for_teacher_queue(self):
+        """已被評分 3 次且仍低於 60 分 → ESCALATE，要記下來讓老師看得到"""
+        prev = [
+            {"id": f"attempt-{n}", "attempt_number": n,
+             "ai_evaluations": [{"total_score": 30, "dimension_scores": LOW_DIMS}]}
+            for n in (3, 2, 1)
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=prev, hints_count=1)
+        _, events = submit_with_agents(fake_db, [])
+
+        assert "escalation" in dict(events)
+        updates = self._updates(fake_db)
+        assert {"tutor_action": "escalate"} in updates
+        assert {"status": "revision_required"} in updates
+
+    def test_missing_column_does_not_break_scoring(self):
+        """還沒跑 migration 003 時，寫 tutor_action 失敗不能讓評分中斷"""
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[], fail_tutor_action_update=True)
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES)
+
+        names = [e for e, _ in events]
+        assert "error" not in names
+        assert "score_complete" in names
+        assert fake_db.find("ai_evaluations", "insert")
+
+
+# ──────────────────────────────────────────
+# GET /hints
+# ──────────────────────────────────────────
+
+def get_hints(fake_db, *, reveal: bool, hint_llm=None):
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=fake_db):
+        practice.hint_engine = HintEngine(llm=hint_llm or _AsyncMock())
+        return client.get(
+            "/api/practice/sessions/test-session/hints",
+            params={"user_id": BODY["user_id"], "step_id": "step-1", "reveal": reveal},
+        )
+
+
+class TestHintsEndpoint:
+
+    def test_peek_does_not_log_or_consume(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},
+        )
+        res = get_hints(fake_db, reveal=False)
+
+        data = res.json()["data"]
+        assert data["hints_used"] == 1          # 整個步驟累計
+        assert data["next_level_available"] is True
+        assert fake_db.find("prompt_logs", "insert") == []
+
+    def test_reveal_gives_next_level_and_logs_on_latest_attempt(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},
+        )
+        res = get_hints(fake_db, reveal=True)
+
+        assert res.json()["data"]["hint"]["level"] == 2
+        logged = fake_db.find("prompt_logs", "insert")[0]["payload"]
+        assert logged["attempt_id"] == "attempt-3"
+        assert logged["hint_trigger"] == "student_request"
+
+    def test_generated_hint_uses_latest_evaluated_attempt(self):
+        """
+        教授沒設定提示時要依最弱構面生成。上一次若只拿到提示（沒評分），
+        要往前找有評分的作答，而不是回「沒有提示可用」。
+        """
+        history = [
+            {"id": "attempt-2", "attempt_number": 2, "user_input_content": "第二版",
+             "ai_evaluations": []},
+            {"id": "attempt-1", "attempt_number": 1, "user_input_content": "小明有自閉症。",
+             "ai_evaluations": [{"total_score": 40, "dimension_scores": LOW_DIMS}]},
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=history, hint_logs={})
+        res = get_hints(fake_db, reveal=False)
+
+        assert res.json()["data"]["next_level_available"] is True

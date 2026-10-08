@@ -66,6 +66,22 @@ class TestParseErrorTaxonomy:
         ])
         assert [r["code"] for r in result] == ["ok"]
 
+    def test_accepts_error_code_and_name_from_existing_data(self):
+        """
+        回歸（實測發現）：資料庫既有機器人用的是 error_code / name，
+        舊版只認 code / label → 解析成空清單，錯誤偵測被靜默關掉。
+        """
+        result = parse_error_taxonomy([
+            {"name": "過度依賴標籤", "error_code": "ERR_LABELING", "description": "以診斷標籤代替行為"},
+        ])
+        assert result == [{
+            "code": "ERR_LABELING",
+            "label": "過度依賴標籤",
+            "description": "以診斷標籤代替行為",
+            "severity": DEFAULT_SEVERITY,
+            "related_dimension": None,
+        }]
+
     def test_invalid_severity_falls_back(self):
         result = parse_error_taxonomy([{"code": "a", "label": "A", "severity": "超級嚴重"}])
         assert result[0]["severity"] == DEFAULT_SEVERITY

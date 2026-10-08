@@ -165,33 +165,25 @@ async def submit_answer(
         error_taxonomy = tool.get("error_taxonomy")
 
         # ── 查詢學生歷程，建立 StudentContext ──────────────────────
-        # 一次查回上一次嘗試的 id、次數與評分，避免重複往返
+        # 一次查回此步驟所有嘗試的 id、次數與評分（新到舊），避免重複往返
         prev_attempts = (
             db.table("step_attempts")
             .select("id, attempt_number, ai_evaluations(total_score, dimension_scores)")
             .eq("user_id", body.user_id)
             .eq("step_id", body.step_id)
             .order("attempt_number", desc=True)
-            .limit(1)
             .execute()
         )
+        attempts = prev_attempts.data or []
 
-        last_attempt = prev_attempts.data[0] if prev_attempts.data else None
+        last_attempt = attempts[0] if attempts else None
 
         next_attempt_number = (last_attempt["attempt_number"] + 1) if last_attempt else 1
         last_score_percent = _extract_last_score_percent(last_attempt)
 
-        # 查詢上一次嘗試已使用的提示次數（沒有前次嘗試就不用查，
-        # 否則會拿字串去比對 UUID 欄位而讓查詢直接報錯）
-        hints_used = 0
-        if last_attempt:
-            hints_res = (
-                db.table("prompt_logs")
-                .select("id", count="exact")
-                .eq("attempt_id", last_attempt["id"])
-                .execute()
-            )
-            hints_used = hints_res.count or 0
+        # 已用提示數是「整個步驟」累計的：給提示的那次作答不評分，
+        # 若只算上一次作答，下一輪又從 0 開始，自動提示會永遠停在第 1 層
+        hints_used = _count_hints_used(db, attempts)
 
         student_context = StudentContext.from_db(
             attempt_number=next_attempt_number,
@@ -200,6 +192,8 @@ async def submit_answer(
             pass_threshold=float(pass_threshold),
             last_dimension_scores=_extract_last_dimension_scores(last_attempt),
             requested_hint=body.request_hint,
+            # 只拿到提示、沒評分的作答不算進「轉介老師」的次數
+            evaluated_attempts=sum(1 for a in attempts if _extract_last_score_percent(a) is not None),
         )
 
         # ── 寫入學生作答記錄 ────────────────────────────────────────
@@ -228,6 +222,7 @@ async def submit_answer(
                 })
 
                 final_data = None
+                tutor_action = None
                 # ✅ Phase 2 升級：TutorAgent 決定要評分、給提示還是鼓勵
                 async for chunk in tutor_agent.process_stream(
                     student_answer=body.content,
@@ -237,7 +232,10 @@ async def submit_answer(
                     teaching_strategy=teaching_strategy,
                 ):
                     yield _sse_event(chunk["type"], chunk["data"])
-                    if chunk["type"] == "score_complete":
+                    if chunk["type"] == "tutor_decision":
+                        tutor_action = chunk["data"]["action"]
+                        _record_tutor_action(db, attempt_id, tutor_action)
+                    elif chunk["type"] == "score_complete":
                         final_data = chunk["data"]
                     elif chunk["type"] == "hint":
                         # 記錄提示使用到 prompt_logs，
@@ -283,6 +281,12 @@ async def submit_answer(
                     # 同步更新 step_attempts 狀態為 passed 或 revision_required
                     new_status = "passed" if final_data["passed"] else "revision_required"
                     db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+                elif tutor_action in ("give_hint", "escalate"):
+                    # 沒有評分（只給提示或建議找老師）→ 學生需要修改後再交，
+                    # 不讓狀態永遠停在 submitted
+                    db.table("step_attempts").update(
+                        {"status": "revision_required"}
+                    ).eq("id", attempt_id).execute()
 
             except Exception as e:
                 error_detail = traceback.format_exc()
@@ -338,29 +342,26 @@ async def get_hint(
     tool = step_res.data["ai_tools"]
     plan = parse_teaching_strategy(tool.get("teaching_strategy"))
 
-    # 取最近一次嘗試，用來算已用提示數與最弱構面
+    # 取此步驟所有嘗試（新到舊）：最近一次作答用來掛提示紀錄，
+    # 已用提示數整個步驟累計，最弱構面取最近一次「有評分」的作答
     attempt_res = (
         db.table("step_attempts")
         .select("id, attempt_number, user_input_content, ai_evaluations(dimension_scores)")
         .eq("user_id", user_id)
         .eq("step_id", step_id)
         .order("attempt_number", desc=True)
-        .limit(1)
         .execute()
     )
-    last_attempt = attempt_res.data[0] if attempt_res.data else None
+    attempts = attempt_res.data or []
+    last_attempt = attempts[0] if attempts else None
 
-    hints_used = 0
-    if last_attempt:
-        used_res = (
-            db.table("prompt_logs")
-            .select("id", count="exact")
-            .eq("attempt_id", last_attempt["id"])
-            .execute()
-        )
-        hints_used = used_res.count or 0
+    hints_used = _count_hints_used(db, attempts)
 
-    dimension_scores = _extract_last_dimension_scores(last_attempt)
+    # 上一次若只拿到提示（沒評分），要往前找最近一次有評分的作答
+    dimension_scores = next(
+        (scores for scores in map(_extract_last_dimension_scores, attempts) if scores),
+        [],
+    )
 
     # 先用純邏輯判斷有沒有下一層（不呼叫 LLM）
     if plan.total_levels:
@@ -490,7 +491,7 @@ async def check_module_coherence(module_id: str, user_id: str):
     """
     db = get_supabase()
 
-    # 讀取此模組此學生所有步驟的最新通過作答
+    # 讀取此模組此學生每個步驟的最新一次作答（不論是否通過；passed 另外帶給 Agent）
     steps_res = (
         db.table("module_steps")
         .select("id, step_order, step_title")
@@ -503,7 +504,7 @@ async def check_module_coherence(module_id: str, user_id: str):
 
     step_answers: list[StepAnswer] = []
     for step in steps_res.data:
-        # 抓該步驟最新一筆已通過的作答
+        # 抓該步驟最新一筆作答——學生改過的版本才是要比對的內容
         attempt_res = (
             db.table("step_attempts")
             .select("user_input_content, status")
@@ -561,6 +562,39 @@ def _collect_evidence(dimension_scores: list[dict] | None) -> str:
         if (d.get("evidence") or "").strip()
     ]
     return "\n".join(parts)
+
+
+def _count_hints_used(db, attempts: list[dict]) -> int:
+    """
+    此步驟所有嘗試累計已給出的提示數。
+
+    沒有前次嘗試就不查——否則會拿空清單去比對 UUID 欄位。
+    """
+    attempt_ids = [a["id"] for a in attempts if a.get("id")]
+    if not attempt_ids:
+        return 0
+    res = (
+        db.table("prompt_logs")
+        .select("id", count="exact")
+        .in_("attempt_id", attempt_ids)
+        .execute()
+    )
+    return res.count or 0
+
+
+def _record_tutor_action(db, attempt_id: str, action: str) -> None:
+    """
+    把 TutorAgent 的決策寫回 step_attempts.tutor_action。
+
+    這是給教師複核佇列用的附加資訊，寫入失敗（例如還沒跑 migration 003）
+    只記 log，不中斷學生的評分流程。
+    """
+    try:
+        db.table("step_attempts").update(
+            {"tutor_action": action}
+        ).eq("id", attempt_id).execute()
+    except Exception as e:
+        logger.warning(f"寫入 tutor_action 失敗（是否尚未執行 migration 003？）：{e}")
 
 
 def _extract_last_dimension_scores(last_attempt: dict | None) -> list[dict]:

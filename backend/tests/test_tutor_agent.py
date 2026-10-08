@@ -18,6 +18,7 @@ def make_ctx(
     threshold=75.0,
     dimension_scores=None,
     requested_hint=False,
+    evaluated=None,
 ) -> StudentContext:
     return StudentContext(
         attempt_number=attempt,
@@ -26,6 +27,7 @@ def make_ctx(
         pass_threshold=threshold,
         last_dimension_scores=dimension_scores if dimension_scores is not None else DIMENSION_SCORES,
         requested_hint=requested_hint,
+        evaluated_attempts=evaluated,
     )
 
 
@@ -72,10 +74,26 @@ class TestTutorDecision:
         ctx = make_ctx(attempt=2, last_score=63.0, threshold=75.0, hints_used=0)
         assert self.agent.decide_action(ctx) == TutorAction.GIVE_HINT
 
-    def test_evaluate_when_score_between_60_and_threshold_hints_used(self):
-        """分數 60~75 但已用過提示 → 直接評分"""
+    def test_hint_again_when_score_between_60_and_threshold_hints_used(self):
+        """
+        分數 60~75 且已用過 1 層提示 → 仍決定給提示，讓教授設定的第 2 層有機會出現。
+        提示給完時由 HintEngine 回 None、改為評分（見 test_hint_exhausted_falls_back_to_evaluation）。
+        回歸：舊版這裡直接評分，max_auto_hints = 2 的第 2 層永遠不會自動出現。
+        """
         ctx = make_ctx(attempt=3, last_score=63.0, threshold=75.0, hints_used=1)
-        assert self.agent.decide_action(ctx) == TutorAction.EVALUATE
+        assert self.agent.decide_action(ctx) == TutorAction.GIVE_HINT
+
+    def test_hint_only_attempts_do_not_count_toward_escalation(self):
+        """
+        第 5 次作答，但其中 2 次只拿到提示、沒評分 → 只評分過 2 次，還不該轉介老師。
+        回歸：舊版用 attempt_number 判斷，每給一次提示就多佔一次額度。
+        """
+        ctx = make_ctx(attempt=5, last_score=40.0, threshold=75.0, evaluated=2)
+        assert self.agent.decide_action(ctx) == TutorAction.GIVE_HINT
+
+    def test_escalate_after_three_low_evaluations(self):
+        ctx = make_ctx(attempt=6, last_score=40.0, threshold=75.0, evaluated=3)
+        assert self.agent.decide_action(ctx) == TutorAction.ESCALATE
 
     def test_give_hint_when_low_score_early_attempt(self):
         """分數低於 60%，嘗試次數 <= 3 → 給提示"""
