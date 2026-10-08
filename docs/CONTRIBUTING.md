@@ -94,3 +94,36 @@ py -m pytest tests/ -v
 2. **同時覆蓋正常與異常情境**：每個功能至少要有一個「應該成功」和一個「應該失敗/報錯」的測試。
 3. **測試名稱用中文描述意圖**：讓隊友一眼看出這個測試在驗證什麼。
 4. **async 測試用 `@pytest.mark.asyncio`** 標記。
+
+
+### FakeSupabase：測 API 層不用連資料庫
+
+`backend/tests/test_practice_api.py` 裡的 `FakeSupabase` 可直接重複使用，
+要測 `api/review.py`、`api/teacher.py` 時不必重寫：
+
+```python
+fake_db = FakeSupabase(STEP_ROW, prev_attempts=[], hints_count=0)
+with patch.object(practice, "get_supabase", return_value=fake_db):
+    ...
+fake_db.find("step_attempts", "insert")   # 取出實際寫入的內容做斷言
+```
+
+它會**依 `select()` 指定的欄位投影**——查詢時沒選到、程式卻去讀的錯誤，
+在測試裡就會重現，而不是等到連上真資料庫才爆。
+（這個錯誤實際發生過兩次，見 KNOWN_GAPS #2。）
+
+### 降級行為也要測
+
+三個 Agent 都設計成「AI 回傳格式錯誤時降級而非中斷」，這些路徑同樣要覆蓋：
+
+| 情境 | 預期行為 |
+|------|---------|
+| `_score_dimension()` JSON 解析失敗 | 給最低分 + 標記 `failed`，整體信心值壓到 0.5 以下 |
+| `_synthesize()` 例外 | `confidence=0.6`，`overall_feedback` 為預設文字 |
+| 提示個人化失敗 | 退回教授原始模板，不可顯示空白 |
+| 錯誤分類失敗 | 回空陣列，不影響評分寫入 |
+
+### 尚未覆蓋的區域
+
+`api/review.py`、`api/teacher.py`、`api/privacy.py`、`database/client.py`、
+前端（完全無測試設定）、端對端。

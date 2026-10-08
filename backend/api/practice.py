@@ -19,6 +19,8 @@ from pydantic import BaseModel
 
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
+from core.ai.error_detector import ErrorDetector
+from core.ai.hint_engine import HintEngine, parse_teaching_strategy, select_hint
 from core.ai.rubric_formatter import normalize_rubric
 from core.privacy import detect_pii
 from database.client import get_supabase
@@ -32,6 +34,12 @@ tutor_agent = TutorAgent()
 
 # 整合 Agent 單例（Phase 3：跨步驟一致性檢核）
 coherence_agent = CoherenceAgent()
+
+# 錯誤分類偵測器（教授未定義 error_taxonomy 時不會呼叫 LLM）
+error_detector = ErrorDetector()
+
+# 分層提示引擎（查詢可用提示層級時使用）
+hint_engine = HintEngine()
 
 
 # ──────────────────────────────────────────
@@ -51,6 +59,7 @@ class SubmitAnswerRequest(BaseModel):
     case_id: str | None = None
     content: str
     version_note: str = ""
+    request_hint: bool = False   # 學生主動按「我需要提示」
 
 
 # ──────────────────────────────────────────
@@ -146,7 +155,14 @@ async def submit_answer(
         # 組裝 Rubric dict（直接傳給 EvaluatorAgent，不再轉成純文字）
         # rubric_criteria 的 max_score 是「配分（權重）」，不是量表上限，
         # 展開等級的邏輯統一放在 normalize_rubric()
-        rubric_dict = normalize_rubric(rubric_criteria, pass_threshold)
+        rubric_dict = normalize_rubric(
+            rubric_criteria,
+            pass_threshold,
+            tool.get("scale_type"),
+        )
+
+        teaching_strategy = tool.get("teaching_strategy")
+        error_taxonomy = tool.get("error_taxonomy")
 
         # ── 查詢學生歷程，建立 StudentContext ──────────────────────
         # 一次查回上一次嘗試的 id、次數與評分，避免重複往返
@@ -182,6 +198,8 @@ async def submit_answer(
             last_score_percent=last_score_percent,
             hints_used_count=hints_used,
             pass_threshold=float(pass_threshold),
+            last_dimension_scores=_extract_last_dimension_scores(last_attempt),
+            requested_hint=body.request_hint,
         )
 
         # ── 寫入學生作答記錄 ────────────────────────────────────────
@@ -216,27 +234,50 @@ async def submit_answer(
                     rubric=rubric_dict,
                     system_prompt=system_prompt,
                     student_context=student_context,
+                    teaching_strategy=teaching_strategy,
                 ):
                     yield _sse_event(chunk["type"], chunk["data"])
                     if chunk["type"] == "score_complete":
                         final_data = chunk["data"]
                     elif chunk["type"] == "hint":
-                        # 記錄提示使用到 prompt_logs
+                        # 記錄提示使用到 prompt_logs，
+                        # trigger / source 是學習歷程分析的關鍵維度：
+                        # 「自動給的」和「學生主動要的」意義完全不同
                         db.table("prompt_logs").insert({
                             "attempt_id": attempt_id,
                             "hint_level": chunk["data"]["level"],
                             "hint_content": chunk["data"]["content"],
+                            "hint_trigger": chunk["data"].get("trigger"),
+                            "hint_source": chunk["data"].get("source"),
                         }).execute()
 
-                # 評分完成時，寫入 ai_evaluations
+                # 評分完成時，偵測錯誤分類並寫入 ai_evaluations
                 if final_data:
+                    dimension_scores = final_data.get("dimension_scores", [])
+
+                    # 教授沒定義 error_taxonomy 時，detect() 直接回 []，不呼叫 LLM
+                    detected_errors = await error_detector.detect(
+                        body.content,
+                        error_taxonomy,
+                        dimension_scores=dimension_scores,
+                    )
+                    if detected_errors:
+                        yield _sse_event("errors_detected", {"errors": detected_errors})
+
+                    confidence = final_data.get("confidence")
+
                     db.table("ai_evaluations").insert({
                         "attempt_id": attempt_id,
                         "total_score": round(float(final_data.get("total_score", 0))),
-                        "dimension_scores": final_data.get("dimension_scores", []),
-                        "evidence_text": body.content[:200],
+                        "dimension_scores": dimension_scores,
+                        # 存 AI 實際引用的原文佐證，不是學生作答的前 200 字
+                        "evidence_text": _collect_evidence(dimension_scores),
                         "feedback_text": final_data.get("overall_feedback", ""),
-                        "detected_errors": final_data.get("detected_errors", [])
+                        "confidence": confidence,
+                        "needs_teacher_review": bool(
+                            final_data.get("needs_teacher_review", False)
+                        ),
+                        "detected_errors": detected_errors,
                     }).execute()
 
                     # 同步更新 step_attempts 狀態為 passed 或 revision_required
@@ -264,12 +305,141 @@ async def submit_answer(
 
 
 @router.get("/sessions/{session_id}/hints")
-async def get_hint(session_id: str):
+async def get_hint(
+    session_id: str,
+    user_id: str,
+    step_id: str,
+    reveal: bool = False,
+):
+    """
+    查詢這位學生在此步驟目前可用的分層提示。
+
+    Query params:
+        user_id: 學生
+        step_id: 步驟
+        reveal:  false（預設）只回報有沒有下一層可用，不消耗提示額度；
+                 true 才真的取出提示內容並記錄到 prompt_logs
+
+    「有沒有下一層」與「把下一層給我」是兩件事：前端要能先顯示
+    「還有 2 層提示可用」而不自動扣掉，學生按下去才算數。
+    """
+    db = get_supabase()
+
+    step_res = (
+        db.table("module_steps")
+        .select("id, pass_score, ai_tools(system_prompt, rubric_criteria, scale_type, teaching_strategy)")
+        .eq("id", step_id)
+        .single()
+        .execute()
+    )
+    if not step_res.data or not step_res.data.get("ai_tools"):
+        raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+    tool = step_res.data["ai_tools"]
+    plan = parse_teaching_strategy(tool.get("teaching_strategy"))
+
+    # 取最近一次嘗試，用來算已用提示數與最弱構面
+    attempt_res = (
+        db.table("step_attempts")
+        .select("id, attempt_number, user_input_content, ai_evaluations(dimension_scores)")
+        .eq("user_id", user_id)
+        .eq("step_id", step_id)
+        .order("attempt_number", desc=True)
+        .limit(1)
+        .execute()
+    )
+    last_attempt = attempt_res.data[0] if attempt_res.data else None
+
+    hints_used = 0
+    if last_attempt:
+        used_res = (
+            db.table("prompt_logs")
+            .select("id", count="exact")
+            .eq("attempt_id", last_attempt["id"])
+            .execute()
+        )
+        hints_used = used_res.count or 0
+
+    dimension_scores = _extract_last_dimension_scores(last_attempt)
+
+    # 先用純邏輯判斷有沒有下一層（不呼叫 LLM）
+    if plan.total_levels:
+        next_hint_def = select_hint(plan, hints_used, requested_by_student=True)
+        has_next = next_hint_def is not None
+        total_levels = plan.total_levels
+    else:
+        # 教授沒設定提示 → 只要有評分結果就能即時生成
+        has_next = bool(dimension_scores)
+        total_levels = None
+
+    if not reveal:
+        return {
+            "data": {
+                "hints_used": hints_used,
+                "total_levels": total_levels,
+                "next_level_available": has_next,
+                "hint": None,
+            }
+        }
+
+    if not has_next:
+        return {
+            "data": {
+                "hints_used": hints_used,
+                "total_levels": total_levels,
+                "next_level_available": False,
+                "hint": None,
+                "message": "目前沒有更多提示了，請依先前的回饋修改後重新提交。",
+            }
+        }
+
+    rubric_dict = normalize_rubric(
+        tool.get("rubric_criteria", []),
+        step_res.data.get("pass_score") or 75,
+        tool.get("scale_type"),
+    )
+
+    hint = await hint_engine.next_hint(
+        teaching_strategy=tool.get("teaching_strategy"),
+        student_answer=(last_attempt or {}).get("user_input_content", ""),
+        dimension_scores=dimension_scores,
+        hints_used=hints_used,
+        requested_by_student=True,
+        rubric=rubric_dict,
+    )
+
+    if hint is None:
+        return {
+            "data": {
+                "hints_used": hints_used,
+                "total_levels": total_levels,
+                "next_level_available": False,
+                "hint": None,
+                "message": "目前沒有更多提示了。",
+            }
+        }
+
+    # 學生主動索取的提示同樣要留下歷程
+    if last_attempt:
+        db.table("prompt_logs").insert({
+            "attempt_id": last_attempt["id"],
+            "hint_level": hint.level,
+            "hint_content": hint.content,
+            "hint_trigger": "student_request",
+            "hint_source": hint.source,
+        }).execute()
+
+    remaining_check = (
+        select_hint(plan, hints_used + 1, requested_by_student=True)
+        if plan.total_levels else None
+    )
+
     return {
         "data": {
-            "available_level": 1,
-            "hint": {"level": 1, "content": "請嘗試從個案的日常作息中找出具體行為表現。"},
-            "next_level_available": True,
+            "hints_used": hints_used + 1,
+            "total_levels": total_levels,
+            "next_level_available": bool(remaining_check) if plan.total_levels else True,
+            "hint": hint.to_event_data(),
         }
     }
 
@@ -377,6 +547,36 @@ async def check_module_coherence(module_id: str, user_id: str):
 # ──────────────────────────────────────────
 # Helper
 # ──────────────────────────────────────────
+
+def _collect_evidence(dimension_scores: list[dict] | None) -> str:
+    """
+    把各構面的原文佐證整理成一段文字，存進 ai_evaluations.evidence_text。
+
+    舊版存的是學生作答前 200 字，那不是「證據」——
+    AI 真正引用的原文在 dimension_scores[].evidence 裡。
+    """
+    parts = [
+        f"[{d.get('dimension', '')}] {d['evidence'].strip()}"
+        for d in (dimension_scores or [])
+        if (d.get("evidence") or "").strip()
+    ]
+    return "\n".join(parts)
+
+
+def _extract_last_dimension_scores(last_attempt: dict | None) -> list[dict]:
+    """取出上一次評分的各構面結果，給提示引擎找最弱構面用。"""
+    if not last_attempt:
+        return []
+
+    evaluation = last_attempt.get("ai_evaluations")
+    if isinstance(evaluation, list):
+        evaluation = evaluation[0] if evaluation else None
+    if not evaluation:
+        return []
+
+    scores = evaluation.get("dimension_scores")
+    return scores if isinstance(scores, list) else []
+
 
 def _extract_last_score_percent(last_attempt: dict | None) -> float | None:
     """

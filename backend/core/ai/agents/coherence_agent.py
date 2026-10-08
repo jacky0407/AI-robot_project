@@ -10,7 +10,6 @@
 並指出哪些步驟需要修改。
 """
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import AsyncGenerator
@@ -19,6 +18,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.config import get_settings
+from core.ai.llm_utils import invoke_json
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class CoherenceAgent:
             if not settings.gemini_api_key:
                 raise ValueError("GEMINI_API_KEY 未設定")
             self._llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash",
+                model=settings.gemini_model,
                 google_api_key=settings.gemini_api_key,
                 temperature=0.3,
             )
@@ -236,11 +236,14 @@ class CoherenceAgent:
 }}"""
 
         try:
-            response = await self.llm.ainvoke([
-                SystemMessage(content=COHERENCE_SYSTEM_PROMPT),
-                HumanMessage(content=prompt),
-            ])
-            data = json.loads(response.content)
+            data = await invoke_json(
+                self.llm,
+                [
+                    SystemMessage(content=COHERENCE_SYSTEM_PROMPT),
+                    HumanMessage(content=prompt),
+                ],
+                label=f"coherence:{rule['name']}",
+            )
         except Exception as e:
             logger.warning(f"Coherence check failed for rule '{rule['name']}': {e}")
             data = {

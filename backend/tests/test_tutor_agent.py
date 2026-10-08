@@ -16,13 +16,31 @@ def make_ctx(
     last_score=None,
     hints_used=0,
     threshold=75.0,
+    dimension_scores=None,
+    requested_hint=False,
 ) -> StudentContext:
     return StudentContext(
         attempt_number=attempt,
         last_score_percent=last_score,
         hints_used_count=hints_used,
         pass_threshold=threshold,
+        last_dimension_scores=dimension_scores if dimension_scores is not None else DIMENSION_SCORES,
+        requested_hint=requested_hint,
     )
+
+
+# 教授設定的分層提示（供 process_stream 的 GIVE_HINT 測試使用）
+TEACHING_STRATEGY = {
+    "hints": [
+        {"level": 1, "trigger": "score_below_threshold", "content": "你觀察到哪個具體行為？"},
+        {"level": 2, "trigger": "score_below_threshold", "content": "描述要包含情境、行為、頻率"},
+    ],
+    "personalize": False,   # 測試不需要真的呼叫 LLM 做個人化
+}
+
+DIMENSION_SCORES = [
+    {"dimension": "功能性描述", "score": 1, "max_score": 4, "reason": "只列診斷"},
+]
 
 
 # ──────────────────────────────────────────
@@ -121,7 +139,7 @@ class TestTutorProcessStream:
 
     @pytest.mark.asyncio
     async def test_hint_stream_does_not_call_evaluator(self):
-        """GIVE_HINT 行動時，不應呼叫 EvaluatorAgent"""
+        """有提示可給時，GIVE_HINT 只給提示，不呼叫 EvaluatorAgent"""
         agent = TutorAgent()
         ctx = make_ctx(attempt=2, last_score=45.0, hints_used=0)  # → GIVE_HINT
 
@@ -134,13 +152,68 @@ class TestTutorProcessStream:
         with patch.object(agent._evaluator, "evaluate_stream", mock_evaluate_stream):
             chunks = []
             async for chunk in agent.process_stream(
-                student_answer="作答", rubric={}, system_prompt="p", student_context=ctx
+                student_answer="作答", rubric={}, system_prompt="p",
+                student_context=ctx, teaching_strategy=TEACHING_STRATEGY,
             ):
                 chunks.append(chunk)
 
-        assert not eval_called, "GIVE_HINT 時不應呼叫 EvaluatorAgent"
+        assert not eval_called, "有提示可給時不應呼叫 EvaluatorAgent"
         hint_events = [c for c in chunks if c["type"] == "hint"]
         assert len(hint_events) == 1
+        assert hint_events[0]["data"]["content"] == "你觀察到哪個具體行為？"
+        assert hint_events[0]["data"]["source"] == "teacher"
+
+    @pytest.mark.asyncio
+    async def test_hint_exhausted_falls_back_to_evaluation(self):
+        """
+        決策是 GIVE_HINT 但提示已經給完時，改為直接評分。
+
+        舊版在這裡會吐一則寫死的假提示；現在寧可給學生一個真實的分數，
+        也不要顯示一段假裝是教學設計的文字。
+        """
+        agent = TutorAgent()
+        ctx = make_ctx(attempt=2, last_score=45.0, hints_used=2)  # 兩層都用完了
+
+        eval_called = []
+
+        async def mock_evaluate_stream(**kwargs):
+            eval_called.append(True)
+            yield {"type": "score_complete", "data": {"passed": False}}
+
+        with patch.object(agent._evaluator, "evaluate_stream", mock_evaluate_stream):
+            chunks = []
+            async for chunk in agent.process_stream(
+                student_answer="作答", rubric={}, system_prompt="p",
+                student_context=ctx, teaching_strategy=TEACHING_STRATEGY,
+            ):
+                chunks.append(chunk)
+
+        assert eval_called, "提示用完時應改為評分"
+        assert [c for c in chunks if c["type"] == "hint"] == []
+        assert chunks[-1]["type"] == "score_complete"
+
+    @pytest.mark.asyncio
+    async def test_no_teaching_strategy_and_no_scores_falls_back_to_evaluation(self):
+        """教授沒設定提示、又沒有前次評分可依據時，不硬生提示，改為評分"""
+        agent = TutorAgent()
+        ctx = make_ctx(attempt=2, last_score=45.0, hints_used=0, dimension_scores=[])
+
+        eval_called = []
+
+        async def mock_evaluate_stream(**kwargs):
+            eval_called.append(True)
+            yield {"type": "score_complete", "data": {}}
+
+        with patch.object(agent._evaluator, "evaluate_stream", mock_evaluate_stream):
+            chunks = []
+            async for chunk in agent.process_stream(
+                student_answer="作答", rubric={}, system_prompt="p",
+                student_context=ctx, teaching_strategy=None,
+            ):
+                chunks.append(chunk)
+
+        assert eval_called
+        assert [c for c in chunks if c["type"] == "hint"] == []
 
     @pytest.mark.asyncio
     async def test_escalate_stream_contains_message(self):

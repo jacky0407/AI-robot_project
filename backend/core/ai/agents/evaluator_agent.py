@@ -23,6 +23,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from core.config import get_settings
 from core.ai.base import EvaluationResult
 from core.ai.rubric_formatter import format_rubric_to_text, DEFAULT_SCALE_MAX
+from core.ai.llm_utils import invoke_json, LLMResponseFormatError
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class EvaluatorAgent:
             if not settings.gemini_api_key:
                 raise ValueError("GEMINI_API_KEY 未設定")
             self._llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash",
+                model=settings.gemini_model,
                 google_api_key=settings.gemini_api_key,
                 temperature=0.2,
             )
@@ -193,20 +194,28 @@ class EvaluatorAgent:
         """對單一構面進行評分，返回結構化結果。"""
         dim_name = dimension.get("name", "未命名構面")
         levels = dimension.get("levels", [])
-        max_score = max(lv["score"] for lv in levels) if levels else DEFAULT_SCALE_MAX
-
-        # 組裝單一構面的評分 prompt
-        levels_text = "\n".join(
-            f"  {lv['score']}分：{lv['description']}"
-            for lv in sorted(levels, key=lambda x: x["score"], reverse=True)
+        # 量表上限由 normalize_rubric 決定；舊呼叫端沒帶時才從 levels 推
+        max_score = dimension.get("max_score") or (
+            max(lv["score"] for lv in levels) if levels else DEFAULT_SCALE_MAX
         )
+        min_score = min((lv["score"] for lv in levels), default=0) if levels else 0
+
+        # 組裝單一構面的評分依據：有離散等級就列等級，否則（100_point）給連續計分說明
+        if levels:
+            criteria_text = "\n".join(
+                f"  {lv['score']}分：{lv['description']}"
+                for lv in sorted(levels, key=lambda x: x["score"], reverse=True)
+            )
+        else:
+            desc = dimension.get("description", "")
+            criteria_text = f"  0~{max_score} 分連續計分" + (f"，評分依據：{desc}" if desc else "")
 
         prompt = f"""{system_prompt}
 
 請只針對「{dim_name}」這個構面進行評分。
 
-【{dim_name} 的評分等級】
-{levels_text}
+【{dim_name} 的評分依據】
+{criteria_text}
 
 【學生作答】
 {student_answer}
@@ -214,32 +223,43 @@ class EvaluatorAgent:
 請嚴格以 JSON 格式回傳，不得包含任何其他文字：
 {{
   "dimension": "{dim_name}",
-  "score": 數字（{min(lv['score'] for lv in levels) if levels else 1}~{max_score}）,
+  "score": 數字（{min_score}~{max_score}）,
   "max_score": {max_score},
   "reason": "評分理由（1-2句，說明為何給這個分數）",
   "evidence": "從學生作答直接引用的原文片段（不超過80字）"
 }}"""
 
         try:
-            response = await self.llm.ainvoke([
-                SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
-                HumanMessage(content=prompt),
-            ])
-            scored = json.loads(response.content)
-        except json.JSONDecodeError:
-            logger.warning(f"構面 {dim_name} JSON 解析失敗，使用預設值")
+            scored = await invoke_json(
+                self.llm,
+                [
+                    SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+                    HumanMessage(content=prompt),
+                ],
+                label=f"score_dimension:{dim_name}",
+            )
+        except (LLMResponseFormatError, json.JSONDecodeError, Exception) as e:
+            logger.warning(f"構面 {dim_name} 評分失敗（{type(e).__name__}），使用預設值")
             scored = {
                 "dimension": dim_name,
-                "score": 1,
+                "score": min_score,
                 "max_score": max_score,
                 "reason": "評分失敗，請教師複核",
                 "evidence": "",
+                "failed": True,
             }
 
-        # AI 不負責決定權重，一律由 Rubric 設定帶入，並確保量表上限正確
+        # AI 不負責決定權重與量表上限，一律由 Rubric 設定帶入
         scored["weight"] = dimension.get("weight", 0)
         scored["max_score"] = max_score
         scored.setdefault("dimension", dim_name)
+
+        # 分數超出量表範圍時夾回，避免 AI 亂給造成加權爆掉
+        try:
+            scored["score"] = max(min_score, min(float(scored.get("score", min_score)), max_score))
+        except (TypeError, ValueError):
+            scored["score"] = min_score
+
         return scored
 
     async def _synthesize(
@@ -284,16 +304,23 @@ class EvaluatorAgent:
 }}"""
 
         try:
-            response = await self.llm.ainvoke([
-                SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
-                HumanMessage(content=prompt),
-            ])
-            synthesis = json.loads(response.content)
+            synthesis = await invoke_json(
+                self.llm,
+                [
+                    SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+                    HumanMessage(content=prompt),
+                ],
+                label="synthesize",
+            )
         except Exception:
             synthesis = {
                 "overall_feedback": "整體評分完成，請參考各構面回饋。",
                 "confidence": 0.6,
             }
+
+        # 有任何構面評分失敗時，信心值一律壓低，強制走教師複核
+        if any(d.get("failed") for d in dimension_scores):
+            synthesis["confidence"] = min(float(synthesis.get("confidence", 0.6)), 0.5)
 
         confidence = float(synthesis.get("confidence", 0.8))
 
