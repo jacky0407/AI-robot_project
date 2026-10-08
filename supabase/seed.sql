@@ -229,3 +229,16 @@ VALUES
         '["functional_present_level"]'::jsonb
     )
 ON CONFLICT (module_id, step_order) DO NOTHING;
+
+-- ==============================================================================
+-- 6. 把模組指派給示範課程（需先跑 migrations/005_rls_policies.sql）
+--    課程成員（student.test@platform.edu）登入後才看得到這個模組
+-- ==============================================================================
+INSERT INTO public.course_modules (course_id, module_id, assigned_by)
+VALUES
+    (
+        'c1111111-0000-0000-0000-000000000001',
+        'b0000001-0000-0000-0000-000000000001',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    )
+ON CONFLICT (course_id, module_id) DO NOTHING;

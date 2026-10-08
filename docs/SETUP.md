@@ -49,6 +49,17 @@ SQL Editor → New query → 貼上 `supabase/schema.sql` 整份 → **Run** →
 
 接著跑 `supabase/migrations/002_api_grants.sql`。Supabase 自 2026-05-30 起新專案不再自動開放資料表給 API（舊專案 2026-10-30 起也一樣），沒跑會出現 `permission denied for table profiles (42501)`。重複跑沒關係；之後若重建資料表，要再跑一次。
 
+### 指派制權限（必跑）
+
+接著跑 `supabase/migrations/005_rls_policies.sql`（全新資料庫也要跑，要在 `seed.sql` 之前）。學生只看得到老師指派的模組與機器人，兩種指派方式擇一：
+
+- **課程指派**：在 `course_modules` 加一筆（課程 ↔ 模組），該課程狀態為 active 的成員都看得到。
+- **逐位核准**：`tool_permissions` 中該學生 `status = 'approved'`，且在 `start_date`～`expire_date` 期間內（`tool_id` 留空代表全部機器人）。
+
+教師（owner／assistant）看得到全部。目前還沒有指派介面，要在 SQL Editor 或 Table Editor 操作。
+
+> 後端用 service_role 連線，不受這些規則限制；後端的指派檢查會另外補上。
+
 ### 示範資料（建議）
 
 同樣方式跑 `supabase/seed.sql`。會建立兩個測試帳號（密碼皆為 `Test1234!`）、一門課、一個案例、兩支附完整分層提示與錯誤分類範例的機器人。
@@ -122,7 +133,7 @@ npm run dev    # http://localhost:3000
 | `student.test@platform.edu` 登入 | 看到兩個步驟 |
 | `prof.wu@platform.edu` 登入 | 看到兩支機器人 |
 | 作答裡寫一組手機號碼送出 | 400 `PII_DETECTED` |
-| `cd backend && py -m pytest tests/ -v` | 176 passed |
+| `cd backend && py -m pytest tests/ -v` | 224 passed |
 
 ---
 
@@ -133,6 +144,7 @@ npm run dev    # http://localhost:3000
 | `check_setup.py` 說連線失敗 | 後端填成 publishable key（要 secret）；或 URL 帶了 `/rest/v1/` |
 | `relation "public.profiles" does not exist` | `schema.sql` 沒跑成功 |
 | `permission denied for table ... (42501)` | 沒跑 `002_api_grants.sql` |
+| 學生模組頁顯示「目前沒有已發布的培訓模組」 | 沒跑 `005_rls_policies.sql`，或該學生沒被指派（`course_modules` / `tool_permissions`） |
 | `seed.sql` 報 `duplicate key` | 跑過了。先 `DELETE FROM module_steps / learning_modules / ai_tools / tool_cases` 再重跑 |
 | 登入一直被踢回 `/login` | `.env.local` 沒建，或改完沒重啟 `npm run dev` |
 | 進 `/admin` 被踢到學生頁 | `profiles.role` 不是 owner / assistant |
