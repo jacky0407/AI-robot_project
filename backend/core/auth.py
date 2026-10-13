@@ -15,13 +15,18 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from supabase_auth.errors import AuthError
 
 from database.client import get_supabase
 
 # 對應 profiles.role 的 CHECK：owner / assistant 是教師端，student / explorer 是學生端
 STAFF_ROLES = ("owner", "assistant")
+
+# 用 HTTPBearer 讀 header，/docs 才會出現 Authorize 按鈕；
+# auto_error=False：沒帶或格式錯時回 None，由下面統一回 401 與錯誤格式
+bearer_scheme = HTTPBearer(auto_error=False, description="Supabase access token")
 
 
 @dataclass(frozen=True)
@@ -38,17 +43,10 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
-def _bearer_token(authorization: Optional[str]) -> Optional[str]:
-    if not authorization:
-        return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        return None
-    return token.strip()
-
-
-def get_current_user(authorization: Optional[str] = Header(None)) -> CurrentUser:
-    token = _bearer_token(authorization)
+def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> CurrentUser:
+    token = credentials.credentials.strip() if credentials else ""
     # 一定要先擋掉空 token：get_user(None) 會改讀 client 自己的 session
     if not token:
         raise _error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "請先登入")

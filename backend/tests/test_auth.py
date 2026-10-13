@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
 from supabase_auth.errors import AuthApiError
 
 from core import auth
@@ -33,8 +35,25 @@ def fake_db(*, user_id: str | None = "u1", profile: list | None = None,
 
 
 def resolve(authorization: str | None, db: MagicMock):
+    """直接呼叫 dependency；authorization 為 "Bearer xxx" 形式，None 代表沒帶 header"""
+    credentials = None
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        credentials = HTTPAuthorizationCredentials(scheme=scheme, credentials=token)
     with patch.object(auth, "get_supabase", return_value=db):
-        return get_current_user(authorization)
+        return get_current_user(credentials)
+
+
+def call_protected(headers: dict, db: MagicMock):
+    """經過 FastAPI 實際解析 header，確認格式錯誤也會變成 401"""
+    app = FastAPI()
+
+    @app.get("/me")
+    def me(user: CurrentUser = Depends(get_current_user)):
+        return {"id": user.id}
+
+    with patch.object(auth, "get_supabase", return_value=db):
+        return TestClient(app).get("/me", headers=headers)
 
 
 def error_of(excinfo) -> tuple[int, str]:
@@ -62,11 +81,18 @@ class TestGetCurrentUser:
     @pytest.mark.parametrize("header", ["token-abc", "Basic token-abc", "Bearer ", "Bearer"])
     def test_malformed_header_is_401(self, header):
         db = fake_db()
-        with pytest.raises(HTTPException) as excinfo:
-            resolve(header, db)
+        res = call_protected({"Authorization": header}, db)
 
-        assert error_of(excinfo) == (401, "UNAUTHORIZED")
+        assert res.status_code == 401
+        assert res.json()["detail"]["code"] == "UNAUTHORIZED"
         db.auth.get_user.assert_not_called()
+
+    def test_valid_header_through_fastapi(self):
+        db = fake_db(profile=[{"role": "student", "is_active": True}])
+        res = call_protected({"Authorization": "Bearer token-abc"}, db)
+
+        assert res.json() == {"id": "u1"}
+        db.auth.get_user.assert_called_once_with("token-abc")
 
     def test_expired_token_is_401(self):
         db = fake_db(auth_error=AuthApiError("invalid JWT", 401, "bad_jwt"))
