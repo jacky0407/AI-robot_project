@@ -319,6 +319,33 @@
 
 ## 三、課程管理 (Courses)
 
+### 第一版已實作（做法 A：一門課一組邀請碼）
+
+實作在 `backend/api/courses.py`。所有端點都要帶 `Authorization: Bearer <Supabase access token>`
+（`frontend/src/utils/api.ts` 的 `apiFetch` 會自動帶），未登入回 `401`，學生呼叫教師端點回 `403`。
+錯誤格式為 FastAPI 的 `{"detail": {"code": "...", "message": "..."}}`。
+
+成員狀態：`pending`（待審核）、`active`（已加入）、`rejected`（申請被拒）、`removed`（被移出）。
+
+| 權限 | 方法與路徑 | Request | 成功回應 `data` |
+|------|-----------|---------|----------------|
+| 教師 | `POST /api/courses` | `{title, description?, require_approval?}` | 課程（含 `invite_code`），201 |
+| 教師 | `GET /api/courses?include_archived=false` | — | 課程陣列，每筆多 `active_count`、`pending_count` |
+| 教師 | `PATCH /api/courses/:course_id` | `{title?, description?, require_approval?, is_archived?}` | 更新後的課程 |
+| 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at}]` |
+| 教師 | `PATCH /api/courses/:course_id/members/:user_id` | `{action: "approve" \| "reject" \| "remove"}` | 更新後的成員 |
+| 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at}` |
+| 登入者 | `GET /api/courses/mine` | — | `[{course_id, course_name, description, is_archived, status, joined_at}]` |
+
+`POST /api/courses/join` 的錯誤代碼：`INVALID_FORMAT`（400）、`INVALID_INVITE_CODE`（404）、
+`COURSE_ARCHIVED`（403）、`ALREADY_JOINED` / `ALREADY_PENDING`（409）。
+被拒絕或移出的人可以重新輸入邀請碼，一律回到 `pending`。
+
+審核動作只允許：`approve`（pending / rejected / removed → active）、`reject`（pending → rejected）、
+`remove`（active / pending → removed），其他組合回 409 `INVALID_STATUS_TRANSITION`。
+
+以下為做法 B 的原始規劃，尚未實作；改成 B 時 `POST /api/courses/join` 的網址與欄位維持不變。
+
 ### `POST /api/courses`
 **權限**：HOST
 

@@ -1,5 +1,8 @@
 // 後端 FastAPI 的共用呼叫工具
 // 後端網址由 NEXT_PUBLIC_API_URL 設定（見 frontend/.env.example），不要在頁面裡寫死
+// 只給 client component 使用（會讀瀏覽器的登入 session）
+
+import { createClient } from '@/utils/supabase/client'
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -38,10 +41,18 @@ async function toApiError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, detail)
 }
 
+// 後端用 Authorization: Bearer <token> 判斷是哪位使用者（backend/core/auth.py），
+// 不再相信 body 裡的 user_id；沒登入時不帶，後端會回 401
+async function authHeader(): Promise<Record<string, string>> {
+  const { data } = await createClient().auth.getSession()
+  const token = data.session?.access_token
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...(await authHeader()), ...(init?.headers ?? {}) },
   })
   if (!res.ok) throw await toApiError(res)
   return (await res.json()) as T
@@ -60,7 +71,7 @@ export async function streamSSE(
 ): Promise<void> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...(await authHeader()), ...(init.headers ?? {}) },
   })
   if (!res.ok) throw await toApiError(res)
   if (!res.body) throw new ApiError(res.status, '瀏覽器不支援串流回應')
