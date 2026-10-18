@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from database.client import get_supabase
@@ -25,6 +26,17 @@ router = APIRouter(prefix="/api/review", tags=["review"])
 
 # 對應 schema.sql 的 CHECK 條件
 VALID_DECISIONS = ("accept_ai", "modify", "override", "request_retry")
+
+# PostgreSQL：欄位不存在
+UNDEFINED_COLUMN = "42703"
+
+PENDING_SELECT = (
+    "id, created_at, status, attempt_number, user_id, user_input_content, tutor_action, "
+    "profiles(full_name, email), "
+    "module_steps(step_title, tool_id, require_teacher_review, ai_tools(title)), "
+    "ai_evaluations(id, total_score, feedback_text, confidence, needs_teacher_review), "
+    "teacher_reviews(id)"
+)
 
 
 class JudgeRequest(BaseModel):
@@ -48,39 +60,57 @@ async def get_pending_reviews(
     ),
 ):
     """
-    列出「已有 AI 初評、但還沒有教師判定」的作答。
+    列出還沒有教師判定、需要老師看的作答：
+      - 已有 AI 初評的作答
+      - TutorAgent 建議找老師（tutor_action = escalate）的作答——這類不評分、
+        沒有 ai_evaluations，但正是最需要老師介入的學生
+
+    需要優先處理的排在前面（review_reasons 非空）：
+      escalated         TutorAgent 建議找老師
+      low_confidence    AI 自評信心不足（ai_evaluations.needs_teacher_review）
+      step_requires_review  教授把這個步驟設為教師強制審核點
 
     註：schema 中 learning_modules 沒有關聯到 courses，
     因此目前無法依課程篩選，只提供 tool_id 與 needs_attention。
     """
     db = get_supabase()
 
-    res = (
-        db.table("step_attempts")
-        .select(
-            "id, created_at, status, attempt_number, user_id, user_input_content, "
-            "profiles(full_name, email), "
-            "module_steps(step_title, tool_id, ai_tools(title)), "
-            "ai_evaluations(id, total_score, feedback_text), "
-            "teacher_reviews(id)"
-        )
-        .order("created_at", desc=True)
-        .execute()
-    )
+    def query(columns: str):
+        return db.table("step_attempts").select(columns).order("created_at", desc=True).execute()
+
+    try:
+        res = query(PENDING_SELECT)
+    except APIError as e:
+        # 資料庫還沒跑 migration 003（沒有 tutor_action）時，退回不含此欄位的查詢，
+        # 佇列照常運作，只是看不到被轉介（escalate）的作答
+        if e.code != UNDEFINED_COLUMN or "tutor_action" not in str(e.message):
+            raise
+        logger.warning("step_attempts.tutor_action 不存在，請執行 supabase/migrations/003_tutor_action.sql")
+        res = query(PENDING_SELECT.replace(" tutor_action,", ""))
 
     data = []
     for attempt in res.data or []:
         evaluations = _as_list(attempt.get("ai_evaluations"))
         reviews = _as_list(attempt.get("teacher_reviews"))
 
-        # 待複核 = 有 AI 初評、且尚無教師判定
-        if not evaluations or reviews:
+        escalated = attempt.get("tutor_action") == "escalate"
+
+        # 待複核 = 尚無教師判定，且（有 AI 初評，或被建議找老師）
+        if reviews or not (evaluations or escalated):
             continue
 
         step = attempt.get("module_steps") or {}
         tool = step.get("ai_tools") or {}
         profile = attempt.get("profiles") or {}
-        evaluation = evaluations[0]
+        evaluation = evaluations[0] if evaluations else {}
+
+        review_reasons = []
+        if escalated:
+            review_reasons.append("escalated")
+        if evaluation.get("needs_teacher_review"):
+            review_reasons.append("low_confidence")
+        if step.get("require_teacher_review"):
+            review_reasons.append("step_requires_review")
 
         if tool_id and step.get("tool_id") != tool_id:
             continue
@@ -99,8 +129,13 @@ async def get_pending_reviews(
             "submitted_at": attempt.get("created_at"),
             "status": attempt.get("status"),
             "ai_total_score": evaluation.get("total_score"),
+            "ai_confidence": evaluation.get("confidence"),
             "needs_attention": attempt.get("status") == "revision_required",
+            "review_reasons": review_reasons,
         })
+
+    # 需要優先處理的排前面；同組內維持新到舊（sort 是穩定排序）
+    data.sort(key=lambda item: not item["review_reasons"])
 
     return {"data": data}
 
@@ -116,7 +151,7 @@ async def get_submission_detail(attempt_id: str):
         db.table("step_attempts")
         .select(
             "*, profiles(full_name, email), "
-            "module_steps(step_title, pass_score, ai_tools(title, rubric_criteria)), "
+            "module_steps(step_title, pass_score, require_teacher_review, ai_tools(title, rubric_criteria)), "
             "ai_evaluations(*), teacher_reviews(*)"
         )
         .eq("id", attempt_id)
@@ -147,16 +182,21 @@ async def get_submission_detail(attempt_id: str):
             "step": {
                 "step_title": step.get("step_title", ""),
                 "pass_score": step.get("pass_score"),
+                "require_teacher_review": bool(step.get("require_teacher_review")),
                 "tool": step.get("ai_tools") or {},
             },
             "attempt_number": attempt.get("attempt_number"),
             "status": attempt.get("status"),
+            "tutor_action": attempt.get("tutor_action"),
             "content": attempt.get("user_input_content"),
             "ai_evaluation": {
                 "total_score": evaluation.get("total_score") if evaluation else None,
                 "dimension_scores": evaluation.get("dimension_scores", []) if evaluation else [],
                 "feedback_text": evaluation.get("feedback_text", "") if evaluation else "",
                 "evidence_text": evaluation.get("evidence_text", "") if evaluation else "",
+                "confidence": evaluation.get("confidence") if evaluation else None,
+                "needs_teacher_review": bool(evaluation.get("needs_teacher_review")) if evaluation else False,
+                "detected_errors": evaluation.get("detected_errors") or [] if evaluation else [],
             },
             "teacher_reviews": reviews,
             "prompt_logs": prompt_res.data or [],

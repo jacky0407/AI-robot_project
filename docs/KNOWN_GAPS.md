@@ -1,7 +1,7 @@
 # 已知落差與技術債
 
 > 掃描時間：2026-09-17｜基準 commit `62f57f4`
-> 標 ✅ 的項目已在「第一批修正」中處理完畢（見 [CHANGELOG.md](./CHANGELOG.md)）。
+> 標 ✅ 的項目已在「第一批修正」中處理完畢（行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md) 第 10 節）。
 > 其餘項目仍待處理，標 🔴 者會在執行時直接失敗。
 
 ---
@@ -167,7 +167,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 端點 | 目前回傳 |
 |------|---------|
-| `GET /api/teacher/tools` | 直接回陣列（未包 `data`） |
+| ~~`GET /api/teacher/tools`~~ | ✅ 已改為 `{"data": [...]}` |
 | `DELETE /api/teacher/tools/{id}` | `{"success": true, "message": "..."}` |
 | 其他 | `{"data": ...}` ✅ |
 
@@ -178,7 +178,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 `/student/practice` 用 `await res.text()` 一次讀完整個串流，等同於同步等待，
 「AI 逐構面即時評分」的體驗完全消失。解析後也只是 `JSON.stringify` 顯示原文。
 
-修法與範例程式見 [FRONTEND.md](./FRONTEND.md#studentpractice--練習室)。
+修法與範例程式見 [ARCHITECTURE.md](./ARCHITECTURE.md) 第 5 節。
 
 ---
 
@@ -200,7 +200,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 `schema.sql` 中沒有任何 `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY`。
 前端 anon key 是公開資訊，目前任何人都能直接讀寫 `profiles`、`ai_tools`、`module_steps`、`tool_cases`。
 
-建議的策略清單見 [DATABASE.md](./DATABASE.md#6-rls-現況)。
+建議至少：`profiles` 只能讀自己；`ai_tools` 學生只讀 published、寫入限 owner/assistant；學習歷程表學生只讀自己的、寫入一律走後端；`teacher_reviews` 限 owner/assistant。
 
 ---
 
@@ -230,16 +230,16 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ## 11. 🟡 寫死的設定
 
-| 位置 | 內容 |
-|------|------|
-| `frontend/src/app/student/practice/page.tsx` | `http://127.0.0.1:8000` |
-| `frontend/src/app/admin/tools/page.tsx` | `http://127.0.0.1:8000` |
-| `frontend/src/app/student/practice/page.tsx` | session id `temp-session-id` |
-| `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 |
-| `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 |
-| `backend/api/practice.py` | `/hints` 端點整段回傳值 |
+| 位置 | 內容 | 狀態 |
+|------|------|------|
+| `frontend/src/app/student/practice/page.tsx` | `http://127.0.0.1:8000` | 待處理 |
+| `frontend/src/app/admin/tools/page.tsx` | `http://127.0.0.1:8000` | 待處理 |
+| `frontend/src/app/student/practice/page.tsx` | session id `temp-session-id` | 待處理 |
+| `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 | ✅ 已刪除，改用 `HintEngine` |
+| `backend/api/practice.py` | `/hints` 端點整段回傳值 | ✅ 已接真實資料 |
+| `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 | 🟡 步驟編號已改對九步驟（3→5、3→7、5→8），內容待教授確認；入庫待 E 批次 |
 
-前兩項應抽成 `NEXT_PUBLIC_API_URL`，後三項應改讀資料庫（`ai_tools.teaching_strategy`）。
+前三項應抽成 `NEXT_PUBLIC_API_URL`；`CoherenceAgent` 的規則應改讀資料庫讓教授可自訂。
 
 ---
 
@@ -247,17 +247,18 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 項目 | 狀況 |
 |------|------|
-| `ai_tools.teaching_strategy` | 無程式碼讀取 |
-| `ai_tools.error_taxonomy` | 無程式碼讀取；`ai_evaluations.detected_errors` 恆為 `[]` |
+| `ai_tools.teaching_strategy` | ✅ 已接上 `HintEngine`，見 [LLM_SYSTEM.md](./LLM_SYSTEM.md) |
+| `ai_tools.error_taxonomy` | ✅ 已接上 `ErrorDetector`，`detected_errors` 會寫入 |
 | `ai_tools.max_cost_limit` | 無程式碼檢查 |
 | `ai_evaluations.ai_cost` | 恆為 0.0 |
 | `ai_evaluations.suggested_next_step` | 從未寫入 |
 | `module_steps.pass_forward_keys` | 步驟間資料傳遞未實作 |
-| `module_steps.require_teacher_review` | 無程式碼讀取 |
+| `module_steps.require_teacher_review` | ✅ `/api/review/pending` 已讀取（`review_reasons: step_requires_review`）；但尚無「審核前不能進下一步」的解鎖邏輯 |
 | `step_attempts.structured_data` | 從未寫入 |
 | `prompt_logs.student_reaction` | 從未寫入 |
 | `tool_permissions` / `forms` / `form_responses` | 整張表無人使用 |
 | `backend/core/ai/tools/evaluation_tools.py` | 四個 LangChain tool 未被任何 Agent 掛載 |
+| `core/ai/base.py` / `gemini_provider.py` | `BaseAIProvider` 只有 `GeminiProvider` 繼承，而實際評分流程（各 Agent）直接用 LangChain 建 client，沒有經過這層抽象。AGENTS.md 的「換模型只改 `gemini_provider.py`」目前不成立；換模型請改 `.env` 的 `GEMINI_MODEL` |
 | `supabase/practice_repo.py` | 早期資料存取層，沒有任何檔案 import 它 |
 | `requirements.txt` 的 `sse-starlette` | 實際使用 FastAPI `StreamingResponse` 手刻 SSE |
 | pgvector extension | 已啟用，但無任何向量欄位或檢索邏輯 |
@@ -268,7 +269,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 項目 | 說明 |
 |------|------|
-| `ai_evaluations.evidence_text` | 存的是學生作答前 200 字，不是 AI 引用的佐證。AI 的佐證其實已在 `dimension_scores[].evidence` 裡 |
+| ~~`ai_evaluations.evidence_text`~~ | ✅ 已改存 AI 各構面實際引用的原文 |
 | `GeminiProvider.evaluate_stream()` | `score_complete` 的 `passed` 寫死 `False`，註解說「由呼叫方補上」但無人補 |
 | `review.py` 的 `d.dict()` | Pydantic v2 已棄用，應改 `d.model_dump()` |
 | `frontend/src/app/layout.tsx` | metadata 仍是 `create-next-app` 預設值（`title: "Create Next App"`） |
@@ -282,12 +283,93 @@ pass_threshold = step_res.data.get("pass_score") or 75
 ## 14. 建議處理順序
 
 ```
-✅ 第一批（已完成）  → #1 review 欄位、#2 KeyError、#3 session 欄位、#10 seed.sql
-                      外加 #4 pass_score、#5 Rubric levels
-   第二批（安全）    → #8 API 身分驗證、#9 RLS
-   第三批（體驗）    → #7 前端 SSE
-   第四批（可部署）  → #11 環境變數、#6 回應格式
-   第五批（補需求）  → #12 未使用欄位對應的功能
+✅ 第一批（已完成）    → #1 review 欄位、#2 KeyError、#3 session 欄位、#10 seed.sql
+                        外加 #4 pass_score、#5 Rubric levels
+✅ 第二批 LLM（已完成）→ 分層提示、錯誤分類、confidence、scale_type、逾時重試
+   第三批（安全）      → #8 API 身分驗證、#9 RLS      ← 目前最該做的
+   第四批（體驗）      → #7 前端 SSE
+   第五批（可部署）    → #11 環境變數、#6 回應格式
+   第六批（補需求）    → 成本控管、跨步驟傳遞、Coherence 規則入庫
 ```
 
-第一批的完整異動見 [CHANGELOG.md](./CHANGELOG.md)。
+LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆異動看 `git log`。
+
+---
+
+## 15. 尚未實作的功能
+
+**後端**
+
+- `api/auth.py`、`api/courses.py`、`api/tools.py`、`api/export.py` — `main.py` 中以 TODO 註解預留，檔案不存在
+- 課程與邀請碼（建立、加入、審核、每日額度）
+- 自主探索模式的額度控管（`tool_permissions` 表無人使用）
+- 表單與前後測（`forms` / `form_responses`）
+- 研究資料 CSV 匯出（`/api/export/*`）
+- 研究倫理同意書流程（`/api/consent`）
+- 教授後台監控 API（`/api/admin/conversations`、`/api/admin/tools/{id}/analytics`）
+- AI 成本記錄（`ai_evaluations.ai_cost` 恆為 0；`ai_tools.max_cost_limit` 無人檢查）
+- RAG／pgvector（schema 已啟用 extension，無任何向量欄位與檢索邏輯）
+
+**前端**
+
+- 註冊頁、忘記密碼
+- 課程加入（輸入邀請碼）
+- 分層提示 UI（逐層解鎖）— 後端 `/hints` 已可用，缺畫面
+- 教師複核後台介面
+- 機器人編輯頁、案例管理、提示設定（GPTs Builder 的其他分頁）
+- 作答版本比對介面
+
+**安全與部署**
+
+- Supabase RLS 規則（`schema.sql` 完全沒有 `ENABLE ROW LEVEL SECURITY`）
+- 後端 API 的身分驗證（目前所有端點無任何權限檢查，`user_id` 由前端傳入）
+- Vercel / Render 部署設定
+
+---
+
+> 這份清單原本是獨立文件，已併入本文件，不再單獨維護。
+
+---
+
+## 16. ✅ 已修正 — AI 與教師複核之間的落差（2026-10）
+
+| 問題 | 修法 | 回歸測試 |
+|------|------|---------|
+| 自動分層提示永遠停在第 1 層 | 已用提示數改為整個步驟累計；60～門檻區間交給 `HintEngine` 依 `max_auto_hints` 決定 | `test_practice_api.py::TestHintProgression`、`test_tutor_agent.py` |
+| 只拿到提示的作答也算進「轉介老師」次數 | 改算「被評分過」的次數（`StudentContext.evaluated_attempts`） | `test_tutor_agent.py::test_hint_only_attempts_do_not_count_toward_escalation` |
+| 被轉介（escalate）的學生不會出現在複核佇列 | 新增 `step_attempts.tutor_action`（migration 003），佇列納入 escalate | `test_review_api.py::TestPendingQueue` |
+| 只給提示 / 轉介的作答狀態停在 `submitted` | 改為 `revision_required` | `TestTutorActionPersistence` |
+| 複核 API 看不到 `confidence`、`needs_teacher_review`、`detected_errors` | pending / detail 都回傳，並依 `review_reasons` 排序 | `test_review_api.py` |
+| Coherence 步驟編號與九步驟不符；0 條規則時回「恭喜完成」 | 改編號；0 條規則時 `overall_coherent = null` 並說明缺哪些步驟 | `test_coherence_agent.py` |
+| 刪除仍被步驟使用的機器人回 500 | 回 409 `TOOL_IN_USE` | `test_teacher_api.py` |
+| （實測）沒跑 migration 003 時待複核清單整個 500 | 退回不含 `tutor_action` 的查詢 | `test_review_api.py::test_works_before_migration_003` |
+| （實測）資料庫既有的 `error_taxonomy` 用 `error_code` / `name`，被解析成空清單、錯誤偵測靜默關閉 | 解析器兩種命名都接受 | `test_error_detector.py::test_accepts_error_code_and_name_from_existing_data` |
+
+> 需要先跑 `supabase/migrations/003_tutor_action.sql`。沒跑時寫入 `tutor_action` 失敗只會記 log、評分照常；
+> 待複核清單照常運作，但看不到被轉介（escalate）的作答。
+
+---
+
+## 17. 🔴 Gemini 免費額度與延遲（2026-10 實測）
+
+| 現象 | 數據 |
+|------|------|
+| 免費方案額度 | `gemini-3.5-flash` **每專案每天 20 次請求**（429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`） |
+| 一次評分用掉的請求數 | 構面數 + 1，有 `error_taxonomy` 再 +1；逾時重試也算 → 一天大約只夠 4–6 次學生提交 |
+| 延遲（預設思考模式） | 只要求回「OK」就 11–53 秒；評一個構面 27–49 秒 |
+| 結果 | `llm_utils` 單次逾時 30 秒 → 常逾時重試，重試又再吃額度；錯誤偵測兩次都逾時就被靜默略過 |
+| 尖峰時段 | 另有 503 `UNAVAILABLE`（模型需求過高），LangChain 內建重試會把等待拉長 |
+
+**待決定**（影響評分品質與成本，需要成員三與教授決定）：
+
+1. 上課前改用付費方案，或改用額度較高的模型（改 `.env` 的 `GEMINI_MODEL` 即可）
+2. 調高 `llm_utils.DEFAULT_TIMEOUT_SECONDS`（例如 90 秒），避免「已經在算了卻被切斷重來」反而多吃額度
+3. 評分 / 錯誤偵測改用較低的思考等級（`thinking_config={"thinking_level": "low"}`），延遲可降到 2 秒內，但評分品質尚未比較
+
+---
+
+## 文件與程式碼的關係
+
+`docs/api.md` 是**目標規格**，描述第一版完成時應有的樣子；
+`ARCHITECTURE.md` 描述**現在程式碼實際長什麼樣**。
+兩者不一致時**以程式碼為準**，並把差異記到本文件。

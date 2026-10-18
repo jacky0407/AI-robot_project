@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
+# 所有 Agent 共用的 Gemini 模型。要換模型時改 .env 的 GEMINI_MODEL 即可，
+# 不要在個別檔案裡寫死模型名稱（tests/test_config.py 會檢查）。
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+
 
 class Settings(BaseSettings):
     # Supabase（由成員二建立後填入）
@@ -9,6 +13,7 @@ class Settings(BaseSettings):
 
     # Gemini API
     gemini_api_key: str = ""
+    gemini_model: str = DEFAULT_GEMINI_MODEL
 
     # 環境
     environment: str = "development"

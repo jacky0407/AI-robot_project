@@ -63,6 +63,10 @@ class FakeTable:
         self.filters.append((column, value))
         return self
 
+    def in_(self, column, values):
+        self.filters.append((column, tuple(values)))
+        return self
+
     def order(self, *args, **kwargs):
         return self
 
@@ -112,10 +116,22 @@ def _project(row: dict, selected: str) -> dict:
 
 
 class FakeSupabase:
-    def __init__(self, step_row: dict, prev_attempts: list, hints_count: int = 0):
+    def __init__(
+        self,
+        step_row: dict,
+        prev_attempts: list,
+        hints_count: int = 0,
+        *,
+        hint_logs: dict[str, int] | None = None,
+        fail_tutor_action_update: bool = False,
+    ):
         self.step_row = step_row
         self.prev_attempts = prev_attempts
         self.hints_count = hints_count
+        # 給了 hint_logs（attempt_id → 提示數）時，prompt_logs 的 count
+        # 會依查詢條件真的去加總，才能抓到「只算上一次作答」這類錯誤
+        self.hint_logs = hint_logs
+        self.fail_tutor_action_update = fail_tutor_action_update
         self.calls: list[dict] = []
 
     def table(self, name):
@@ -130,7 +146,13 @@ class FakeSupabase:
             # —— 這樣才能真實重現「只選了 attempt_number 卻讀 id」的錯誤
             return FakeResult([_project(row, q.selected) for row in self.prev_attempts])
         if key == ("prompt_logs", "select"):
-            return FakeResult([], count=self.hints_count)
+            if self.hint_logs is None:
+                return FakeResult([], count=self.hints_count)
+            ids: set[str] = set()
+            for column, value in q.filters:
+                if column == "attempt_id":
+                    ids.update(value if isinstance(value, tuple) else (value,))
+            return FakeResult([], count=sum(self.hint_logs.get(i, 0) for i in ids))
         if key == ("step_attempts", "insert"):
             return FakeResult([{"id": "attempt-new"}])
         if key == ("ai_evaluations", "insert"):
@@ -138,6 +160,8 @@ class FakeSupabase:
         if key == ("prompt_logs", "insert"):
             return FakeResult([{"id": "log-new"}])
         if key == ("step_attempts", "update"):
+            if self.fail_tutor_action_update and "tutor_action" in (q.payload or {}):
+                raise RuntimeError('column "tutor_action" does not exist')
             return FakeResult([{"id": "attempt-new"}])
         return FakeResult([])
 
@@ -209,6 +233,15 @@ def parse_sse(text: str) -> list[tuple[str, dict]]:
         if event is not None:
             events.append((event, data))
     return events
+
+
+def status_updates(fake_db: FakeSupabase) -> list[str]:
+    """step_attempts 的 status 更新（另有一筆 tutor_action 更新，這裡排除）"""
+    return [
+        c["payload"]["status"]
+        for c in fake_db.find("step_attempts", "update")
+        if "status" in c["payload"]
+    ]
 
 
 def submit(fake_db: FakeSupabase, llm_responses: list[str], body: dict = None):
@@ -323,7 +356,7 @@ class TestSecondAttempt:
         submit(fake_db, responses)
 
         call = fake_db.find("prompt_logs", "select")[0]
-        assert ("attempt_id", "attempt-prev") in call["filters"]
+        assert ("attempt_id", ("attempt-prev",)) in call["filters"]
 
     def test_attempt_number_increments(self):
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=self.PREV, hints_count=1)
@@ -432,13 +465,410 @@ class TestPersistence:
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
         submit(fake_db, self.RESPONSES)
 
-        payload = fake_db.find("step_attempts", "update")[0]["payload"]
-        assert payload["status"] == "passed"
+        assert status_updates(fake_db) == ["passed"]
 
     def test_status_updated_to_revision_required(self):
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
         submit(fake_db, [dim_response("A", 1), dim_response("B", 1),
                          dim_response("C", 1), SYNTH_RESPONSE])
 
-        payload = fake_db.find("step_attempts", "update")[0]["payload"]
-        assert payload["status"] == "revision_required"
+        assert status_updates(fake_db) == ["revision_required"]
+
+
+# ==============================================================================
+# LLM 邏輯系統：confidence 落庫、真實佐證、錯誤分類、分層提示
+# ==============================================================================
+
+from unittest.mock import AsyncMock as _AsyncMock
+
+from core.ai.error_detector import ErrorDetector
+from core.ai.hint_engine import HintEngine
+
+TAXONOMY = [
+    {"code": "diagnosis_only", "label": "僅列診斷名稱",
+     "description": "只寫障礙類別", "severity": "high"},
+]
+
+TEACHING_STRATEGY = {
+    "hints": [
+        {"level": 1, "trigger": "score_below_threshold", "content": "你觀察到哪個行為？"},
+        {"level": 2, "trigger": "student_request", "content": "包含情境、行為、頻率"},
+    ],
+    "personalize": False,
+}
+
+
+def step_row_with(**tool_overrides) -> dict:
+    """複製 STEP_ROW 並覆寫 ai_tools 欄位"""
+    row = json.loads(json.dumps(STEP_ROW))
+    row["ai_tools"].update(tool_overrides)
+    return row
+
+
+def _fake_message(content):
+    class _M:
+        def __init__(self, c):
+            self.content = c
+    return _M(content)
+
+
+def submit_with_agents(
+    fake_db,
+    llm_responses,
+    *,
+    body=None,
+    detector_llm=None,
+    hint_llm=None,
+):
+    """跑一次 submit，並替換錯誤偵測器與提示引擎的 LLM"""
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=fake_db):
+        practice.tutor_agent._evaluator._llm = mock_llm(llm_responses)
+        practice.error_detector = ErrorDetector(llm=detector_llm or _AsyncMock())
+        practice.tutor_agent._hints = HintEngine(llm=hint_llm or _AsyncMock())
+        res = client.post(
+            "/api/practice/sessions/test-session/submit",
+            json=body or BODY,
+        )
+    events = parse_sse(res.text) if res.status_code == 200 else []
+    return res, events
+
+
+FULL_RESPONSES = [
+    dim_response("客觀事實辨識", 3),
+    dim_response("推論與假設區分", 3),
+    dim_response("缺漏資訊提問", 3),
+    json.dumps({"overall_feedback": "整體不錯", "confidence": 0.42}),
+]
+
+
+class TestConfidencePersistence:
+
+    def test_confidence_is_written(self):
+        """
+        api.md 的規格有 confidence，舊 schema 沒有欄位，Agent 算完就丟掉。
+        現在必須落庫，教師端才看得到「AI 對這次評分沒把握」。
+        """
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["confidence"] == pytest.approx(0.42)
+
+    def test_low_confidence_flags_teacher_review(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["needs_teacher_review"] is True
+
+    def test_high_confidence_does_not_flag(self):
+        responses = FULL_RESPONSES[:-1] + [
+            json.dumps({"overall_feedback": "很清楚", "confidence": 0.95})
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, responses)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["needs_teacher_review"] is False
+
+
+class TestEvidenceText:
+
+    def test_stores_ai_evidence_not_raw_answer(self):
+        """
+        回歸測試：evidence_text 舊版存的是學生作答前 200 字，那不是證據。
+        應該存 AI 各構面實際引用的原文。
+        """
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        evidence = fake_db.find("ai_evaluations", "insert")[0]["payload"]["evidence_text"]
+        assert evidence != CLEAN_ANSWER[:200]
+        assert "積木角" in evidence          # dim_response 裡的 evidence
+        assert "客觀事實辨識" in evidence     # 標注是哪個構面
+
+
+class TestErrorDetection:
+
+    def test_no_taxonomy_skips_llm(self):
+        """教授沒定義 error_taxonomy 時不該多燒一次 API 額度"""
+        detector_llm = _AsyncMock()
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES, detector_llm=detector_llm)
+
+        assert detector_llm.ainvoke.await_count == 0
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert payload["detected_errors"] == []
+
+    def test_detected_errors_written_and_streamed(self):
+        detector_llm = _AsyncMock()
+        detector_llm.ainvoke = _AsyncMock(return_value=_fake_message(json.dumps({
+            "detected": [{"code": "diagnosis_only", "evidence": "「診斷為自閉症」",
+                          "explanation": "只寫診斷"}]
+        })))
+        fake_db = FakeSupabase(step_row_with(error_taxonomy=TAXONOMY), prev_attempts=[])
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES, detector_llm=detector_llm)
+
+        payload = fake_db.find("ai_evaluations", "insert")[0]["payload"]
+        assert [e["code"] for e in payload["detected_errors"]] == ["diagnosis_only"]
+        assert payload["detected_errors"][0]["severity"] == "high"
+
+        # 前端要能即時顯示
+        assert "errors_detected" in dict(events)
+
+    def test_detection_failure_does_not_break_scoring(self):
+        """錯誤分類掛掉時，評分結果仍要寫入"""
+        detector_llm = _AsyncMock()
+        detector_llm.ainvoke = _AsyncMock(side_effect=RuntimeError("掛了"))
+        fake_db = FakeSupabase(step_row_with(error_taxonomy=TAXONOMY), prev_attempts=[])
+        res, _ = submit_with_agents(fake_db, FULL_RESPONSES, detector_llm=detector_llm)
+
+        assert res.status_code == 200
+        assert fake_db.find("ai_evaluations", "insert")
+
+
+class TestHintPersistence:
+
+    PREV = [{
+        "id": "attempt-prev",
+        "attempt_number": 1,
+        "user_input_content": "小明有自閉症。",
+        "ai_evaluations": [{
+            "total_score": 45,
+            "dimension_scores": [
+                {"dimension": "功能性描述", "score": 1, "max_score": 4, "reason": "只列診斷"},
+            ],
+        }],
+    }]
+
+    def test_teacher_hint_is_used_and_logged_with_trigger(self):
+        """上次 45 分 → GIVE_HINT；應該用教授寫的提示並記下 trigger / source"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.PREV,
+            hints_count=0,
+        )
+        _, events = submit_with_agents(fake_db, [])
+
+        hint = dict(events)["hint"]
+        assert hint["content"] == "你觀察到哪個行為？"
+        assert hint["source"] == "teacher"
+
+        logged = fake_db.find("prompt_logs", "insert")[0]["payload"]
+        assert logged["hint_trigger"] == "score_below_threshold"
+        assert logged["hint_source"] == "teacher"
+
+    def test_second_level_needs_student_request(self):
+        """第 2 層是 student_request，學生沒要就不給 → 改為直接評分"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.PREV,
+            hints_count=1,
+        )
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES)
+
+        names = [e for e, _ in events]
+        assert "hint" not in names
+        assert "score_complete" in names
+
+    def test_student_requested_hint_unlocks_next_level(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.PREV,
+            hints_count=1,
+        )
+        _, events = submit_with_agents(
+            fake_db, [], body={**BODY, "request_hint": True}
+        )
+
+        hint = dict(events)["hint"]
+        assert hint["level"] == 2
+        assert hint["trigger"] == "student_request"
+
+
+# ──────────────────────────────────────────
+# 分層提示要能逐層往下（整個步驟累計）
+# ──────────────────────────────────────────
+
+AUTO_THREE_LEVELS = {
+    "hints": [
+        {"level": 1, "trigger": "score_below_threshold", "content": "第一層：你觀察到哪個行為？"},
+        {"level": 2, "trigger": "score_below_threshold", "content": "第二層：補上情境與頻率"},
+        {"level": 3, "trigger": "score_below_threshold", "content": "第三層：參考句型"},
+    ],
+    "max_auto_hints": 3,
+    "personalize": False,
+}
+
+LOW_DIMS = [{"dimension": "客觀事實辨識", "score": 1, "max_score": 4, "reason": "只列診斷"}]
+
+# 新到舊：第 3 次評分 45 分；第 2 次只拿到提示（沒評分）；第 1 次評分 40 分
+HISTORY_AFTER_ONE_HINT = [
+    {"id": "attempt-3", "attempt_number": 3, "user_input_content": "改過的作答",
+     "ai_evaluations": [{"total_score": 45, "dimension_scores": LOW_DIMS}]},
+    {"id": "attempt-2", "attempt_number": 2, "user_input_content": "第二版",
+     "ai_evaluations": []},
+    {"id": "attempt-1", "attempt_number": 1, "user_input_content": "小明有自閉症。",
+     "ai_evaluations": [{"total_score": 40, "dimension_scores": LOW_DIMS}]},
+]
+
+
+class TestHintProgression:
+
+    def test_hints_used_counts_whole_step_not_only_last_attempt(self):
+        """
+        回歸：舊版只算「上一次作答」的 prompt_logs。給提示那次不評分，
+        下一輪上一次作答換成評分那次 → hints_used 又變 0 → 永遠只拿到第 1 層。
+        """
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},      # 第 1 層提示記在第 2 次作答底下
+        )
+        _, events = submit_with_agents(fake_db, [])
+
+        hint = dict(events)["hint"]
+        assert hint["level"] == 2
+        assert hint["content"].startswith("第二層")
+
+    def test_prompt_logs_queried_for_all_attempts_of_step(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},
+        )
+        submit_with_agents(fake_db, [])
+
+        call = fake_db.find("prompt_logs", "select")[0]
+        assert ("attempt_id", ("attempt-3", "attempt-2", "attempt-1")) in call["filters"]
+
+    def test_all_levels_used_falls_back_to_evaluation(self):
+        """三層都給過了 → 不再硬擠提示，改為直接評分"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-1": 1, "attempt-2": 2},
+        )
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES)
+
+        names = [e for e, _ in events]
+        assert "hint" not in names
+        assert "score_complete" in names
+
+
+# ──────────────────────────────────────────
+# TutorAgent 決策落庫（給教師複核佇列用）
+# ──────────────────────────────────────────
+
+class TestTutorActionPersistence:
+
+    LOW_PREV = [{"id": "attempt-prev", "attempt_number": 1,
+                 "ai_evaluations": [{"total_score": 45, "dimension_scores": LOW_DIMS}]}]
+
+    def _updates(self, fake_db) -> list[dict]:
+        return [c["payload"] for c in fake_db.find("step_attempts", "update")]
+
+    def test_evaluate_decision_is_recorded(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        submit_with_agents(fake_db, FULL_RESPONSES)
+
+        assert {"tutor_action": "evaluate"} in self._updates(fake_db)
+
+    def test_hint_only_attempt_becomes_revision_required(self):
+        """只給提示沒評分的作答，狀態不能永遠停在 submitted"""
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=TEACHING_STRATEGY),
+            prev_attempts=self.LOW_PREV,
+        )
+        _, events = submit_with_agents(fake_db, [])
+
+        assert "hint" in dict(events)
+        updates = self._updates(fake_db)
+        assert {"tutor_action": "give_hint"} in updates
+        assert {"status": "revision_required"} in updates
+        assert fake_db.find("ai_evaluations", "insert") == []
+
+    def test_escalation_is_recorded_for_teacher_queue(self):
+        """已被評分 3 次且仍低於 60 分 → ESCALATE，要記下來讓老師看得到"""
+        prev = [
+            {"id": f"attempt-{n}", "attempt_number": n,
+             "ai_evaluations": [{"total_score": 30, "dimension_scores": LOW_DIMS}]}
+            for n in (3, 2, 1)
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=prev, hints_count=1)
+        _, events = submit_with_agents(fake_db, [])
+
+        assert "escalation" in dict(events)
+        updates = self._updates(fake_db)
+        assert {"tutor_action": "escalate"} in updates
+        assert {"status": "revision_required"} in updates
+
+    def test_missing_column_does_not_break_scoring(self):
+        """還沒跑 migration 003 時，寫 tutor_action 失敗不能讓評分中斷"""
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[], fail_tutor_action_update=True)
+        _, events = submit_with_agents(fake_db, FULL_RESPONSES)
+
+        names = [e for e, _ in events]
+        assert "error" not in names
+        assert "score_complete" in names
+        assert fake_db.find("ai_evaluations", "insert")
+
+
+# ──────────────────────────────────────────
+# GET /hints
+# ──────────────────────────────────────────
+
+def get_hints(fake_db, *, reveal: bool, hint_llm=None):
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=fake_db):
+        practice.hint_engine = HintEngine(llm=hint_llm or _AsyncMock())
+        return client.get(
+            "/api/practice/sessions/test-session/hints",
+            params={"user_id": BODY["user_id"], "step_id": "step-1", "reveal": reveal},
+        )
+
+
+class TestHintsEndpoint:
+
+    def test_peek_does_not_log_or_consume(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},
+        )
+        res = get_hints(fake_db, reveal=False)
+
+        data = res.json()["data"]
+        assert data["hints_used"] == 1          # 整個步驟累計
+        assert data["next_level_available"] is True
+        assert fake_db.find("prompt_logs", "insert") == []
+
+    def test_reveal_gives_next_level_and_logs_on_latest_attempt(self):
+        fake_db = FakeSupabase(
+            step_row_with(teaching_strategy=AUTO_THREE_LEVELS),
+            prev_attempts=HISTORY_AFTER_ONE_HINT,
+            hint_logs={"attempt-2": 1},
+        )
+        res = get_hints(fake_db, reveal=True)
+
+        assert res.json()["data"]["hint"]["level"] == 2
+        logged = fake_db.find("prompt_logs", "insert")[0]["payload"]
+        assert logged["attempt_id"] == "attempt-3"
+        assert logged["hint_trigger"] == "student_request"
+
+    def test_generated_hint_uses_latest_evaluated_attempt(self):
+        """
+        教授沒設定提示時要依最弱構面生成。上一次若只拿到提示（沒評分），
+        要往前找有評分的作答，而不是回「沒有提示可用」。
+        """
+        history = [
+            {"id": "attempt-2", "attempt_number": 2, "user_input_content": "第二版",
+             "ai_evaluations": []},
+            {"id": "attempt-1", "attempt_number": 1, "user_input_content": "小明有自閉症。",
+             "ai_evaluations": [{"total_score": 40, "dimension_scores": LOW_DIMS}]},
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=history, hint_logs={})
+        res = get_hints(fake_db, reveal=False)
+
+        assert res.json()["data"]["next_level_available"] is True

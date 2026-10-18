@@ -15,8 +15,12 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     full_name TEXT,
     role TEXT CHECK (role IN ('owner', 'assistant', 'student', 'explorer')) DEFAULT 'student',
     is_active BOOLEAN DEFAULT true,
+    profession TEXT,                                   -- 職業 / 身分（/onboarding 填寫）
+    registration_completed BOOLEAN NOT NULL DEFAULT false, -- 是否已完成 /onboarding；false 時 middleware 導回 /onboarding
+    terms_accepted_at TIMESTAMPTZ,                     -- 同意服務條款與隱私權政策的時間
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
+-- complete_registration() 定義在 supabase/migrations/004_registration.sql
 
 -- 課程表 (正式課程模式)
 CREATE TABLE IF NOT EXISTS public.courses (
@@ -66,7 +70,8 @@ CREATE TABLE IF NOT EXISTS public.ai_tools (
     role_instruction TEXT NOT NULL,        -- AI 角色與目標
     system_prompt TEXT NOT NULL,           -- 詳細系統指令
     teaching_strategy JSONB DEFAULT '{}'::jsonb, -- 教學策略 (引導時點、提示層級設定)
-    rubric_criteria JSONB DEFAULT '[]'::jsonb,   -- Rubric 評分規準與構面
+    rubric_criteria JSONB DEFAULT '[]'::jsonb,   -- Rubric 評分規準與構面（max_score 為配分/權重）
+    scale_type TEXT CHECK (scale_type IN ('4_point', '5_point', '100_point', 'pass_fail')) DEFAULT '4_point',
     error_taxonomy JSONB DEFAULT '[]'::jsonb,    -- 錯誤分類定義
     max_cost_limit FLOAT DEFAULT 0.5,      -- 單次任務成本上限 ($)
     version INT DEFAULT 1,
@@ -130,6 +135,7 @@ CREATE TABLE IF NOT EXISTS public.step_attempts (
     user_input_content TEXT NOT NULL,      -- 學生獨立作答內容 / 結構化輸出
     structured_data JSONB DEFAULT '{}'::jsonb, -- 結構化欄位 (傳遞給下一步用)
     status TEXT CHECK (status IN ('draft', 'submitted', 'passed', 'revision_required')) DEFAULT 'draft',
+    tutor_action TEXT CHECK (tutor_action IN ('evaluate', 'give_hint', 'encourage', 'escalate')), -- TutorAgent 決策；escalate 會進教師複核佇列
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
@@ -142,6 +148,8 @@ CREATE TABLE IF NOT EXISTS public.ai_evaluations (
     evidence_text TEXT,                    -- AI 引用的學生作答原文證據
     detected_errors JSONB DEFAULT '[]'::jsonb, -- 偵測到的錯誤類型清單
     feedback_text TEXT NOT NULL,           -- AI 正向具體回饋
+    confidence FLOAT,                      -- AI 對本次評分的自評信心值 0~1
+    needs_teacher_review BOOLEAN DEFAULT false, -- confidence 過低時為 true
     suggested_next_step TEXT,              -- 建議下一步
     ai_cost FLOAT DEFAULT 0.0,             -- 單次呼叫估算成本
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
@@ -165,6 +173,8 @@ CREATE TABLE IF NOT EXISTS public.prompt_logs (
     attempt_id UUID NOT NULL REFERENCES public.step_attempts(id) ON DELETE CASCADE,
     hint_level INT NOT NULL,               -- 提示層級 (1:重新思考, 2:方向, 3:結構, 4:局部範例...)
     hint_content TEXT NOT NULL,            -- 提示內容
+    hint_trigger TEXT CHECK (hint_trigger IN ('score_below_threshold', 'student_request')), -- 自動給 or 學生主動要
+    hint_source TEXT CHECK (hint_source IN ('teacher', 'generated')),  -- 教授撰寫 or AI 依 Rubric 生成
     student_reaction TEXT,                 -- 學生查看後的反應或下一步
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );

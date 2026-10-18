@@ -17,6 +17,9 @@
 --   b0000001-… 模組：學前 IEP 逐步撰寫模組
 --   c1111111-… 課程：115學年度 學前特教IEP實務工作坊
 --   ca5e0001-… 案例A：小明
+--
+-- 兩支機器人都附了 teaching_strategy（分層提示）與 error_taxonomy（錯誤分類）
+-- 的完整範例，教授可以直接照著格式改。
 -- ==============================================================================
 
 -- crypt() / gen_salt() 需要 pgcrypto
@@ -102,7 +105,7 @@ ON CONFLICT (id) DO NOTHING;
 -- 4. 建立 AI 能力機器人 (以 IEP 步驟 1 與步驟 2 為例)
 -- ==============================================================================
 -- 機器人 1: 案例資料整理教練
-INSERT INTO public.ai_tools (id, title, domain, target_competency, role_instruction, system_prompt, rubric_criteria, version, status, created_by)
+INSERT INTO public.ai_tools (id, title, domain, target_competency, role_instruction, system_prompt, rubric_criteria, scale_type, teaching_strategy, error_taxonomy, version, status, created_by)
 VALUES 
     (
         'a0000001-0000-0000-0000-000000000001',
@@ -115,6 +118,32 @@ VALUES
             {"dimension": "客觀事實辨識", "max_score": 40, "description": "能準確擷取案例中的具體行為與數據，不加入主觀猜測"},
             {"dimension": "推論與假設區分", "max_score": 30, "description": "能將主觀推論與客觀觀察清楚分開標示"},
             {"dimension": "缺漏資訊提問", "max_score": 30, "description": "能指出評估所需但案例未提供的關鍵訊息"}
+        ]'::jsonb,
+        '4_point',
+        -- 分層提示：level 1~2 系統依分數自動給，level 3 要學生主動要求
+        '{
+            "hints": [
+                {"level": 1, "trigger": "score_below_threshold",
+                 "content": "回到案例文字本身：哪幾句是你「看到」的，哪幾句是你「推測」的？試著把它們分開。"},
+                {"level": 2, "trigger": "score_below_threshold",
+                 "content": "客觀事實通常帶有可觀察的行為、次數或時間長度；推論則含有「可能」「應該是」這類字眼。"},
+                {"level": 3, "trigger": "student_request",
+                 "content": "示範：事實—「在積木角能專注建構約20分鐘」；推論—「他可能對結構性活動較有興趣」。",
+                 "is_example": true, "warn_copy": true}
+            ],
+            "max_auto_hints": 2,
+            "personalize": true
+        }'::jsonb,
+        '[
+            {"code": "fact_inference_mixed", "label": "事實與推論混寫",
+             "description": "把主觀推測和客觀觀察寫在同一句，沒有區分標示",
+             "severity": "high", "related_dimension": "推論與假設區分"},
+            {"code": "diagnosis_only", "label": "僅列診斷名稱",
+             "description": "只寫出障礙類別或診斷，沒有描述具體可觀察的行為",
+             "severity": "high", "related_dimension": "客觀事實辨識"},
+            {"code": "no_missing_info", "label": "未指出缺漏資訊",
+             "description": "完全沒有提出評估上還需要知道什麼",
+             "severity": "medium", "related_dimension": "缺漏資訊提問"}
         ]'::jsonb,
         1,
         'published',
@@ -131,6 +160,34 @@ VALUES
             {"dimension": "情境脈絡完整性", "max_score": 35, "description": "清楚描述在日常活動或作息（如積木角、點心時間）中的表現"},
             {"dimension": "功能性描述", "max_score": 35, "description": "聚焦於參與度與溝通意圖，而非僅列出測驗分數"},
             {"dimension": "支持需求具體性", "max_score": 30, "description": "具體說明需要何種視覺支持或口語提示"}
+        ]'::jsonb,
+        '4_point',
+        '{
+            "hints": [
+                {"level": 1, "trigger": "score_below_threshold",
+                 "content": "你描述的是小明「在什麼活動中」的表現嗎？試著指出一個具體的作息時段。"},
+                {"level": 2, "trigger": "score_below_threshold",
+                 "content": "功能性現況通常包含三件事：在什麼情境下、展現什麼行為、需要哪種支持。檢查看看少了哪一項。"},
+                {"level": 3, "trigger": "student_request",
+                 "content": "示範結構：「小明在〔點心時間〕，能〔以單詞表達需求〕，需要〔成人先提供圖卡選項〕。」",
+                 "is_example": true, "warn_copy": true}
+            ],
+            "max_auto_hints": 2,
+            "personalize": true
+        }'::jsonb,
+        '[
+            {"code": "deficit_language", "label": "缺陷導向用語",
+             "description": "以「不會」「無法」「缺乏」描述學生，而非描述其現有能力與所需支持",
+             "severity": "high", "related_dimension": "功能性描述"},
+            {"code": "no_context", "label": "缺少情境脈絡",
+             "description": "只描述能力，沒有說明在哪個活動或作息中觀察到",
+             "severity": "high", "related_dimension": "情境脈絡完整性"},
+            {"code": "test_score_only", "label": "僅引用測驗分數",
+             "description": "以標準化測驗結果代替自然情境中的功能性描述",
+             "severity": "medium", "related_dimension": "功能性描述"},
+            {"code": "vague_support", "label": "支持需求空泛",
+             "description": "只寫「需要協助」，沒有說明是哪一種支持",
+             "severity": "medium", "related_dimension": "支持需求具體性"}
         ]'::jsonb,
         1,
         'published',

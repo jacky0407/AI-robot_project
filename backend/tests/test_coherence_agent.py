@@ -47,7 +47,7 @@ class TestCoherenceStream:
         agent = CoherenceAgent(checks=[DEFAULT_COHERENCE_CHECKS[0]])
         agent._llm = make_mock_llm([{"is_ok": True, "problem": "", "suggestion": ""}])
 
-        steps = [make_step(1, content="優勢描述"), make_step(3, content="目標設定")]
+        steps = [make_step(3, content="優勢描述"), make_step(5, content="目標設定")]
 
         chunks = []
         async for chunk in agent.check_stream(steps):
@@ -61,7 +61,7 @@ class TestCoherenceStream:
         agent = CoherenceAgent(checks=[DEFAULT_COHERENCE_CHECKS[0]])
         agent._llm = make_mock_llm([{"is_ok": True, "problem": "", "suggestion": ""}])
 
-        steps = [make_step(1), make_step(3)]
+        steps = [make_step(3), make_step(5)]
         chunks = []
         async for chunk in agent.check_stream(steps):
             chunks.append(chunk)
@@ -71,14 +71,14 @@ class TestCoherenceStream:
     @pytest.mark.asyncio
     async def test_yields_one_check_per_valid_rule(self):
         """每條有效規則都要 yield 一個 coherence_check 事件"""
-        # 使用 3 條規則，但只提供步驟 1 和 3（第 2、3 條規則需要步驟 2 和 7）
+        # 使用 3 條規則，但只提供步驟 3 和 5（第 2、3 條規則需要步驟 7 和 8）
         agent = CoherenceAgent(checks=DEFAULT_COHERENCE_CHECKS)
         agent._llm = make_mock_llm([
             {"is_ok": True, "problem": "", "suggestion": ""},   # 規則 1
         ])
 
-        # 只提供步驟 1 和 3 → 只有第 1 條規則有效
-        steps = [make_step(1), make_step(3)]
+        # 只提供步驟 3 和 5 → 只有第 1 條規則有效
+        steps = [make_step(3), make_step(5)]
         chunks = []
         async for chunk in agent.check_stream(steps):
             chunks.append(chunk)
@@ -92,7 +92,7 @@ class TestCoherenceStream:
         agent = CoherenceAgent(checks=[DEFAULT_COHERENCE_CHECKS[0]])
         agent._llm = make_mock_llm([{"is_ok": True, "problem": "", "suggestion": ""}])
 
-        steps = [make_step(1), make_step(3)]
+        steps = [make_step(3), make_step(5)]
         chunks = []
         async for chunk in agent.check_stream(steps):
             chunks.append(chunk)
@@ -106,11 +106,11 @@ class TestCoherenceStream:
         agent = CoherenceAgent(checks=[DEFAULT_COHERENCE_CHECKS[0]])
         agent._llm = make_mock_llm([{
             "is_ok": False,
-            "problem": "步驟1的優勢描述與步驟3的目標完全無關",
-            "suggestion": "請修改步驟3，將優勢納入目標設計"
+            "problem": "步驟3的優勢描述與步驟5的目標完全無關",
+            "suggestion": "請修改步驟5，將優勢納入目標設計"
         }])
 
-        steps = [make_step(1), make_step(3)]
+        steps = [make_step(3), make_step(5)]
         chunks = []
         async for chunk in agent.check_stream(steps):
             chunks.append(chunk)
@@ -126,17 +126,17 @@ class TestCoherenceStream:
         agent._llm = make_mock_llm([{
             "is_ok": False,
             "problem": "目標未呼應優勢",
-            "suggestion": "修改步驟3"
+            "suggestion": "修改步驟5"
         }])
 
-        steps = [make_step(1), make_step(3)]
+        steps = [make_step(3), make_step(5)]
         chunks = []
         async for chunk in agent.check_stream(steps):
             chunks.append(chunk)
 
         check_event = next(c for c in chunks if c["type"] == "coherence_check")
         assert "go_to_step_order" in check_event["data"]
-        assert check_event["data"]["go_to_step_order"] == 3  # target 步驟
+        assert check_event["data"]["go_to_step_order"] == 5  # target 步驟
 
     @pytest.mark.asyncio
     async def test_skips_rules_when_step_missing(self):
@@ -155,6 +155,31 @@ class TestCoherenceStream:
         assert len(check_events) == 0
 
     @pytest.mark.asyncio
+    async def test_no_runnable_rule_does_not_claim_coherent(self):
+        """
+        一條規則都沒跑到時不可以回「一致」——沒檢查就說通過是假結論。
+        回歸：舊版 all([]) == True，只交了步驟 1、2 也會收到「恭喜完成整份 IEP」。
+        """
+        agent = CoherenceAgent(checks=DEFAULT_COHERENCE_CHECKS)
+        agent._llm = make_mock_llm([])
+
+        steps = [make_step(1), make_step(2)]   # 種子資料只有這兩步
+        chunks = []
+        async for chunk in agent.check_stream(steps):
+            chunks.append(chunk)
+
+        complete = chunks[-1]["data"]
+        assert complete["overall_coherent"] is None
+        assert "恭喜" not in complete["summary"]
+        assert "步驟 3" in complete["summary"]
+        agent._llm.ainvoke.assert_not_called()
+
+    def test_default_rules_follow_nine_step_module(self):
+        """預設規則要對到九步驟：3 優勢與需求、5 年度目標、7 支持策略、8 評量監測"""
+        pairs = [(c["source_step_order"], c["target_step_order"]) for c in DEFAULT_COHERENCE_CHECKS]
+        assert pairs == [(3, 5), (3, 7), (5, 8)]
+
+    @pytest.mark.asyncio
     async def test_llm_failure_uses_fallback(self):
         """LLM 回傳壞的 JSON 時，應用 fallback 值繼續，不讓整個 Agent crash"""
         agent = CoherenceAgent(checks=[DEFAULT_COHERENCE_CHECKS[0]])
@@ -163,7 +188,7 @@ class TestCoherenceStream:
         mock.ainvoke = AsyncMock(return_value=AIMessage(content="這不是 JSON"))
         agent._llm = mock
 
-        steps = [make_step(1), make_step(3)]
+        steps = [make_step(3), make_step(5)]
         chunks = []
         async for chunk in agent.check_stream(steps):
             chunks.append(chunk)

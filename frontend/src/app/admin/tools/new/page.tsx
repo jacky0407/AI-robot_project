@@ -11,6 +11,31 @@ interface RubricItem {
   description: string
 }
 
+// 對應 ai_tools.teaching_strategy.hints（格式見 docs/LLM_SYSTEM.md 2.2）
+interface HintItem {
+  content: string
+  trigger: 'score_below_threshold' | 'student_request'
+  is_example: boolean
+}
+
+// 對應 ai_tools.error_taxonomy（格式見 docs/LLM_SYSTEM.md 2.3）
+interface ErrorItem {
+  code: string
+  label: string
+  description: string
+  severity: 'low' | 'medium' | 'high'
+  related_dimension: string
+}
+
+const SCALE_OPTIONS = [
+  { value: '4_point', label: '4 級量表（預設）' },
+  { value: '5_point', label: '5 級量表' },
+  { value: 'pass_fail', label: '達成 / 未達成' },
+  { value: '100_point', label: '直接給 0–100 分' },
+]
+
+const fieldClass = 'w-full rounded border border-gray-300 p-1.5 text-xs focus:outline-none'
+
 export default function NewToolPage() {
   const router = useRouter()
   const supabase = createClient()
@@ -28,6 +53,22 @@ export default function NewToolPage() {
     { dimension: '情境脈絡完整性', max_score: 30, description: '清楚描述日常活動或作息中的具體表現' },
     { dimension: '支持需求具體性', max_score: 30, description: '能說明需要何種視覺支持或口語提示' },
   ])
+
+  const [scaleType, setScaleType] = useState('4_point')
+
+  // 教授沒設定提示時，系統會依 Rubric 最弱構面即時生成（並標記為 AI 生成）
+  const [hints, setHints] = useState<HintItem[]>([])
+  const [maxAutoHints, setMaxAutoHints] = useState(2)
+  const [personalize, setPersonalize] = useState(true)
+
+  // 沒有定義錯誤分類時，系統完全不做錯誤偵測（不額外呼叫 AI）
+  const [errors, setErrors] = useState<ErrorItem[]>([])
+
+  const updateHint = (index: number, patch: Partial<HintItem>) =>
+    setHints(hints.map((h, i) => (i === index ? { ...h, ...patch } : h)))
+
+  const updateError = (index: number, patch: Partial<ErrorItem>) =>
+    setErrors(errors.map((er, i) => (i === index ? { ...er, ...patch } : er)))
 
   const handleAddRubric = () => {
     setRubrics([...rubrics, { dimension: '', max_score: 10, description: '' }])
@@ -64,6 +105,20 @@ export default function NewToolPage() {
       role_instruction: roleInstruction,
       system_prompt: systemPrompt,
       rubric_criteria: rubrics,
+      scale_type: scaleType,
+      teaching_strategy: hints.length
+        ? {
+            hints: hints.map((h, i) => ({
+              level: i + 1,
+              trigger: h.trigger,
+              content: h.content,
+              ...(h.is_example ? { is_example: true, warn_copy: true } : {}),
+            })),
+            max_auto_hints: maxAutoHints,
+            personalize,
+          }
+        : {},
+      error_taxonomy: errors,
       status: 'published',
       version: 1,
       created_by: user.id,
@@ -228,6 +283,140 @@ export default function NewToolPage() {
                 </div>
               ))}
             </div>
+          </div>
+
+          <div className="space-y-3">
+            <h2 className="text-base font-semibold text-gray-800 border-l-4 border-blue-600 pl-2">
+              4. 評分量表
+            </h2>
+            <select
+              value={scaleType}
+              onChange={(e) => setScaleType(e.target.value)}
+              className="w-full rounded-md border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none sm:w-1/2"
+            >
+              {SCALE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">上方的「配分」是各構面的權重；量表決定 AI 對每個構面的評分級距，總分一律換算成 0–100。</p>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-800 border-l-4 border-blue-600 pl-2">
+                5. 分層提示（選填）
+              </h2>
+              <button
+                type="button"
+                onClick={() => setHints([...hints, { content: '', trigger: 'score_below_threshold', is_example: false }])}
+                className="rounded-md bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              >
+                + 新增一層
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">
+              由淺到深排列。未設定時，系統會依學生最弱的構面即時生成提示，並在後台標記為「AI 生成」。
+            </p>
+            {hints.map((h, idx) => (
+              <div key={idx} className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <div className="flex items-center justify-between text-xs font-semibold text-gray-700">
+                  <span>第 {idx + 1} 層</span>
+                  <button type="button" onClick={() => setHints(hints.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700">
+                    刪除
+                  </button>
+                </div>
+                <textarea
+                  rows={2}
+                  required
+                  placeholder="提示內容"
+                  value={h.content}
+                  onChange={(e) => updateHint(idx, { content: e.target.value })}
+                  className={fieldClass}
+                />
+                <div className="flex flex-wrap gap-4 text-xs text-gray-700">
+                  <select
+                    value={h.trigger}
+                    onChange={(e) => updateHint(idx, { trigger: e.target.value as HintItem['trigger'] })}
+                    className="rounded border border-gray-300 p-1"
+                  >
+                    <option value="score_below_threshold">分數未達門檻時自動給</option>
+                    <option value="student_request">學生主動要求才給</option>
+                  </select>
+                  <label className="flex items-center gap-1">
+                    <input type="checkbox" checked={h.is_example} onChange={(e) => updateHint(idx, { is_example: e.target.checked })} />
+                    示範型提示（原樣呈現，並提醒學生不要照抄）
+                  </label>
+                </div>
+              </div>
+            ))}
+            {hints.length > 0 && (
+              <div className="flex flex-wrap items-center gap-4 text-xs text-gray-700">
+                <label className="flex items-center gap-1">
+                  自動提示最多給
+                  <input
+                    type="number"
+                    min={0}
+                    value={maxAutoHints}
+                    onChange={(e) => setMaxAutoHints(Number(e.target.value))}
+                    className="w-14 rounded border border-gray-300 p-1"
+                  />
+                  層
+                </label>
+                <label className="flex items-center gap-1">
+                  <input type="checkbox" checked={personalize} onChange={(e) => setPersonalize(e.target.checked)} />
+                  讓 AI 依學生作答改寫提示用語
+                </label>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-800 border-l-4 border-blue-600 pl-2">
+                6. 常見錯誤分類（選填）
+              </h2>
+              <button
+                type="button"
+                onClick={() =>
+                  setErrors([...errors, { code: '', label: '', description: '', severity: 'medium', related_dimension: '' }])
+                }
+                className="rounded-md bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              >
+                + 新增錯誤類型
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">AI 會對照這份清單標記學生的錯誤，並附上原文；未設定時不做錯誤偵測。</p>
+            {errors.map((er, idx) => (
+              <div key={idx} className="grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-4">
+                <input required placeholder="代碼（英文，如 diagnosis_only）" value={er.code} onChange={(e) => updateError(idx, { code: e.target.value })} className={fieldClass} />
+                <input required placeholder="名稱（如 僅列診斷名稱）" value={er.label} onChange={(e) => updateError(idx, { label: e.target.value })} className={fieldClass} />
+                <select value={er.severity} onChange={(e) => updateError(idx, { severity: e.target.value as ErrorItem['severity'] })} className={fieldClass}>
+                  <option value="low">輕微</option>
+                  <option value="medium">中等</option>
+                  <option value="high">嚴重</option>
+                </select>
+                <select value={er.related_dimension} onChange={(e) => updateError(idx, { related_dimension: e.target.value })} className={fieldClass}>
+                  <option value="">（不指定構面）</option>
+                  {rubrics.map((r) => (
+                    <option key={r.dimension} value={r.dimension}>
+                      {r.dimension}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  required
+                  placeholder="判斷說明（什麼情況算這個錯誤）"
+                  value={er.description}
+                  onChange={(e) => updateError(idx, { description: e.target.value })}
+                  className={`${fieldClass} sm:col-span-3`}
+                />
+                <button type="button" onClick={() => setErrors(errors.filter((_, i) => i !== idx))} className="text-xs text-red-500 hover:text-red-700">
+                  刪除
+                </button>
+              </div>
+            ))}
           </div>
 
           <div className="pt-4">
