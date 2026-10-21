@@ -122,6 +122,22 @@ npm run dev    # http://localhost:3000
 
 後端網址目前寫死 `http://127.0.0.1:8000`，後端換 port 要一起改 `student/practice/page.tsx` 與 `admin/tools/page.tsx`。
 
+### 和 XR 系統聯調
+
+本站用 `next.config.ts` 的轉址把 XR 系統掛在同一個網址底下：`/xr` → XR 前端、`/xr-api` → XR 後端。
+不跑 XR 時兩個變數留空即可，不會加任何轉址。
+
+1. 請 XR 那邊在他們的前端專案執行 `vite build && vite preview`，把網址給你（預設 `http://localhost:4173`），後端網址也一起要
+2. 在 `frontend/.env.local` 填入：
+   ```env
+   XR_FRONTEND_URL=http://localhost:4173
+   XR_BACKEND_URL=http://localhost:xxxx
+   ```
+3. 重啟 `npm run dev`（`next.config.ts` 只在啟動時讀環境變數），開 http://localhost:3000/xr
+
+`/xr` 頁面有自己的 Content-Security-Policy（只能連回本站與 Supabase），其他頁面不受影響。
+XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` 加 `'wasm-unsafe-eval'`。
+
 ---
 
 ## 4. 驗收
