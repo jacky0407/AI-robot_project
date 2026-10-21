@@ -344,6 +344,24 @@
 審核動作只允許：`approve`（pending / rejected / removed → active）、`reject`（pending → rejected）、
 `remove`（active / pending → removed），其他組合回 409 `INVALID_STATUS_TRANSITION`。
 
+#### 指派模組給課程
+
+實作在 `backend/api/course_modules.py`，資料存在 `course_modules`（migrations/005）。
+指派後，課程內 `active` 的成員就看得到模組（由 005 的 RLS 判斷）。
+
+| 權限 | 方法與路徑 | Request | 成功回應 |
+|------|-----------|---------|---------|
+| 教師 | `POST /api/courses/:course_id/modules` | `{module_id}` | 201，`data` 為指派的模組 |
+| 教師 / 已加入的學生 | `GET /api/courses/:course_id/modules` | — | `data` 為模組陣列 |
+| 教師 | `DELETE /api/courses/:course_id/modules/:module_id` | — | `{success: true}` |
+
+模組欄位：`{module_id, title, description, domain, is_published, assigned_at}`。
+
+- 未發布的模組也可以指派（老師先排課），回應的 `message` 會提醒學生暫時看不到
+- `GET`：教師看全部；學生必須是 `active` 成員（否則 403 `NOT_COURSE_MEMBER`），且只看得到已發布的模組
+- 錯誤代碼：`COURSE_NOT_FOUND` / `MODULE_NOT_FOUND` / `ASSIGNMENT_NOT_FOUND`（404）、`ALREADY_ASSIGNED`（409）
+- 取消指派不會刪除學生的作答紀錄
+
 以下為做法 B 的原始規劃，尚未實作；改成 B 時 `POST /api/courses/join` 的網址與欄位維持不變。
 
 ### `POST /api/courses`
@@ -598,6 +616,36 @@
   }
 }
 ```
+
+---
+
+## 三之一、機器人申請 (Tool Requests)
+
+實作在 `backend/api/tool_requests.py`，資料存在 `tool_permissions`（一筆 = 一次申請）。
+登入方式與錯誤格式同「課程管理」第一版。
+
+狀態：`pending`（待審核）、`approved`（已核准）、`rejected`（已拒絕或被撤銷）、`expired`（已過期）。
+`expired` 是算出來的：已核准但到期日（台灣時間）已過，API 一律回傳 `expired`，到期日當天仍可使用。
+
+| 權限 | 方法與路徑 | Request | 成功回應 `data` |
+|------|-----------|---------|----------------|
+| 登入者 | `POST /api/tool-requests` | `{tool_id}` | 申請（`status: "pending"`），201 |
+| 登入者 | `GET /api/tool-requests/mine` | — | 我的申請陣列（新的在前） |
+| 教師 | `GET /api/tool-requests?status=pending` | — | 申請陣列，每筆多 `user_id`、`full_name`、`email` |
+| 教師 | `PATCH /api/tool-requests/:request_id` | `{action: "approve" \| "reject", expire_date?, daily_quota?}` | 更新後的申請 |
+
+每筆申請的欄位：`{id, tool_id, tool_title, status, daily_quota, start_date, expire_date, created_at}`。
+`tool_id` 為 `null` 代表全部機器人（目前只能從後台設定），`tool_title` 會是「全部機器人」。
+
+`POST` 的錯誤代碼：`TOOL_NOT_FOUND`（404，不存在或未發布）、`ALREADY_PENDING` / `ALREADY_APPROVED`（409）。
+被拒絕或過期後可以再申請，會新增一筆，舊紀錄保留。
+
+`PATCH` 規則：
+- `approve`：任何狀態都可以（也用來延長期限、改次數）。`expire_date` 格式 `YYYY-MM-DD`，不可早於今天，不填代表不限期；
+  `daily_quota` 為 1–1000，不填則沿用原值（預設 10）
+- `reject`：只能用在 `pending`（拒絕）或 `approved`（撤銷），其他回 409 `INVALID_STATUS_TRANSITION`
+
+扣次數與每日歸零由 practice API 處理，這裡只設定 `daily_quota`。
 
 ---
 
