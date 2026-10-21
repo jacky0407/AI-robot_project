@@ -27,12 +27,13 @@ EXPECTED_TABLES = [
     "forms", "form_responses", "research_consents",
 ]
 
-# migration 001 / 003 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
+# migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
 EXPECTED_COLUMNS = {
     "ai_evaluations": ["confidence", "needs_teacher_review"],
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action"],
+    "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
 }
 
 PLACEHOLDERS = {
@@ -158,7 +159,7 @@ def main() -> int:
     print(f"  {OK} 15 張表都在")
 
     # ── 欄位 ────────────────────────────────────────────────
-    print("\n=== 4. LLM 邏輯系統需要的欄位 ===\n")
+    print("\n=== 4. migration 新增的欄位 ===\n")
     missing_columns = []
     for table, columns in EXPECTED_COLUMNS.items():
         for column in columns:

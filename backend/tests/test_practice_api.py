@@ -9,12 +9,15 @@
 
 import json
 import pytest
+from datetime import timedelta
 from unittest.mock import AsyncMock, patch
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 import main
 from api import practice
+from core.access import StepAccess, today_taipei
 from core.auth import CurrentUser, get_current_user
 
 # 預設以這位學生登入（dependency_overrides，不經過真正的 token 驗證，見 test_auth.py）
@@ -26,6 +29,16 @@ def logged_in_student():
     main.app.dependency_overrides[get_current_user] = lambda: STUDENT
     yield
     main.app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture(autouse=True)
+def assigned_via_course(monkeypatch):
+    """
+    預設學生已透過課程被指派（不扣額度），讓評分相關的測試不受影響。
+    指派與額度本身的規則見 test_access.py；串接行為見下方 TestAccessAndQuota。
+    """
+    monkeypatch.setattr(practice, "check_step_access", lambda db, user, step: StepAccess(mode="course"))
+    monkeypatch.setattr(practice, "consume_quota", lambda db, access: None)
 
 
 # ──────────────────────────────────────────
@@ -909,6 +922,7 @@ class TestAuth:
         ("get", "/api/practice/sessions/s1/hints?step_id=step-1"),
         ("get", "/api/practice/sessions/s1/history?step_id=step-1"),
         ("post", "/api/practice/modules/m1/coherence-check"),
+        ("get", "/api/practice/steps/step-1/quota"),
     ])
     def test_without_token_returns_401_and_never_touches_db(self, method, path):
         main.app.dependency_overrides.pop(get_current_user, None)
@@ -949,3 +963,141 @@ class TestAuth:
 
         assert res.status_code == 200
         assert user_id_filters(fake_db) == [STUDENT.id]
+
+
+# ──────────────────────────────────────────
+# 指派檢查與每日額度的串接
+# ──────────────────────────────────────────
+
+def deny(status_code: int, code: str):
+    def _raise(*args, **kwargs):
+        raise HTTPException(status_code=status_code, detail={"code": code, "message": "x"})
+    return _raise
+
+
+FULL_EVALUATION = [dim_response("A", 3), dim_response("B", 3), dim_response("C", 3), SYNTH_RESPONSE]
+
+
+class TestAccessAndQuota:
+
+    def test_not_assigned_returns_403_and_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(practice, "check_step_access", deny(403, "NOT_ASSIGNED"))
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "NOT_ASSIGNED"
+        assert fake_db.find("step_attempts", "insert") == []
+
+    def test_quota_exceeded_returns_429_and_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(practice, "consume_quota", deny(429, "QUOTA_EXCEEDED"))
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 429
+        assert res.json()["detail"]["code"] == "QUOTA_EXCEEDED"
+        assert fake_db.find("step_attempts", "insert") == []
+
+    def test_pii_rejection_does_not_consume_quota(self, monkeypatch):
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(access))
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, [], body={**BODY, "content": "小明身分證 A123456789"})
+
+        assert res.status_code == 400
+        assert consumed == []
+
+    def test_access_is_checked_with_the_step_from_database(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            practice, "check_step_access",
+            lambda db, user, step: seen.append((user, step)) or StepAccess(mode="course"),
+        )
+        submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert seen == [(STUDENT, STEP_ROW)]
+
+    def test_remaining_quota_is_sent_in_score_start(self, monkeypatch):
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: {"used": 3, "quota": 10})
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert events[0] == ("score_start", {**events[0][1], "quota": {"used": 3, "quota": 10}})
+
+    def test_course_mode_sends_null_quota(self):
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+        assert events[0][1]["quota"] is None
+
+    def test_hints_require_assignment_but_do_not_consume_quota(self, monkeypatch):
+        monkeypatch.setattr(practice, "check_step_access", deny(403, "NOT_ASSIGNED"))
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(access))
+        res = get_hints(FakeSupabase(STEP_ROW, prev_attempts=[], hint_logs={}), reveal=True)
+
+        assert res.status_code == 403
+        assert consumed == []
+
+
+# ──────────────────────────────────────────
+# GET /steps/{step_id}/quota：剩餘額度（只查不扣）
+# ──────────────────────────────────────────
+
+def get_quota(fake_db=None):
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=fake_db or FakeSupabase([STEP_ROW], prev_attempts=[])):
+        return client.get("/api/practice/steps/step-1/quota")
+
+
+def as_permission(monkeypatch, **row):
+    base = {"id": "perm-1", "tool_id": "tool-1", "start_date": None, "expire_date": "2026-10-31",
+            "daily_quota": 10, "used_today": 0, "used_date": None}
+    access = StepAccess(mode="permission", permission_id="perm-1", permission={**base, **row})
+    monkeypatch.setattr(practice, "check_step_access", lambda db, user, step: access)
+
+
+class TestQuotaEndpoint:
+
+    def test_course_mode_is_unlimited(self):
+        res = get_quota()
+
+        assert res.status_code == 200
+        assert res.json()["data"] == {"mode": "course", "used": None, "quota": None,
+                                      "remaining": None, "expire_date": None}
+
+    def test_permission_mode_same_day(self, monkeypatch):
+        as_permission(monkeypatch, used_today=3, used_date=today_taipei().isoformat())
+        res = get_quota()
+
+        assert res.json()["data"] == {"mode": "permission", "used": 3, "quota": 10,
+                                      "remaining": 7, "expire_date": "2026-10-31"}
+
+    def test_permission_mode_new_day_resets(self, monkeypatch):
+        yesterday = (today_taipei() - timedelta(days=1)).isoformat()
+        as_permission(monkeypatch, used_today=10, used_date=yesterday)
+        data = get_quota().json()["data"]
+
+        assert (data["used"], data["remaining"]) == (0, 10)
+
+    def test_exhausted_has_zero_remaining(self, monkeypatch):
+        as_permission(monkeypatch, used_today=10, used_date=today_taipei().isoformat())
+        assert get_quota().json()["data"]["remaining"] == 0
+
+    @pytest.mark.parametrize("code", ["NOT_ASSIGNED", "PERMISSION_EXPIRED"])
+    def test_same_403_codes_as_submit(self, monkeypatch, code):
+        monkeypatch.setattr(practice, "check_step_access", deny(403, code))
+        res = get_quota()
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == code
+
+    def test_does_not_consume_quota(self, monkeypatch):
+        as_permission(monkeypatch)
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(access))
+        fake_db = FakeSupabase([STEP_ROW], prev_attempts=[])
+        get_quota(fake_db)
+
+        assert consumed == []
+        assert [c for c in fake_db.calls if c["op"] != "select"] == []
+
+    def test_unknown_step_returns_404(self):
+        assert get_quota(FakeSupabase([], prev_attempts=[])).status_code == 404
