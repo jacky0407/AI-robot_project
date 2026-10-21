@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.access import check_step_access, consume_quota
 from core.auth import CurrentUser, get_current_user
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
@@ -126,9 +127,10 @@ async def submit_answer(
     學生提交作答：
       1. 個資偵測（PII Check）
       2. 從 Supabase 讀取真實的 step、ai_tools 與 Rubric 設定
-      3. 計算嘗試次數並寫入 step_attempts 記錄
-      4. 呼叫 AI 評分並以 SSE 串流回傳
-      5. 串流結束後將評分結果存入 ai_evaluations
+      3. 指派檢查與扣每日額度（core/access.py；個資沒過或沒被指派都不扣）
+      4. 計算嘗試次數並寫入 step_attempts 記錄
+      5. 呼叫 AI 評分並以 SSE 串流回傳
+      6. 串流結束後將評分結果存入 ai_evaluations
     """
     try:
         db = get_supabase()
@@ -149,6 +151,10 @@ async def submit_answer(
         step_res = db.table("module_steps").select("*, ai_tools(*)").eq("id", body.step_id).single().execute()
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+        # 步驟三：沒被指派回 403；自主模式扣一次額度，用完回 429
+        access = check_step_access(db, user, step_res.data)
+        quota = consume_quota(db, access)
 
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
@@ -224,6 +230,8 @@ async def submit_answer(
                     "session_id": session_id,
                     "attempt_id": attempt_id,
                     "attempt_number": next_attempt_number,
+                    # 自主模式才有：{"used": 今天已用次數, "quota": 每日上限}；課程模式為 null
+                    "quota": quota,
                 })
 
                 final_data = None
@@ -335,13 +343,19 @@ async def get_hint(
 
     step_res = (
         db.table("module_steps")
-        .select("id, pass_score, ai_tools(system_prompt, rubric_criteria, scale_type, teaching_strategy)")
+        .select(
+            "id, module_id, tool_id, pass_score, "
+            "ai_tools(status, system_prompt, rubric_criteria, scale_type, teaching_strategy)"
+        )
         .eq("id", step_id)
         .single()
         .execute()
     )
     if not step_res.data or not step_res.data.get("ai_tools"):
         raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+    # 沒被指派的學生不能看教授設定的提示；看提示不扣額度
+    check_step_access(db, user, step_res.data)
 
     tool = step_res.data["ai_tools"]
     plan = parse_teaching_strategy(tool.get("teaching_strategy"))

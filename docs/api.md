@@ -820,11 +820,22 @@
 }
 ```
 
+**送出前的檢查**（依序；任一不過就不寫入作答、不呼叫 AI）：
+
+| 檢查 | 不通過時 |
+| --- | --- |
+| 個資偵測 | 400 `PII_DETECTED` |
+| 指派：課程指派（active 成員、課程未封存）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；核准已過期為 403 `PERMISSION_EXPIRED` |
+| 每日額度（只限逐位核准的自主模式；送出就扣 1，只拿到提示也算，AI 失敗不退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
+
+教師端（owner / assistant）不做指派與額度檢查。
+
 **Response**：`Content-Type: text/event-stream`
 
 ```
 event: score_start
-data: {"session_id": "uuid", "attempt_id": "uuid", "attempt_number": 1}
+data: {"session_id": "uuid", "attempt_id": "uuid", "attempt_number": 1, "quota": {"used": 3, "quota": 10}}
+  → quota 只有自主模式才有（今天已用次數 / 每日上限，已含這次）；課程模式為 null
 
 event: tutor_decision
 data: {"action": "evaluate", "attempt_number": 1, "last_score_percent": null}

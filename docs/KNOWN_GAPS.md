@@ -301,8 +301,7 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **後端**
 
 - `api/auth.py`、`api/courses.py`、`api/tools.py`、`api/export.py` — `main.py` 中以 TODO 註解預留，檔案不存在
-- 課程與邀請碼（建立、加入、審核、每日額度）
-- 自主探索模式的額度控管（`tool_permissions` 表無人使用）
+- 剩餘額度查詢 API（送出作答時的 `score_start` 事件已帶 `quota`，但還沒有送出前就能查的端點）
 - 表單與前後測（`forms` / `form_responses`）
 - 研究資料 CSV 匯出（`/api/export/*`）
 - 研究倫理同意書流程（`/api/consent`）
@@ -365,6 +364,20 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 1. 上課前改用付費方案，或改用額度較高的模型（改 `.env` 的 `GEMINI_MODEL` 即可）
 2. 調高 `llm_utils.DEFAULT_TIMEOUT_SECONDS`（例如 90 秒），避免「已經在算了卻被切斷重來」反而多吃額度
 3. 評分 / 錯誤偵測改用較低的思考等級（`thinking_config={"thinking_level": "low"}`），延遲可降到 2 秒內，但評分品質尚未比較
+
+---
+
+## 18. 🟡 自主模式的每日額度：AI 評分失敗不退回次數
+
+`core/access.py` 在送出作答時就扣 1 次（只拿到提示、沒評分的那次也算），
+之後 Gemini 逾時或回 429 導致評分失敗，**次數不會退回**。
+
+- 為什麼先不做：退回要在 SSE 串流中途再寫一次資料庫，且要判斷「哪些失敗算系統的錯」
+- 影響：搭配 #17 的免費額度與逾時，學生可能因系統錯誤被扣次數
+- 之後要做時：在 `practice.submit_answer` 的 `event_generator` 的 `except` 裡呼叫退回函式（`used_today - 1`，同樣寫成資料庫函式避免競態）
+
+需要先跑 `supabase/migrations/008_tool_quota.sql`。沒跑時自主模式的學生送出會失敗（找不到 `consume_tool_quota`）；
+課程指派的學生與教師不受影響。
 
 ---
 

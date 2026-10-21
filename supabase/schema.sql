@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS public.tool_permissions (
     tool_id UUID, -- NULL 表示全平台通用額度，或指定特定 tool_id
     daily_quota INT DEFAULT 10,
     used_today INT DEFAULT 0,
+    used_date DATE,                        -- used_today 是哪一天（台灣時間）的次數；扣額度用 consume_tool_quota()，見 migrations/008
     start_date DATE DEFAULT CURRENT_DATE,
     expire_date DATE,
     status TEXT CHECK (status IN ('pending', 'approved', 'rejected', 'expired')) DEFAULT 'pending',
