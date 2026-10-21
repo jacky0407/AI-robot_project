@@ -344,6 +344,24 @@
 審核動作只允許：`approve`（pending / rejected / removed → active）、`reject`（pending → rejected）、
 `remove`（active / pending → removed），其他組合回 409 `INVALID_STATUS_TRANSITION`。
 
+#### 指派模組給課程
+
+實作在 `backend/api/course_modules.py`，資料存在 `course_modules`（migrations/005）。
+指派後，課程內 `active` 的成員就看得到模組（由 005 的 RLS 判斷）。
+
+| 權限 | 方法與路徑 | Request | 成功回應 |
+|------|-----------|---------|---------|
+| 教師 | `POST /api/courses/:course_id/modules` | `{module_id}` | 201，`data` 為指派的模組 |
+| 教師 / 已加入的學生 | `GET /api/courses/:course_id/modules` | — | `data` 為模組陣列 |
+| 教師 | `DELETE /api/courses/:course_id/modules/:module_id` | — | `{success: true}` |
+
+模組欄位：`{module_id, title, description, domain, is_published, assigned_at}`。
+
+- 未發布的模組也可以指派（老師先排課），回應的 `message` 會提醒學生暫時看不到
+- `GET`：教師看全部；學生必須是 `active` 成員（否則 403 `NOT_COURSE_MEMBER`），且只看得到已發布的模組
+- 錯誤代碼：`COURSE_NOT_FOUND` / `MODULE_NOT_FOUND` / `ASSIGNMENT_NOT_FOUND`（404）、`ALREADY_ASSIGNED`（409）
+- 取消指派不會刪除學生的作答紀錄
+
 以下為做法 B 的原始規劃，尚未實作；改成 B 時 `POST /api/courses/join` 的網址與欄位維持不變。
 
 ### `POST /api/courses`
