@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 -- complete_registration() 定義在 supabase/migrations/004_registration.sql
+-- profiles 的 RLS 規則（只能讀自己、不能改 role）定義在 supabase/migrations/006_profiles_rls.sql
 
 -- 課程表 (正式課程模式)
 CREATE TABLE IF NOT EXISTS public.courses (
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS public.course_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    status TEXT CHECK (status IN ('active', 'pending', 'removed')) DEFAULT 'active',
+    status TEXT CHECK (status IN ('active', 'pending', 'rejected', 'removed')) DEFAULT 'active', -- rejected 見 migrations/007
     joined_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(course_id, user_id)
 );
@@ -119,6 +120,17 @@ CREATE TABLE IF NOT EXISTS public.module_steps (
     pass_forward_keys JSONB DEFAULT '[]'::jsonb,  -- 需傳給下一步的欄位 key
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(module_id, step_order)
+);
+
+-- 課程 ↔ 模組 指派：課程中 active 的成員看得到被指派的模組
+-- 指派制的 RLS 規則與判斷函式定義在 supabase/migrations/005_rls_policies.sql
+CREATE TABLE IF NOT EXISTS public.course_modules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+    module_id UUID NOT NULL REFERENCES public.learning_modules(id) ON DELETE CASCADE,
+    assigned_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    assigned_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    UNIQUE (course_id, module_id)
 );
 
 -- ==============================================================================
