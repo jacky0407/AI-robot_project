@@ -182,16 +182,16 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ---
 
-## 8. 🔴 後端 API 沒有任何身分驗證
+## 8. 🟡 後端身分驗證：大部分已修正，`teacher.py` 尚未接上
 
-所有端點都**沒有檢查呼叫者身分**：
+`core/auth.py` 提供 `get_current_user`（驗證 `Authorization: Bearer <supabase_jwt>`）與 `require_staff`（限 owner / assistant）。
 
-- `POST /api/practice/.../submit` 的 `user_id` 由 request body 傳入 → 任何人可冒用他人身分作答
-- `DELETE /api/teacher/tools/{id}` 無角色檢查 → 學生可刪除教授的機器人
-- `POST /api/review/.../judge` 無角色檢查 → 學生可自己給自己判定
+- ✅ `api/courses.py`、`api/course_modules.py`、`api/tool_requests.py`：已使用
+- ✅ `api/practice.py`：全部端點需登入，作答者一律取自 token；body / query 的 `user_id` 會被忽略
+- ✅ `api/review.py`：全部端點限教師端，`teacher_id` 取自 token；body 的 `teacher_id` 會被忽略
+- 🔴 `api/teacher.py`：`GET /api/teacher/tools`、`DELETE /api/teacher/tools/{id}` 仍無身分與角色檢查 → 學生可刪除教授的機器人
 
-**修法**：加一個 FastAPI dependency，驗證 `Authorization: Bearer <supabase_jwt>`，
-用 Supabase 的 `auth.get_user(token)` 取得 `user_id` 與 `role`，並以此取代前端傳入的 `user_id`。
+前端仍會送 `user_id`、`teacher_id`（`student/practice`、`student/modules`、`admin/review/[id]`），後端已不採用，之後可移除。
 
 ---
 

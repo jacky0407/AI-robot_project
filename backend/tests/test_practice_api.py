@@ -15,6 +15,17 @@ from langchain_core.messages import AIMessage
 
 import main
 from api import practice
+from core.auth import CurrentUser, get_current_user
+
+# 預設以這位學生登入（dependency_overrides，不經過真正的 token 驗證，見 test_auth.py）
+STUDENT = CurrentUser(id="11111111-1111-1111-1111-111111111111", role="student")
+
+
+@pytest.fixture(autouse=True)
+def logged_in_student():
+    main.app.dependency_overrides[get_current_user] = lambda: STUDENT
+    yield
+    main.app.dependency_overrides.pop(get_current_user, None)
 
 
 # ──────────────────────────────────────────
@@ -195,7 +206,6 @@ STEP_ROW = {
 CLEAN_ANSWER = "小明在積木角能專注建構約二十分鐘，展現良好的視覺空間能力。"
 
 BODY = {
-    "user_id": "11111111-1111-1111-1111-111111111111",
     "module_id": "22222222-2222-2222-2222-222222222222",
     "step_id": "step-1",
     "content": CLEAN_ANSWER,
@@ -819,13 +829,13 @@ class TestTutorActionPersistence:
 # GET /hints
 # ──────────────────────────────────────────
 
-def get_hints(fake_db, *, reveal: bool, hint_llm=None):
+def get_hints(fake_db, *, reveal: bool, hint_llm=None, extra_params: dict = None):
     client = TestClient(main.app)
     with patch.object(practice, "get_supabase", return_value=fake_db):
         practice.hint_engine = HintEngine(llm=hint_llm or _AsyncMock())
         return client.get(
             "/api/practice/sessions/test-session/hints",
-            params={"user_id": BODY["user_id"], "step_id": "step-1", "reveal": reveal},
+            params={"step_id": "step-1", "reveal": reveal, **(extra_params or {})},
         )
 
 
@@ -872,3 +882,70 @@ class TestHintsEndpoint:
         res = get_hints(fake_db, reveal=False)
 
         assert res.json()["data"]["next_level_available"] is True
+
+
+# ──────────────────────────────────────────
+# 身分驗證：一律以 token 為準
+# ──────────────────────────────────────────
+
+OTHER_STUDENT_ID = "99999999-9999-9999-9999-999999999999"
+
+
+def user_id_filters(fake_db: FakeSupabase) -> list:
+    """所有 step_attempts 查詢用到的 user_id 條件"""
+    return [
+        value
+        for call in fake_db.find("step_attempts", "select")
+        for column, value in call["filters"]
+        if column == "user_id"
+    ]
+
+
+class TestAuth:
+
+    @pytest.mark.parametrize("method, path", [
+        ("post", "/api/practice/sessions"),
+        ("post", "/api/practice/sessions/s1/submit"),
+        ("get", "/api/practice/sessions/s1/hints?step_id=step-1"),
+        ("get", "/api/practice/sessions/s1/history?step_id=step-1"),
+        ("post", "/api/practice/modules/m1/coherence-check"),
+    ])
+    def test_without_token_returns_401_and_never_touches_db(self, method, path):
+        main.app.dependency_overrides.pop(get_current_user, None)
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        client = TestClient(main.app)
+        with patch.object(practice, "get_supabase", return_value=fake_db):
+            res = client.request(method, path, json={**BODY, "tool_id": "t", "case_id": "c", "course_id": "co"})
+
+        assert res.status_code == 401
+        assert res.json()["detail"]["code"] == "UNAUTHORIZED"
+        assert fake_db.calls == []
+
+    def test_submit_writes_token_user_not_body_user_id(self):
+        """舊前端仍會在 body 送 user_id；冒用別人的 user_id 不能寫進別人的作答紀錄"""
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        responses = [dim_response("A", 3), dim_response("B", 3),
+                     dim_response("C", 3), SYNTH_RESPONSE]
+        res, _ = submit(fake_db, responses, body={**BODY, "user_id": OTHER_STUDENT_ID})
+
+        assert res.status_code == 200
+        assert fake_db.find("step_attempts", "insert")[0]["payload"]["user_id"] == STUDENT.id
+        assert user_id_filters(fake_db) == [STUDENT.id]
+
+    def test_hints_ignore_user_id_in_query(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[], hint_logs={})
+        get_hints(fake_db, reveal=False, extra_params={"user_id": OTHER_STUDENT_ID})
+
+        assert user_id_filters(fake_db) == [STUDENT.id]
+
+    def test_history_ignores_user_id_in_query(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        client = TestClient(main.app)
+        with patch.object(practice, "get_supabase", return_value=fake_db):
+            res = client.get(
+                "/api/practice/sessions/s1/history",
+                params={"step_id": "step-1", "user_id": OTHER_STUDENT_ID},
+            )
+
+        assert res.status_code == 200
+        assert user_id_filters(fake_db) == [STUDENT.id]
