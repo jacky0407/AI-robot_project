@@ -182,16 +182,16 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ---
 
-## 8. 🔴 後端 API 沒有任何身分驗證
+## 8. 🟡 後端身分驗證：大部分已修正，`teacher.py` 尚未接上
 
-所有端點都**沒有檢查呼叫者身分**：
+`core/auth.py` 提供 `get_current_user`（驗證 `Authorization: Bearer <supabase_jwt>`）與 `require_staff`（限 owner / assistant）。
 
-- `POST /api/practice/.../submit` 的 `user_id` 由 request body 傳入 → 任何人可冒用他人身分作答
-- `DELETE /api/teacher/tools/{id}` 無角色檢查 → 學生可刪除教授的機器人
-- `POST /api/review/.../judge` 無角色檢查 → 學生可自己給自己判定
+- ✅ `api/courses.py`、`api/course_modules.py`、`api/tool_requests.py`：已使用
+- ✅ `api/practice.py`：全部端點需登入，作答者一律取自 token；body / query 的 `user_id` 會被忽略
+- ✅ `api/review.py`：全部端點限教師端，`teacher_id` 取自 token；body 的 `teacher_id` 會被忽略
+- 🔴 `api/teacher.py`：`GET /api/teacher/tools`、`DELETE /api/teacher/tools/{id}` 仍無身分與角色檢查 → 學生可刪除教授的機器人
 
-**修法**：加一個 FastAPI dependency，驗證 `Authorization: Bearer <supabase_jwt>`，
-用 Supabase 的 `auth.get_user(token)` 取得 `user_id` 與 `role`，並以此取代前端傳入的 `user_id`。
+前端仍會送 `user_id`、`teacher_id`（`student/practice`、`student/modules`、`admin/review/[id]`），後端已不採用，之後可移除。
 
 ---
 
@@ -301,8 +301,6 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **後端**
 
 - `api/auth.py`、`api/courses.py`、`api/tools.py`、`api/export.py` — `main.py` 中以 TODO 註解預留，檔案不存在
-- 課程與邀請碼（建立、加入、審核、每日額度）
-- 自主探索模式的額度控管（`tool_permissions` 表無人使用）
 - 表單與前後測（`forms` / `form_responses`）
 - 研究資料 CSV 匯出（`/api/export/*`）
 - 研究倫理同意書流程（`/api/consent`）
@@ -365,6 +363,20 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 1. 上課前改用付費方案，或改用額度較高的模型（改 `.env` 的 `GEMINI_MODEL` 即可）
 2. 調高 `llm_utils.DEFAULT_TIMEOUT_SECONDS`（例如 90 秒），避免「已經在算了卻被切斷重來」反而多吃額度
 3. 評分 / 錯誤偵測改用較低的思考等級（`thinking_config={"thinking_level": "low"}`），延遲可降到 2 秒內，但評分品質尚未比較
+
+---
+
+## 18. 🟡 自主模式的每日額度：AI 評分失敗不退回次數
+
+`core/access.py` 在送出作答時就扣 1 次（只拿到提示、沒評分的那次也算），
+之後 Gemini 逾時或回 429 導致評分失敗，**次數不會退回**。
+
+- 為什麼先不做：退回要在 SSE 串流中途再寫一次資料庫，且要判斷「哪些失敗算系統的錯」
+- 影響：搭配 #17 的免費額度與逾時，學生可能因系統錯誤被扣次數
+- 之後要做時：在 `practice.submit_answer` 的 `event_generator` 的 `except` 裡呼叫退回函式（`used_today - 1`，同樣寫成資料庫函式避免競態）
+
+需要先跑 `supabase/migrations/008_tool_quota.sql`。沒跑時自主模式的學生送出會失敗（找不到 `consume_tool_quota`）；
+課程指派的學生與教師不受影響。
 
 ---
 

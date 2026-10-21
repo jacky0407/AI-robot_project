@@ -6,6 +6,9 @@
   - 接收學生作答並觸發 AI 評分（SSE 串流回傳）與資料庫寫入
   - 提供分層提示
   - 查看練習版本歷程（已串接 step_attempts 與 ai_evaluations）
+
+身分一律以 Authorization: Bearer <token> 為準（core/auth.py），
+前端在 body 或 query 傳來的 user_id 一律忽略，學生不能查或寫別人的作答。
 """
 
 import json
@@ -13,10 +16,12 @@ import logging
 import traceback
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.access import check_step_access, consume_quota, quota_status
+from core.auth import CurrentUser, get_current_user
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
 from core.ai.error_detector import ErrorDetector
@@ -53,7 +58,7 @@ class CreateSessionRequest(BaseModel):
 
 
 class SubmitAnswerRequest(BaseModel):
-    user_id: str
+    # 不收 user_id：作答者由 token 決定（舊前端仍會送，Pydantic 會直接忽略）
     module_id: str
     step_id: str
     case_id: str | None = None
@@ -70,7 +75,7 @@ import uuid
 from datetime import datetime, timezone
 
 @router.post("/sessions", status_code=201)
-async def create_session(body: CreateSessionRequest):
+async def create_session(body: CreateSessionRequest, user: CurrentUser = Depends(get_current_user)):
     db = get_supabase()
     
     # 1. 取得 tool info
@@ -116,14 +121,16 @@ async def create_session(body: CreateSessionRequest):
 async def submit_answer(
     session_id: str,
     body: SubmitAnswerRequest,
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     學生提交作答：
       1. 個資偵測（PII Check）
       2. 從 Supabase 讀取真實的 step、ai_tools 與 Rubric 設定
-      3. 計算嘗試次數並寫入 step_attempts 記錄
-      4. 呼叫 AI 評分並以 SSE 串流回傳
-      5. 串流結束後將評分結果存入 ai_evaluations
+      3. 指派檢查與扣每日額度（core/access.py；個資沒過或沒被指派都不扣）
+      4. 計算嘗試次數並寫入 step_attempts 記錄
+      5. 呼叫 AI 評分並以 SSE 串流回傳
+      6. 串流結束後將評分結果存入 ai_evaluations
     """
     try:
         db = get_supabase()
@@ -144,6 +151,10 @@ async def submit_answer(
         step_res = db.table("module_steps").select("*, ai_tools(*)").eq("id", body.step_id).single().execute()
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+        # 步驟三：沒被指派回 403；自主模式扣一次額度，用完回 429
+        access = check_step_access(db, user, step_res.data)
+        quota = consume_quota(db, access)
 
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
@@ -169,7 +180,7 @@ async def submit_answer(
         prev_attempts = (
             db.table("step_attempts")
             .select("id, attempt_number, ai_evaluations(total_score, dimension_scores)")
-            .eq("user_id", body.user_id)
+            .eq("user_id", user.id)
             .eq("step_id", body.step_id)
             .order("attempt_number", desc=True)
             .execute()
@@ -198,7 +209,7 @@ async def submit_answer(
 
         # ── 寫入學生作答記錄 ────────────────────────────────────────
         attempt_res = db.table("step_attempts").insert({
-            "user_id": body.user_id,
+            "user_id": user.id,
             "module_id": body.module_id,
             "step_id": body.step_id,
             "case_id": body.case_id,
@@ -219,6 +230,8 @@ async def submit_answer(
                     "session_id": session_id,
                     "attempt_id": attempt_id,
                     "attempt_number": next_attempt_number,
+                    # 自主模式才有：{"used": 今天已用次數, "quota": 每日上限}；課程模式為 null
+                    "quota": quota,
                 })
 
                 final_data = None
@@ -311,15 +324,14 @@ async def submit_answer(
 @router.get("/sessions/{session_id}/hints")
 async def get_hint(
     session_id: str,
-    user_id: str,
     step_id: str,
     reveal: bool = False,
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
-    查詢這位學生在此步驟目前可用的分層提示。
+    查詢目前登入的學生在此步驟可用的分層提示。
 
     Query params:
-        user_id: 學生
         step_id: 步驟
         reveal:  false（預設）只回報有沒有下一層可用，不消耗提示額度；
                  true 才真的取出提示內容並記錄到 prompt_logs
@@ -331,13 +343,19 @@ async def get_hint(
 
     step_res = (
         db.table("module_steps")
-        .select("id, pass_score, ai_tools(system_prompt, rubric_criteria, scale_type, teaching_strategy)")
+        .select(
+            "id, module_id, tool_id, pass_score, "
+            "ai_tools(status, system_prompt, rubric_criteria, scale_type, teaching_strategy)"
+        )
         .eq("id", step_id)
         .single()
         .execute()
     )
     if not step_res.data or not step_res.data.get("ai_tools"):
         raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+    # 沒被指派的學生不能看教授設定的提示；看提示不扣額度
+    check_step_access(db, user, step_res.data)
 
     tool = step_res.data["ai_tools"]
     plan = parse_teaching_strategy(tool.get("teaching_strategy"))
@@ -347,7 +365,7 @@ async def get_hint(
     attempt_res = (
         db.table("step_attempts")
         .select("id, attempt_number, user_input_content, ai_evaluations(dimension_scores)")
-        .eq("user_id", user_id)
+        .eq("user_id", user.id)
         .eq("step_id", step_id)
         .order("attempt_number", desc=True)
         .execute()
@@ -445,11 +463,39 @@ async def get_hint(
     }
 
 
+@router.get("/steps/{step_id}/quota")
+async def get_step_quota(step_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    送出前查詢目前登入者在此步驟今天還能作答幾次（只查不扣）。
+
+    沒被指派、核准已過期時回和送出作答相同的 403（NOT_ASSIGNED / PERMISSION_EXPIRED），
+    前端可以據此直接停用送出按鈕。
+    """
+    db = get_supabase()
+    step_res = (
+        db.table("module_steps")
+        .select("id, module_id, tool_id, ai_tools(status)")
+        .eq("id", step_id)
+        .limit(1)
+        .execute()
+    )
+    rows = step_res.data or []
+    if not rows or not rows[0].get("ai_tools"):
+        raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+    access = check_step_access(db, user, rows[0])
+    return {"data": quota_status(access)}
+
+
 @router.get("/sessions/{session_id}/history")
-async def get_session_history(session_id: str, user_id: str, step_id: str):
+async def get_session_history(
+    session_id: str,
+    step_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
     """
     查看練習版本歷程：
-    從資料庫讀取該學生針對特定 step 的歷次嘗試（step_attempts）與對應的 AI 評分（ai_evaluations）
+    從資料庫讀取目前登入的學生針對特定 step 的歷次嘗試（step_attempts）與對應的 AI 評分（ai_evaluations）
     """
     try:
         db = get_supabase()
@@ -457,7 +503,7 @@ async def get_session_history(session_id: str, user_id: str, step_id: str):
         # 查詢該學生該步驟的所有嘗試與對應評分
         attempts_res = db.table("step_attempts")\
             .select("*, ai_evaluations(*)")\
-            .eq("user_id", user_id)\
+            .eq("user_id", user.id)\
             .eq("step_id", step_id)\
             .order("attempt_number", desc=False)\
             .execute()
@@ -474,15 +520,12 @@ async def get_session_history(session_id: str, user_id: str, step_id: str):
 
 
 @router.post("/modules/{module_id}/coherence-check")
-async def check_module_coherence(module_id: str, user_id: str):
+async def check_module_coherence(module_id: str, user: CurrentUser = Depends(get_current_user)):
     """
     Phase 3：跨步驟整合一致性檢核（SSE 串流）。
 
     當學生完成模組所有步驟後呼叫，
-    CoherenceAgent 會跨步驟檢查 IEP 前後一致性。
-
-    Query params:
-        user_id: 學生的 user_id
+    CoherenceAgent 會跨步驟檢查目前登入學生的 IEP 前後一致性。
 
     SSE 事件序列：
         coherence_start  → 開始，告知共幾條規則
@@ -508,7 +551,7 @@ async def check_module_coherence(module_id: str, user_id: str):
         attempt_res = (
             db.table("step_attempts")
             .select("user_input_content, status")
-            .eq("user_id", user_id)
+            .eq("user_id", user.id)
             .eq("step_id", step["id"])
             .order("attempt_number", desc=True)
             .limit(1)

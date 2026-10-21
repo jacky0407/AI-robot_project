@@ -8,16 +8,20 @@
     AI 初評（ai_evaluations）與教師判定（teacher_reviews）分開存放，永不互相覆蓋。
     「是否已複核」以 step_attempts 底下有沒有對應的 teacher_reviews 判斷，
     不在 ai_evaluations 上加旗標。
+
+權限：全部限教師端（owner / assistant，見 core/auth.py 的 require_staff）。
+teacher_id 一律取自登入 token，不接受前端傳入。
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
+from core.auth import CurrentUser, require_staff
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -40,8 +44,7 @@ PENDING_SELECT = (
 
 
 class JudgeRequest(BaseModel):
-    # TODO: teacher_id 應改由 Supabase JWT 取得，不該由前端傳入（見 docs/KNOWN_GAPS.md #8）
-    teacher_id: str
+    # 不收 teacher_id：判定者由 token 決定（舊前端仍會送，Pydantic 會直接忽略）
     decision: str = Field(description="accept_ai | modify | override | request_retry")
     final_score: Optional[int] = None
     final_feedback: str = ""
@@ -58,6 +61,7 @@ async def get_pending_reviews(
     needs_attention: Optional[bool] = Query(
         None, description="True 只回傳 AI 判定未通過（revision_required）的作答"
     ),
+    user: CurrentUser = Depends(require_staff),
 ):
     """
     列出還沒有教師判定、需要老師看的作答：
@@ -141,7 +145,7 @@ async def get_pending_reviews(
 
 
 @router.get("/submissions/{attempt_id}")
-async def get_submission_detail(attempt_id: str):
+async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(require_staff)):
     """
     單一作答的完整資訊：學生原文、AI 初評、提示使用紀錄、既有教師判定。
     """
@@ -205,7 +209,11 @@ async def get_submission_detail(attempt_id: str):
 
 
 @router.post("/submissions/{attempt_id}/judge", status_code=201)
-async def judge_submission(attempt_id: str, body: JudgeRequest):
+async def judge_submission(
+    attempt_id: str,
+    body: JudgeRequest,
+    user: CurrentUser = Depends(require_staff),
+):
     """
     寫入教師最終判定（teacher_reviews）。
 
@@ -229,7 +237,7 @@ async def judge_submission(attempt_id: str, body: JudgeRequest):
 
     review_res = db.table("teacher_reviews").insert({
         "attempt_id": attempt_id,
-        "teacher_id": body.teacher_id,
+        "teacher_id": user.id,
         "decision": body.decision,
         "final_score": body.final_score,
         "final_feedback": body.final_feedback,

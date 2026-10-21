@@ -9,11 +9,24 @@
 
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from postgrest.exceptions import APIError
 
 import main
 from api import review
+from core.auth import CurrentUser, get_current_user
+
+# 預設以這位老師登入（dependency_overrides，不經過真正的 token 驗證，見 test_auth.py）
+TEACHER = CurrentUser(id="teacher-1", role="owner")
+STUDENT = CurrentUser(id="student-1", role="student")
+
+
+@pytest.fixture(autouse=True)
+def logged_in_teacher():
+    main.app.dependency_overrides[get_current_user] = lambda: TEACHER
+    yield
+    main.app.dependency_overrides.pop(get_current_user, None)
 
 
 class FakeResult:
@@ -225,8 +238,7 @@ class TestSubmissionDetail:
 
 class TestJudge:
 
-    BODY = {"teacher_id": "teacher-1", "decision": "override",
-            "final_score": 85, "final_feedback": "寫得很具體"}
+    BODY = {"decision": "override", "final_score": 85, "final_feedback": "寫得很具體"}
 
     def test_judge_writes_teacher_review_and_never_touches_ai_evaluations(self):
         db = FakeSupabase({
@@ -258,3 +270,58 @@ class TestJudge:
              {**self.BODY, "decision": "request_retry"})
 
         assert db.find("step_attempts", "update")[0]["payload"] == {"status": "revision_required"}
+
+    def test_teacher_id_comes_from_token_not_body(self):
+        """舊前端仍會在 body 送 teacher_id；不能用它冒用別位老師的名義寫判定"""
+        db = FakeSupabase({
+            ("step_attempts", "select"): [{"id": "a1"}],
+            ("teacher_reviews", "insert"): [{"id": "r1"}],
+        })
+        res = post("/api/review/submissions/a1/judge", db,
+                   {**self.BODY, "teacher_id": "someone-else"})
+
+        assert res.status_code == 201
+        assert db.find("teacher_reviews", "insert")[0]["payload"]["teacher_id"] == TEACHER.id
+
+
+# ──────────────────────────────────────────
+# 權限：只限教師端
+# ──────────────────────────────────────────
+
+REVIEW_ENDPOINTS = [
+    ("get", "/api/review/pending"),
+    ("get", "/api/review/submissions/a1"),
+    ("post", "/api/review/submissions/a1/judge"),
+]
+
+
+class TestPermissions:
+
+    @pytest.mark.parametrize("method, path", REVIEW_ENDPOINTS)
+    def test_student_gets_403_and_never_touches_db(self, method, path):
+        main.app.dependency_overrides[get_current_user] = lambda: STUDENT
+        db = FakeSupabase({})
+        client = TestClient(main.app)
+        with patch.object(review, "get_supabase", return_value=db):
+            res = client.request(method, path, json=TestJudge.BODY)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "PERMISSION_DENIED"
+        assert db.calls == []
+
+    @pytest.mark.parametrize("method, path", REVIEW_ENDPOINTS)
+    def test_without_token_returns_401(self, method, path):
+        main.app.dependency_overrides.pop(get_current_user, None)
+        db = FakeSupabase({})
+        client = TestClient(main.app)
+        with patch.object(review, "get_supabase", return_value=db):
+            res = client.request(method, path, json=TestJudge.BODY)
+
+        assert res.status_code == 401
+        assert db.calls == []
+
+    def test_assistant_can_review(self):
+        main.app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="ta-1", role="assistant")
+        res = get("/api/review/pending", FakeSupabase({}))
+
+        assert res.status_code == 200
