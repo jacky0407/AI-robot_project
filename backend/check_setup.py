@@ -25,6 +25,7 @@ EXPECTED_TABLES = [
     "ai_tools", "tool_cases", "learning_modules", "module_steps",
     "step_attempts", "ai_evaluations", "teacher_reviews", "prompt_logs",
     "forms", "form_responses", "research_consents",
+    "course_modules",  # migration 005 才有（新建資料庫跑 schema.sql 就會有）
 ]
 
 # migration 001 / 003 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
@@ -153,9 +154,12 @@ def main() -> int:
 
     if missing_tables:
         print(f"  {FAIL} 缺少 {len(missing_tables)} 張表：{', '.join(missing_tables)}")
-        print("     → 請在 Supabase SQL Editor 執行 supabase/schema.sql")
+        if missing_tables == ["course_modules"]:
+            print("     → 請在 Supabase SQL Editor 執行 supabase/migrations/005_rls_policies.sql")
+        else:
+            print("     → 請在 Supabase SQL Editor 執行 supabase/schema.sql")
         return 1
-    print(f"  {OK} 15 張表都在")
+    print(f"  {OK} {len(EXPECTED_TABLES)} 張表都在")
 
     # ── 欄位 ────────────────────────────────────────────────
     print("\n=== 4. LLM 邏輯系統需要的欄位 ===\n")
