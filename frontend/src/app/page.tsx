@@ -2,25 +2,23 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/utils/supabase/client";
 
 type RoleType = "student" | "teacher" | null;
 
-// /auth/callback 失敗時會帶 ?error=xxx 導回首頁
 const CALLBACK_ERRORS: Record<string, string> = {
   link_expired: "驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。",
   profile: "無法讀取使用者資料，請稍後再試或聯絡管理員",
   auth: "登入驗證失敗，請再試一次",
 };
 
-// 登入成功後的導向頁面（依 profiles.role 決定）；路徑改這裡即可
 const ROUTES = {
-  staff: "/admin/tools", // owner / assistant
-  student: "/student/modules", // 其他（學生）
-  onboarding: "/onboarding", // 第一次登入，尚未完成註冊
+  staff: "/admin/courses",
+  student: "/student/courses",
+  onboarding: "/onboarding",
 };
 
-// useSearchParams 需要包在 Suspense 裡，頁面其他部分才能預先渲染
 export default function Home() {
   return (
     <Suspense fallback={null}>
@@ -34,21 +32,18 @@ function HomeContent() {
   const [selectedRole, setSelectedRole] = useState<RoleType>(null);
   const [isLoginMode, setIsLoginMode] = useState(true);
 
-  // 表單狀態
   const [formData, setFormData] = useState({
     name: "",
     email: "",
     password: "",
   });
 
-  // Google 登入相關狀態
   const supabase = createClient();
   const [googleLoading, setGoogleLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // 依資料庫 profiles.role 導向（身分以資料庫為準，不是以畫面上選的卡片為準）
   const redirectByRole = async (userId: string) => {
     const { data: profile, error } = await supabase
       .from("profiles")
@@ -63,14 +58,12 @@ function HomeContent() {
 
     const isStaff = profile.role === "owner" || profile.role === "assistant";
 
-    // 選了「教師/人員」卻沒有教師權限：登出並提示
     if (selectedRole === "teacher" && !isStaff) {
       await supabase.auth.signOut();
       setAuthError("此帳號沒有教師/工作人員權限，請改用學生身分登入");
       return false;
     }
 
-    // 還沒完成註冊（第一次登入）：先補完基本資料與同意條款
     if (!profile.registration_completed) {
       router.push(ROUTES.onboarding);
       return true;
@@ -80,7 +73,6 @@ function HomeContent() {
     return true;
   };
 
-  // 偵測是否已有登入狀態（不會自動跳轉，讓使用者自己選擇繼續或登出）
   const [existingUser, setExistingUser] = useState<{ id: string; email: string } | null>(null);
 
   useEffect(() => {
@@ -99,13 +91,10 @@ function HomeContent() {
     setExistingUser(null);
   };
 
-  // 若從 /auth/callback 失敗導回（/?error=auth），顯示錯誤訊息
-  // 直接由網址推導，不在 effect 裡 setState（避免多一次 render）
   const searchParams = useSearchParams();
   const callbackError = CALLBACK_ERRORS[searchParams.get("error") ?? ""] ?? "";
   const shownError = authError || callbackError;
 
-  // Google 登入：會整頁跳轉到 Google，之後由 /auth/callback 接手
   const handleGoogleLogin = async () => {
     setGoogleLoading(true);
     setAuthError("");
@@ -114,7 +103,7 @@ function HomeContent() {
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
-        queryParams: { prompt: "select_account" }, // 每次都讓使用者選帳號
+        queryParams: { prompt: "select_account" },
       },
     });
 
@@ -134,14 +123,12 @@ function HomeContent() {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  // 信箱登入 / 註冊（原本是直接切換畫面的模擬版本，現在改為串接 Supabase）
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setAuthError("");
     setInfoMsg("");
 
-    // ---- 登入 ----
     if (isLoginMode) {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: formData.email,
@@ -166,12 +153,11 @@ function HomeContent() {
       return;
     }
 
-    // ---- 註冊 ----（不傳 role：新帳號一律是學生，教師由後台手動升級）
     const { data, error } = await supabase.auth.signUp({
       email: formData.email,
       password: formData.password,
       options: {
-        data: { full_name: formData.name }, // 職業在 /onboarding 填寫
+        data: { full_name: formData.name },
         emailRedirectTo: `${window.location.origin}/auth/callback`,
       },
     });
@@ -186,7 +172,6 @@ function HomeContent() {
       return;
     }
 
-    // 開啟信箱驗證時，重複註冊不會回傳錯誤，而是 identities 為空陣列
     if (data.user && data.user.identities && data.user.identities.length === 0) {
       setAuthError("此信箱已經註冊過。若當初是用 Google 註冊，請按上方「使用 Google 帳號」登入。");
       setSubmitting(false);
@@ -194,13 +179,11 @@ function HomeContent() {
     }
 
     if (data.session && data.user) {
-      // 專案有關閉「Confirm email」時，註冊後直接就是登入狀態
       const ok = await redirectByRole(data.user.id);
       if (!ok) setSubmitting(false);
       return;
     }
 
-    // 需要信箱驗證的情況
     setInfoMsg("註冊成功！請到信箱點擊驗證連結，完成後再回來登入。");
     setIsLoginMode(true);
     setSubmitting(false);
@@ -208,7 +191,6 @@ function HomeContent() {
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif", padding: "24px" }}>
-      {/* 平台標題 */}
       <div style={{ textAlign: "center", marginBottom: "32px" }}>
         <span style={{ padding: "4px 12px", fontSize: "12px", borderRadius: "9999px", backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#a5b4fc" }}>
           學前特教與早療・AI 培訓平台
@@ -221,7 +203,6 @@ function HomeContent() {
         </p>
       </div>
 
-      {/* 已登入提示：可繼續使用或登出（測試其他帳號時請先登出） */}
       {existingUser && (
         <div style={{ width: "100%", maxWidth: "380px", marginBottom: "16px", padding: "12px 14px", borderRadius: "8px", backgroundColor: "rgba(56, 189, 248, 0.12)", border: "1px solid rgba(56, 189, 248, 0.4)", color: "#bae6fd", fontSize: "13px" }}>
           <div style={{ marginBottom: "8px" }}>目前已登入：{existingUser.email}</div>
@@ -244,24 +225,20 @@ function HomeContent() {
         </div>
       )}
 
-      {/* Google 登入錯誤訊息 */}
       {shownError && (
         <div style={{ width: "100%", maxWidth: "380px", marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", backgroundColor: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#fca5a5", fontSize: "13px" }}>
           {shownError}
         </div>
       )}
 
-      {/* 一般提示訊息（例如註冊後請驗證信箱） */}
       {infoMsg && (
         <div style={{ width: "100%", maxWidth: "380px", marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", backgroundColor: "rgba(34, 197, 94, 0.15)", border: "1px solid rgba(34, 197, 94, 0.4)", color: "#86efac", fontSize: "13px" }}>
           {infoMsg}
         </div>
       )}
 
-      {/* 狀態 A：雙卡片選擇 */}
       {selectedRole === null && (
         <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", justifyContent: "center" }}>
-          {/* 學生卡片 */}
           <div
             onClick={() => handleSelectRole("student")}
             style={{ width: "220px", height: "260px", backgroundColor: "#1e3a8a", border: "2px solid #3b82f6", borderRadius: "24px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "transform 0.2s" }}
@@ -273,7 +250,6 @@ function HomeContent() {
             <span style={{ fontSize: "12px", color: "#93c5fd", marginTop: "8px" }}>IEP 逐步撰寫練習</span>
           </div>
 
-          {/* 教師卡片 */}
           <div
             onClick={() => handleSelectRole("teacher")}
             style={{ width: "220px", height: "260px", backgroundColor: "#14532d", border: "2px solid #22c55e", borderRadius: "24px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "transform 0.2s" }}
@@ -287,7 +263,6 @@ function HomeContent() {
         </div>
       )}
 
-      {/* 狀態 B：信箱登入/註冊表單 */}
       {selectedRole !== null && (
         <div style={{ width: "100%", maxWidth: "380px", backgroundColor: "#1e293b", borderRadius: "24px", border: "1px solid rgba(255,255,255,0.15)", padding: "28px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
@@ -302,7 +277,6 @@ function HomeContent() {
             </button>
           </div>
 
-          {/* 登入 / 註冊 切換頁籤 */}
           <div style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)", marginBottom: "16px" }}>
             {[
               { label: "登入", value: true },
@@ -343,7 +317,6 @@ function HomeContent() {
             </p>
           )}
 
-          {/* Google 登入按鈕 */}
           <button
             type="button"
             onClick={handleGoogleLogin}
@@ -388,15 +361,28 @@ function HomeContent() {
               style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none" }}
             />
 
-            <input
-              type="password"
-              name="password"
-              required
-              placeholder="密碼"
-              value={formData.password}
-              onChange={handleChange}
-              style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none" }}
-            />
+            <div>
+              <input
+                type="password"
+                name="password"
+                required
+                placeholder="密碼"
+                value={formData.password}
+                onChange={handleChange}
+                style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none", boxSizing: "border-box" }}
+              />
+              {/* 忘記密碼連結 */}
+              {isLoginMode && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
+                  <Link
+                    href={`/forgot-password?email=${encodeURIComponent(formData.email)}`}
+                    style={{ fontSize: "12px", color: "#38bdf8", textDecoration: "none" }}
+                  >
+                    忘記密碼？
+                  </Link>
+                </div>
+              )}
+            </div>
 
             <button
               type="submit"

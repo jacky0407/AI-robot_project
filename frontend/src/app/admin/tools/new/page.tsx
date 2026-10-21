@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/utils/supabase/client'
 
@@ -11,14 +11,12 @@ interface RubricItem {
   description: string
 }
 
-// 對應 ai_tools.teaching_strategy.hints（格式見 docs/LLM_SYSTEM.md 2.2）
 interface HintItem {
   content: string
   trigger: 'score_below_threshold' | 'student_request'
   is_example: boolean
 }
 
-// 對應 ai_tools.error_taxonomy（格式見 docs/LLM_SYSTEM.md 2.3）
 interface ErrorItem {
   code: string
   label: string
@@ -38,7 +36,13 @@ const fieldClass = 'w-full rounded border border-gray-300 p-1.5 text-xs focus:ou
 
 export default function NewToolPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = createClient()
+
+  // 取得從課程頁帶過來的 courseId
+  const courseId = searchParams.get('courseId')
+  const backUrl = courseId ? `/admin/courses/${courseId}` : '/admin/courseId'
+
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
 
@@ -56,12 +60,10 @@ export default function NewToolPage() {
 
   const [scaleType, setScaleType] = useState('4_point')
 
-  // 教授沒設定提示時，系統會依 Rubric 最弱構面即時生成（並標記為 AI 生成）
   const [hints, setHints] = useState<HintItem[]>([])
   const [maxAutoHints, setMaxAutoHints] = useState(2)
   const [personalize, setPersonalize] = useState(true)
 
-  // 沒有定義錯誤分類時，系統完全不做錯誤偵測（不額外呼叫 AI）
   const [errors, setErrors] = useState<ErrorItem[]>([])
 
   const updateHint = (index: number, patch: Partial<HintItem>) =>
@@ -130,7 +132,8 @@ export default function NewToolPage() {
       return
     }
 
-    router.push('/admin/tools')
+    // 儲存完成後，返回對應的課程管理頁面
+    router.push(backUrl)
   }
 
   return (
@@ -138,11 +141,18 @@ export default function NewToolPage() {
       <div className="mx-auto max-w-4xl rounded-xl bg-white p-8 shadow-sm">
         <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
           <div>
-            <h1 className="text-xl font-bold text-gray-900">建立全新 AI 助教機器人</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold text-gray-900">建立全新 AI 助教機器人</h1>
+              {courseId && (
+                <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
+                  課程：{courseId}
+                </span>
+              )}
+            </div>
             <p className="text-sm text-gray-500">自訂 AI 角色語氣、指引方針及客製化 Rubric 評分表</p>
           </div>
-          <Link href="/admin/tools" className="text-sm text-gray-500 hover:text-gray-800">
-            取消返回
+          <Link href={backUrl} className="text-sm text-gray-500 hover:text-gray-800">
+            ← 取消返回課程
           </Link>
         </div>
 
