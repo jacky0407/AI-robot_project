@@ -26,12 +26,14 @@ app.add_middleware(
 from api.privacy import router as privacy_router
 from api.review import router as review_router
 from api.courses import router as courses_router
+from api.tool_requests import router as tool_requests_router
 
 app.include_router(practice_router)
 # TODO: 等成員二實作後，在此加入其他 router
 # app.include_router(auth_router)
 # app.include_router(tools_router)
 app.include_router(courses_router)
+app.include_router(tool_requests_router)
 app.include_router(privacy_router)
 app.include_router(review_router)
 app.include_router(teacher.router)
