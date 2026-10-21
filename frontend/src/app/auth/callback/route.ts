@@ -42,7 +42,7 @@ export async function GET(request: Request) {
 
         const isStaff = profile.role === 'owner' || profile.role === 'assistant'
         return NextResponse.redirect(
-          `${origin}${isStaff ? '/admin/tools' : '/student/modules'}`
+          `${origin}${isStaff ? '/admin/courses' : '/student/courses'}`
         )
       }
     }
