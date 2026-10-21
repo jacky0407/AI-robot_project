@@ -81,7 +81,9 @@ class CreateToolRequest(BaseModel):
 
 class ReviewToolRequest(BaseModel):
     action: Literal["approve", "reject"]
-    # 以下只在 approve 時使用；不填則到期日不限、每日次數沿用原值（預設 10）
+    # 以下只在 approve 時使用，不填都沿用原值：
+    #   expire_date 沒傳 → 保留原本的到期日；傳 null → 改成不限期
+    #   daily_quota 沒傳 → 保留原值（資料表預設 10）
     expire_date: Optional[date] = None
     daily_quota: Optional[int] = Field(None, ge=1, le=1000)
 
@@ -199,13 +201,18 @@ async def review_tool_request(
     current = effective_status(existing.data[0], today)
 
     if body.action == "approve":
-        if body.expire_date is not None and body.expire_date < today:
-            raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_EXPIRE_DATE", "到期日不能早於今天")
         # start_date 不改：沿用申請當天，避免和資料庫 CURRENT_DATE（UTC）差一天而暫時看不到機器人
-        changes = {
-            "status": "approved",
-            "expire_date": body.expire_date.isoformat() if body.expire_date else None,
-        }
+        changes = {"status": "approved"}
+
+        # 「沒傳」和「傳 null」要分開：只改每日次數時不能順便把到期日清成不限期
+        if "expire_date" in body.model_fields_set:
+            if body.expire_date is not None and body.expire_date < today:
+                raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_EXPIRE_DATE", "到期日不能早於今天")
+            changes["expire_date"] = body.expire_date.isoformat() if body.expire_date else None
+        elif current == "expired":
+            # 保留舊的到期日，核准完還是過期，老師會以為沒成功
+            raise _error(status.HTTP_400_BAD_REQUEST, "EXPIRE_DATE_REQUIRED", "這筆申請已過期，請設定新的到期日")
+
         if body.daily_quota is not None:
             changes["daily_quota"] = body.daily_quota
         message = "已核准申請"

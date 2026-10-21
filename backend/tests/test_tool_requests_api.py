@@ -251,13 +251,64 @@ class TestReviewRequest:
         assert res.json()["data"]["status"] == "approved"
         assert written(db, "update") == {"status": "approved", "expire_date": "2026-11-06", "daily_quota": 5}
 
-    def test_approve_without_settings_keeps_quota_and_no_expiry(self, as_user):
-        """不填每日次數就不覆寫（沿用資料表預設 10）；不填到期日代表不限期"""
+    def test_approve_without_settings_keeps_quota_and_expiry(self, as_user):
+        """沒傳的欄位都不覆寫：每日次數沿用原值（預設 10）、到期日沿用原值"""
         as_user(TEACHER)
         db = fake_db([request_row()], [request_row(status="approved")], [{"id": TOOL_ID, "title": "教練"}])
         call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve"})
 
+        assert written(db, "update") == {"status": "approved"}
+
+    def test_changing_only_quota_keeps_expire_date(self, as_user):
+        """
+        回歸：舊版沒傳 expire_date 會寫成 NULL。
+        權限到 11/30 的學生，老師只把每日次數改成 20，就變成永久可用。
+        """
+        as_user(TEACHER)
+        db = fake_db(
+            [request_row(status="approved", expire_date="2026-11-30")],
+            [request_row(status="approved", expire_date="2026-11-30", daily_quota=20)],
+            [{"id": TOOL_ID, "title": "教練"}],
+        )
+        res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db,
+                   json={"action": "approve", "daily_quota": 20})
+
+        assert res.status_code == 200
+        assert written(db, "update") == {"status": "approved", "daily_quota": 20}
+
+    def test_explicit_null_removes_expire_date(self, as_user):
+        """要改成不限期，必須明確傳 null"""
+        as_user(TEACHER)
+        db = fake_db(
+            [request_row(status="approved", expire_date="2026-11-30")],
+            [request_row(status="approved")],
+            [{"id": TOOL_ID, "title": "教練"}],
+        )
+        call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve", "expire_date": None})
+
         assert written(db, "update") == {"status": "approved", "expire_date": None}
+
+    def test_reapproving_expired_without_new_date_is_400(self, as_user):
+        """保留舊的到期日，核准完仍是過期；要求老師給新日期"""
+        as_user(TEACHER)
+        db = fake_db([request_row(status="approved", expire_date="2026-10-01")])
+        res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db,
+                   json={"action": "approve", "daily_quota": 20})
+
+        assert res.status_code == 400
+        assert res.json()["detail"]["code"] == "EXPIRE_DATE_REQUIRED"
+        db.table.return_value.update.assert_not_called()
+
+    def test_reapproving_expired_with_null_makes_it_unlimited(self, as_user):
+        as_user(TEACHER)
+        db = fake_db(
+            [request_row(status="approved", expire_date="2026-10-01")],
+            [request_row(status="approved")],
+            [{"id": TOOL_ID, "title": "教練"}],
+        )
+        res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve", "expire_date": None})
+
+        assert res.json()["data"]["status"] == "approved"
 
     def test_approve_does_not_touch_start_date(self, as_user):
         """start_date 改成台灣的今天會比資料庫 CURRENT_DATE（UTC）多一天，學生半夜會暫時看不到機器人"""

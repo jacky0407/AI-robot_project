@@ -641,8 +641,12 @@
 被拒絕或過期後可以再申請，會新增一筆，舊紀錄保留。
 
 `PATCH` 規則：
-- `approve`：任何狀態都可以（也用來延長期限、改次數）。`expire_date` 格式 `YYYY-MM-DD`，不可早於今天，不填代表不限期；
-  `daily_quota` 為 1–1000，不填則沿用原值（預設 10）
+- `approve`：任何狀態都可以（也用來延長期限、改次數）。沒傳的欄位都沿用原值：
+  - `expire_date`：格式 `YYYY-MM-DD`，不可早於今天（400 `INVALID_EXPIRE_DATE`）。
+    **沒傳 → 保留原本的到期日；傳 `null` → 改成不限期**。
+    已過期的申請重新核准時一定要傳（新日期或 `null`），否則 400 `EXPIRE_DATE_REQUIRED`
+  - `daily_quota`：1–1000，沒傳則沿用原值（預設 10）
+  - 例：只改次數送 `{action: "approve", daily_quota: 20}`，到期日不變
 - `reject`：只能用在 `pending`（拒絕）或 `approved`（撤銷），其他回 409 `INVALID_STATUS_TRANSITION`
 
 扣次數與每日歸零由 practice API 處理，這裡只設定 `daily_quota`。
