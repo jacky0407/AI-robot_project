@@ -891,6 +891,37 @@ data: {"message": "你已嘗試 4 次，建議與老師討論後再繼續練習�
 
 ---
 
+### `GET /api/practice/steps/:step_id/quota`
+**權限**：登入者（身分取自 token）
+
+送出作答前查詢今天還能作答幾次，**只查不扣**。跨日（台灣時間 0 點）時 `used` 視為 0，規則與送出時扣次數相同。
+
+**Response 200（自主模式）：**
+```json
+{
+  "data": {
+    "mode": "permission",
+    "used": 3,
+    "quota": 10,
+    "remaining": 7,
+    "expire_date": "2026-10-31"
+  }
+}
+```
+
+**Response 200（課程模式 / 教師端，不限次數）：**
+```json
+{
+  "data": { "mode": "course", "used": null, "quota": null, "remaining": null, "expire_date": null }
+}
+```
+`mode` 為 `course`（課程指派）、`permission`（逐位核准）或 `staff`（教師端）。`expire_date` 為 `null` 代表不限期。
+
+**錯誤**：與送出作答相同 — 401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `PERMISSION_EXPIRED`；步驟不存在 404。
+`remaining` 為 0 時送出會得到 429 `QUOTA_EXCEEDED`，前端可先停用送出按鈕。
+
+---
+
 ### `GET /api/practice/sessions/:session_id/history`
 **權限**：STUDENT, HOST, ASSISTANT
 

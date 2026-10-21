@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.access import check_step_access, consume_quota
+from core.access import check_step_access, consume_quota, quota_status
 from core.auth import CurrentUser, get_current_user
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
@@ -461,6 +461,30 @@ async def get_hint(
             "hint": hint.to_event_data(),
         }
     }
+
+
+@router.get("/steps/{step_id}/quota")
+async def get_step_quota(step_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    送出前查詢目前登入者在此步驟今天還能作答幾次（只查不扣）。
+
+    沒被指派、核准已過期時回和送出作答相同的 403（NOT_ASSIGNED / PERMISSION_EXPIRED），
+    前端可以據此直接停用送出按鈕。
+    """
+    db = get_supabase()
+    step_res = (
+        db.table("module_steps")
+        .select("id, module_id, tool_id, ai_tools(status)")
+        .eq("id", step_id)
+        .limit(1)
+        .execute()
+    )
+    rows = step_res.data or []
+    if not rows or not rows[0].get("ai_tools"):
+        raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+    access = check_step_access(db, user, rows[0])
+    return {"data": quota_status(access)}
 
 
 @router.get("/sessions/{session_id}/history")

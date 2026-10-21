@@ -9,12 +9,13 @@
 
 額度（10/18 做法 A）只管 permission 模式：每次送出扣 1，只拿到提示的那次也算；
 AI 評分失敗不退回（見 docs/KNOWN_GAPS.md）。課程指派的學生不扣次數。
-扣次數由資料庫函式 consume_tool_quota() 一步完成（migrations/008），避免連按時超用。
+扣次數由資料庫函式 consume_tool_quota() 一步完成（migrations/008），避免連按時超用；
+送出前查剩餘次數用 quota_status()，只查不扣。
 
 後端用 service_role 連線，不受 RLS 限制，所以這些檢查必須在這裡做。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
@@ -27,7 +28,10 @@ TAIPEI = timezone(timedelta(hours=8))
 
 AccessMode = Literal["staff", "course", "permission"]
 
-PERMISSION_FIELDS = "id, tool_id, start_date, expire_date"
+PERMISSION_FIELDS = "id, tool_id, start_date, expire_date, daily_quota, used_today, used_date"
+
+# 與 schema.sql 的 tool_permissions.daily_quota 預設值、consume_tool_quota() 的 COALESCE 一致
+DEFAULT_DAILY_QUOTA = 10
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,8 @@ class StepAccess:
     mode: AccessMode
     # mode == "permission" 時，要扣額度的那筆 tool_permissions
     permission_id: Optional[str] = None
+    # 同一筆的完整資料，給剩餘額度查詢用（不參與比較）
+    permission: Optional[dict] = field(default=None, compare=False)
 
 
 def today_taipei() -> date:
@@ -123,10 +129,32 @@ def check_step_access(db, user: CurrentUser, step: dict, today: Optional[date] =
 
     permission, expired = _find_permission(db, user.id, step["tool_id"], today or today_taipei())
     if permission:
-        return StepAccess(mode="permission", permission_id=permission["id"])
+        return StepAccess(mode="permission", permission_id=permission["id"], permission=permission)
     if expired:
         raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_EXPIRED", "這支機器人的使用期限已過，請重新申請")
     raise _not_assigned()
+
+
+def quota_status(access: StepAccess, today: Optional[date] = None) -> dict:
+    """
+    剩餘額度（只查不扣）。跨日時 used 視為 0，規則與 consume_tool_quota() 一致。
+    course / staff 模式不限次數，used / quota / remaining / expire_date 都是 None。
+    """
+    if access.mode != "permission":
+        return {"mode": access.mode, "used": None, "quota": None, "remaining": None, "expire_date": None}
+
+    row = access.permission or {}
+    today = today or today_taipei()
+    quota = row.get("daily_quota")
+    quota = DEFAULT_DAILY_QUOTA if quota is None else quota
+    used = (row.get("used_today") or 0) if _parse_date(row.get("used_date")) == today else 0
+    return {
+        "mode": "permission",
+        "used": used,
+        "quota": quota,
+        "remaining": max(quota - used, 0),
+        "expire_date": row.get("expire_date"),
+    }
 
 
 def consume_quota(db, access: StepAccess, today: Optional[date] = None) -> Optional[dict]:

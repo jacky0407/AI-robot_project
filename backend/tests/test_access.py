@@ -10,7 +10,7 @@ from datetime import date
 import pytest
 from fastapi import HTTPException
 
-from core.access import StepAccess, check_step_access, consume_quota
+from core.access import StepAccess, check_step_access, consume_quota, quota_status
 from core.auth import CurrentUser
 
 TODAY = date(2026, 10, 21)
@@ -244,8 +244,62 @@ class TestConsumeQuota:
         assert_denied(exc, 429, "QUOTA_EXCEEDED")
         assert "10 次" in exc.value.detail["message"]
 
+    def test_permission_access_carries_quota_fields_for_status(self):
+        row = {"id": "perm-1", "tool_id": "tool-1", "start_date": None, "expire_date": "2026-10-31",
+               "daily_quota": 5, "used_today": 2, "used_date": "2026-10-21"}
+        db = FakeDB(learning_modules=PUBLISHED, tool_permissions=[row])
+        access = check_step_access(db, STUDENT, STEP, TODAY)
+
+        assert access.permission == row
+
     def test_permission_deleted_after_check_is_denied(self):
         db = FakeDB(rpc_result=[])
         with pytest.raises(HTTPException) as exc:
             consume_quota(db, StepAccess(mode="permission", permission_id="perm-1"), TODAY)
         assert_denied(exc, 403, "NOT_ASSIGNED")
+
+
+# ──────────────────────────────────────────
+# 剩餘額度查詢（只查不扣）
+# ──────────────────────────────────────────
+
+def permission_access(**row) -> StepAccess:
+    base = {"id": "perm-1", "tool_id": "tool-1", "start_date": None, "expire_date": "2026-10-31",
+            "daily_quota": 10, "used_today": 0, "used_date": None}
+    return StepAccess(mode="permission", permission_id="perm-1", permission={**base, **row})
+
+
+class TestQuotaStatus:
+
+    @pytest.mark.parametrize("mode", ["staff", "course"])
+    def test_unlimited_modes_return_nulls(self, mode):
+        assert quota_status(StepAccess(mode=mode), TODAY) == {
+            "mode": mode, "used": None, "quota": None, "remaining": None, "expire_date": None,
+        }
+
+    def test_same_day_counts_used_today(self):
+        status = quota_status(permission_access(used_today=3, used_date="2026-10-21"), TODAY)
+        assert status == {"mode": "permission", "used": 3, "quota": 10,
+                          "remaining": 7, "expire_date": "2026-10-31"}
+
+    def test_new_day_treats_used_as_zero(self):
+        """與 consume_tool_quota() 一致：used_date 不是今天，昨天的次數不算"""
+        status = quota_status(permission_access(used_today=10, used_date="2026-10-20"), TODAY)
+        assert (status["used"], status["remaining"]) == (0, 10)
+
+    def test_never_used_is_zero(self):
+        status = quota_status(permission_access(used_today=None, used_date=None), TODAY)
+        assert (status["used"], status["remaining"]) == (0, 10)
+
+    def test_exhausted_has_zero_remaining(self):
+        status = quota_status(permission_access(used_today=10, used_date="2026-10-21"), TODAY)
+        assert status["remaining"] == 0
+
+    def test_remaining_never_negative_after_quota_lowered(self):
+        """老師把每日次數從 10 調成 5，學生今天已用 8 次"""
+        status = quota_status(permission_access(daily_quota=5, used_today=8, used_date="2026-10-21"), TODAY)
+        assert status["remaining"] == 0
+
+    def test_missing_daily_quota_uses_default_ten(self):
+        status = quota_status(permission_access(daily_quota=None), TODAY)
+        assert status["quota"] == 10

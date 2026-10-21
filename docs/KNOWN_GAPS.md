@@ -301,7 +301,6 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **後端**
 
 - `api/auth.py`、`api/courses.py`、`api/tools.py`、`api/export.py` — `main.py` 中以 TODO 註解預留，檔案不存在
-- 剩餘額度查詢 API（送出作答時的 `score_start` 事件已帶 `quota`，但還沒有送出前就能查的端點）
 - 表單與前後測（`forms` / `form_responses`）
 - 研究資料 CSV 匯出（`/api/export/*`）
 - 研究倫理同意書流程（`/api/consent`）
