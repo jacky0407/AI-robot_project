@@ -92,7 +92,6 @@ export default function ReviewDetailPage() {
       await apiFetch(`/api/review/submissions/${id}/judge`, {
         method: "POST",
         body: JSON.stringify({
-          teacher_id: user.id, // TODO: 後端改由 JWT 取得身分後移除（KNOWN_GAPS #8）
           decision,
           final_score: finalScore === "" ? null : Number(finalScore),
           final_feedback: finalFeedback,

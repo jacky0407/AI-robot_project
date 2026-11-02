@@ -111,7 +111,7 @@ function PracticeRoom() {
   const [progressKey, setProgressKey] = useState(0)
 
   const query = (extra: Record<string, string> = {}) =>
-    new URLSearchParams({ user_id: userId, step_id: stepId ?? '', ...extra }).toString()
+    new URLSearchParams({ step_id: stepId ?? '', ...extra }).toString()
 
   useEffect(() => {
     async function init() {
@@ -144,7 +144,7 @@ function PracticeRoom() {
   useEffect(() => {
     if (!userId || !stepId) return
     let active = true
-    const params = new URLSearchParams({ user_id: userId, step_id: stepId }).toString()
+    const params = new URLSearchParams({ step_id: stepId }).toString()
     Promise.all([
       apiFetch<{ data: HintStatus }>(`/api/practice/sessions/${sessionId}/hints?${params}`),
       apiFetch<{ data: { submissions: Submission[] } }>(`/api/practice/sessions/${sessionId}/history?${params}`),
@@ -211,7 +211,6 @@ function PracticeRoom() {
             module_id: moduleId,
             case_id: caseData?.id ?? null,
             content: answer,
-            user_id: userId,
           }),
         },
         handleEvent
