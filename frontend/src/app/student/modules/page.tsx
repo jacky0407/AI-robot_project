@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
@@ -57,7 +57,16 @@ const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: str
   revision_required: { text: "需修改", color: "#f87171", bg: "rgba(239,68,68,0.15)" },
 };
 
+// useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
 export default function StudentIntegratedWorkspacePage() {
+  return (
+    <Suspense fallback={null}>
+      <StudentWorkspace />
+    </Suspense>
+  );
+}
+
+function StudentWorkspace() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [supabase] = useState(() => createClient());
@@ -165,21 +174,10 @@ export default function StudentIntegratedWorkspacePage() {
         .eq("is_published", true)
         .order("created_at");
 
-      if (moduleError || !moduleRows || moduleRows.length === 0) {
-        // 若遠端資料庫尚無發布模組，啟用預設 IEP 訓練模組展示
-        const defaultMod: Module = {
-          id: "mod-iep-sped",
-          title: "學前個別化教育計畫 (IEP) 擬定訓練",
-          description: "涵蓋行為功能分析 (FBA)、前事環境調整策略擬定與評量檢核。",
-          steps: [
-            { id: "step-1", module_id: "mod-iep-sped", step_order: 1, step_title: "個案觀察與現況能力功能描述", pass_score: 70 },
-            { id: "step-2", module_id: "mod-iep-sped", step_order: 2, step_title: "前事環境調整與正向替代行為設計", pass_score: 75 },
-            { id: "step-3", module_id: "mod-iep-sped", step_order: 3, step_title: "學期目標與評量檢核標準擬定", pass_score: 80 },
-          ],
-        };
-        setModules([defaultMod]);
-        setCurrentModuleId(defaultMod.id);
-        setSelectedStep(defaultMod.steps[0]);
+      if (moduleError) {
+        setErrorMsg(`無法讀取訓練模組：${moduleError.message}`);
+      } else if (!moduleRows || moduleRows.length === 0) {
+        setErrorMsg("目前沒有可以練習的訓練模組，請先從「我的課程」加入課程，或等老師指派模組。");
       } else {
         const formatted: Module[] = moduleRows.map(toModule);
         setModules(formatted);
@@ -212,11 +210,7 @@ export default function StudentIntegratedWorkspacePage() {
       );
       setHintText(json.data.hint?.content || json.data.message || "目前沒有可用的提示。");
     } catch (err) {
-      if (err instanceof ApiError) {
-        setHintText(`⚠️ 取得提示失敗：${err.message}`);
-      } else {
-        setHintText("💡 提示：描述幼兒替代行為時，建議採用正向、可觀察且非處罰性的具體動作。");
-      }
+      setHintText(`⚠️ 取得提示失敗：${err instanceof ApiError ? err.message : "連不到後端，請確認 FastAPI 已啟動後再試一次。"}`);
     } finally {
       setIsLoadingHint(false);
     }
@@ -278,36 +272,18 @@ export default function StudentIntegratedWorkspacePage() {
         }
       );
     } catch (err) {
-      if (err instanceof ApiError) {
-        // 後端有回應但拒絕（個資偵測、未登入、無權限、額度用完…）：顯示真正原因，不用展示資料蓋掉
-        if (err.code === "PII_DETECTED") {
-          setPiiWarning(err.message);
-        } else if (err.status === 401) {
-          setStatusMessage("⚠️ 登入已過期，請重新登入後再送出。");
-        } else {
-          setStatusMessage(`⚠️ 送出失敗：${err.message}`);
-        }
-        setEvalResult(null);
-        return;
+      // 顯示真正原因（個資偵測、未登入、沒被指派 403、次數用完 429…），不用假資料蓋掉
+      if (err instanceof ApiError && err.code === "PII_DETECTED") {
+        setPiiWarning(err.message);
+      } else if (err instanceof ApiError && err.status === 401) {
+        setStatusMessage("⚠️ 登入已過期，請重新登入後再送出。");
+      } else if (err instanceof ApiError) {
+        setStatusMessage(`⚠️ 送出失敗：${err.message}`);
+      } else {
+        console.error("送出作答失敗：", err);
+        setStatusMessage("⚠️ 連不到後端，請確認 FastAPI 已啟動後再試一次。");
       }
-
-      // 連不到後端（沒開 FastAPI）才切換成本地展示評估
-      console.warn("後端連線異常，切換至本地展示評估：", err);
-      setStatusMessage("⚠️ 使用展示評估回饋：");
-      setEvalResult({
-        passed: true,
-        percentage: 84,
-        overall_comment: "目標描述清楚展現正向優勢本位，前事控制及情境預告之處遇設計切中問題行為功能。",
-        dimensions: [
-          { name: "功能性需求評估", score: 4, feedback: "完整辨識幼兒社交互動之感官需求" },
-          { name: "替代行為適切性", score: 4, feedback: "替代肢體手勢符合該發展年齡之表現" },
-          { name: "去標籤化用語", score: 3, feedback: "客觀具體，無情緒化貶抑用字" },
-        ],
-        suggestions: ["可於前事調整增列環境物理動線之分區標示", "評量指標可補充同儕輪流等待秒數之具體標準"],
-      });
-      if (selectedStep) {
-        setStatusByStep((prev) => ({ ...prev, [selectedStep.id]: "passed" }));
-      }
+      setEvalResult(null);
     } finally {
       setIsSubmitting(false);
     }
@@ -330,19 +306,9 @@ export default function StudentIntegratedWorkspacePage() {
         }
       );
     } catch (err) {
-      if (err instanceof ApiError) {
-        setCoherence((prev) => ({ ...prev, [modId]: `檢核失敗：${err.message}` }));
-        return;
-      }
-      // 連不到後端才顯示離線展示檢核結果
       setCoherence((prev) => ({
         ...prev,
-        [modId]: {
-          overall_coherent: true,
-          summary: "各步驟策略邏輯一致，步驟二設計之替代行為與步驟三擬定之學期目標相互呼應。",
-          strengths: ["前事環境調整策略能有效對應步驟一所列之功能分析"],
-          issues: [],
-        },
+        [modId]: `檢核失敗：${err instanceof ApiError ? err.message : "連不到後端，請確認 FastAPI 已啟動後再試一次。"}`,
       }));
     } finally {
       setCheckingModule(null);
