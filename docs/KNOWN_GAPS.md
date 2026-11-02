@@ -99,8 +99,8 @@ hints_res = db.table("prompt_logs").select("id", count="exact").eq(
 欄位改讀真實的 `title` / `role_instruction` / `case_background`，同時保留 api.md 的回應鍵名，
 並補上 `id` 與 `difficulty`。
 
-> ⚠️ `session_id` 仍未落庫（已在程式碼註記）。要正式支援 Session 需新增 `practice_sessions` 表，
-> 或把 `session_id` 從路徑移除、改以 `step_id` + `user_id` 定位。這部分尚未處理。
+> ✅ `session_id` 已落庫（2026-11，migration 009）：第一次用某個 id 送出作答時建立 `practice_sessions`，
+> 作答寫入 `step_attempts.session_id`；別人的 Session 回 403。前端維持自己產生 UUID，不需先呼叫 `POST /sessions`。
 
 ---
 
