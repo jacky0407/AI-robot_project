@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
-import { streamSSE } from "@/utils/api";
+import { ApiError, apiFetch, streamSSE } from "@/utils/api";
 
 // ─── 步驟與模組型別定義 ───
 type Step = {
@@ -63,7 +63,6 @@ export default function StudentIntegratedWorkspacePage() {
   const [supabase] = useState(() => createClient());
 
   // 學生與課程模組資料
-  const [userId, setUserId] = useState("");
   const [modules, setModules] = useState<Module[]>([]);
   const [currentModuleId, setCurrentModuleId] = useState<string>("");
   const [selectedStep, setSelectedStep] = useState<Step | null>(null);
@@ -85,8 +84,6 @@ export default function StudentIntegratedWorkspacePage() {
   const [isLoadingHint, setIsLoadingHint] = useState(false);
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
   // 1. 初始化讀取使用者與模組步驟清單
   useEffect(() => {
     const load = async () => {
@@ -97,7 +94,6 @@ export default function StudentIntegratedWorkspacePage() {
         router.replace("/");
         return;
       }
-      setUserId(user.id);
 
       const { data: moduleRows, error: moduleError } = await supabase
         .from("learning_modules")
@@ -157,20 +153,28 @@ export default function StudentIntegratedWorkspacePage() {
   };
 
   // 2. 索取鷹架指引提示 (Scaffolding Hints)
+  // 後端需要 step_id；reveal=true 才會真的取出下一層提示並記錄使用次數
   const handleFetchHint = async () => {
+    if (!selectedStep) return;
     setIsLoadingHint(true);
     try {
-      const res = await fetch(`${API_BASE}/api/practice/sessions/${sessionId}/hints`);
-      const json = await res.json();
-      setHintText(json?.data?.hint?.content || "提示：試著從同儕接觸前的事前預告（視覺提示卡）著手規劃前事控制。");
-    } catch {
-      setHintText("💡 提示：描述幼兒替代行為時，建議採用正向、可觀察且非處罰性的具體動作。");
+      const params = new URLSearchParams({ step_id: selectedStep.id, reveal: "true" }).toString();
+      const json = await apiFetch<{ data: { hint: { content?: string } | null; message?: string } }>(
+        `/api/practice/sessions/${sessionId}/hints?${params}`
+      );
+      setHintText(json.data.hint?.content || json.data.message || "目前沒有可用的提示。");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setHintText(`⚠️ 取得提示失敗：${err.message}`);
+      } else {
+        setHintText("💡 提示：描述幼兒替代行為時，建議採用正向、可觀察且非處罰性的具體動作。");
+      }
     } finally {
       setIsLoadingHint(false);
     }
   };
 
-  // 3. 提交作答並接收 SSE 串流評分
+  // 3. 提交作答並接收 SSE 串流評分（apiFetch / streamSSE 會自動帶登入 token）
   const handleSubmit = async () => {
     if (!studentAnswer.trim()) {
       setStatusMessage("請先輸入作答內容再送出！");
@@ -183,86 +187,62 @@ export default function StudentIntegratedWorkspacePage() {
     setEvalResult({ dimensions: [], suggestions: [] });
 
     try {
-      const response = await fetch(`${API_BASE}/api/practice/sessions/${sessionId}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          step_id: selectedStep?.id,
-          content: studentAnswer,
-          version_note: "學生工作台提交",
-        }),
-      });
-
-      // 攔截個資偵測防護
-      if (response.status === 400) {
-        const errorData = await response.json();
-        if (errorData?.detail?.code === "PII_DETECTED") {
-          setPiiWarning(errorData.detail.message);
-          setIsSubmitting(false);
-          return;
-        }
-      }
-
-      if (!response.ok) throw new Error(`伺服器錯誤（HTTP ${response.status}）`);
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      if (!reader) throw new Error("瀏覽器不支援串流讀取");
-
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() || "";
-
-        for (const ev of events) {
-          const lines = ev.split("\n");
-          let eventType = "message";
-          let dataStr = "";
-
-          for (const line of lines) {
-            if (line.startsWith("event: ")) eventType = line.replace("event: ", "").trim();
-            else if (line.startsWith("data: ")) dataStr = line.replace("data: ", "").trim();
-          }
-
-          if (dataStr) {
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (eventType === "score_start") {
-                setStatusMessage("AI 正在閱讀並根據評分規準分析中...");
-              } else if (eventType === "dimension_score") {
-                setEvalResult((prev) => ({
-                  ...prev,
-                  dimensions: [...(prev?.dimensions || []), parsed],
-                  suggestions: prev?.suggestions || [],
-                }));
-              } else if (eventType === "score_complete") {
-                setEvalResult((prev) => ({
-                  ...prev,
-                  passed: parsed.passed,
-                  percentage: parsed.percentage,
-                  overall_comment: parsed.overall_comment,
-                  suggestions: parsed.suggestions || [],
-                  dimensions: prev?.dimensions || [],
-                }));
-                setStatusMessage("評分完成！");
-                if (selectedStep) {
-                  setStatusByStep((prev) => ({
-                    ...prev,
-                    [selectedStep.id]: parsed.passed ? "passed" : "revision_required",
-                  }));
-                }
-              }
-            } catch (e) {
-              console.error("SSE JSON 解析錯誤", e);
+      await streamSSE(
+        `/api/practice/sessions/${sessionId}/submit`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            step_id: selectedStep?.id,
+            content: studentAnswer,
+            version_note: "學生工作台提交",
+          }),
+        },
+        (eventType, parsed) => {
+          if (eventType === "score_start") {
+            setStatusMessage("AI 正在閱讀並根據評分規準分析中...");
+          } else if (eventType === "dimension_score") {
+            setEvalResult((prev) => ({
+              ...prev,
+              dimensions: [...(prev?.dimensions || []), parsed as unknown as DimensionScore],
+              suggestions: prev?.suggestions || [],
+            }));
+          } else if (eventType === "score_complete") {
+            const passed = Boolean(parsed.passed);
+            setEvalResult((prev) => ({
+              ...prev,
+              passed,
+              percentage: parsed.percentage as number | undefined,
+              overall_comment: parsed.overall_comment as string | undefined,
+              suggestions: (parsed.suggestions as string[] | undefined) || [],
+              dimensions: prev?.dimensions || [],
+            }));
+            setStatusMessage("評分完成！");
+            if (selectedStep) {
+              setStatusByStep((prev) => ({
+                ...prev,
+                [selectedStep.id]: passed ? "passed" : "revision_required",
+              }));
             }
+          } else if (eventType === "error") {
+            setStatusMessage(`⚠️ ${String(parsed.message ?? "AI 評分失敗")}，請稍後再試。`);
           }
         }
-      }
+      );
     } catch (err) {
+      if (err instanceof ApiError) {
+        // 後端有回應但拒絕（個資偵測、未登入、無權限、額度用完…）：顯示真正原因，不用展示資料蓋掉
+        if (err.code === "PII_DETECTED") {
+          setPiiWarning(err.message);
+        } else if (err.status === 401) {
+          setStatusMessage("⚠️ 登入已過期，請重新登入後再送出。");
+        } else {
+          setStatusMessage(`⚠️ 送出失敗：${err.message}`);
+        }
+        setEvalResult(null);
+        return;
+      }
+
+      // 連不到後端（沒開 FastAPI）才切換成本地展示評估
       console.warn("後端連線異常，切換至本地展示評估：", err);
       setStatusMessage("⚠️ 使用展示評估回饋：");
       setEvalResult({
@@ -290,7 +270,7 @@ export default function StudentIntegratedWorkspacePage() {
     setCoherence((prev) => ({ ...prev, [modId]: "跨步驟檢核分析中…" }));
     try {
       await streamSSE(
-        `/api/practice/modules/${modId}/coherence-check?user_id=${encodeURIComponent(userId)}`,
+        `/api/practice/modules/${modId}/coherence-check`,
         { method: "POST" },
         (event, data) => {
           if (event === "coherence_complete") {
@@ -300,8 +280,12 @@ export default function StudentIntegratedWorkspacePage() {
           }
         }
       );
-    } catch {
-      // 離線展示檢核結果
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setCoherence((prev) => ({ ...prev, [modId]: `檢核失敗：${err.message}` }));
+        return;
+      }
+      // 連不到後端才顯示離線展示檢核結果
       setCoherence((prev) => ({
         ...prev,
         [modId]: {
