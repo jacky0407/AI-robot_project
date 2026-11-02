@@ -4,10 +4,10 @@
 // 後端：/api/courses、/api/courses/{id}、/api/courses/{id}/members（backend/api/courses.py）
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch } from "@/utils/api";
+import AdminNav from "../AdminNav";
 
 type Course = {
   id: string;
@@ -257,10 +257,7 @@ export default function AdminCoursesPage() {
           <span style={{ backgroundColor: "#16a34a", color: "#fff", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", fontWeight: "bold" }}>
             管理與複核後台
           </span>
-          <span style={{ fontWeight: "bold", fontSize: "16px" }}>課程管理</span>
-          <Link href="/admin/tools" style={{ fontSize: "13px", color: "#38bdf8", textDecoration: "none", marginLeft: "8px" }}>
-            機器人與複核 →
-          </Link>
+          <AdminNav />
         </div>
         <button onClick={handleSignOut} style={{ ...smallBtn, padding: "6px 12px" }}>
           登出

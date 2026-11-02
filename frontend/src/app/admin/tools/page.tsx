@@ -97,6 +97,9 @@ export default function AdminToolsPage() {
           <Link href="/admin/courses" style={{ fontSize: "13px", color: "#2563eb", textDecoration: "none", marginLeft: "8px" }}>
             課程管理 →
           </Link>
+          <Link href="/admin/tool-requests" style={{ fontSize: "13px", color: "#2563eb", textDecoration: "none", marginLeft: "8px" }}>
+            機器人申請 →
+          </Link>
         </div>
         <button
           onClick={handleSignOut}
