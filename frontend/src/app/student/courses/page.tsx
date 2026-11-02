@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch } from "@/utils/api";
+import StudentModeTabs from "../StudentModeTabs";
 
 type MemberStatus = "pending" | "active" | "rejected" | "removed";
 
@@ -112,10 +113,7 @@ export default function StudentCoursesPage() {
           backgroundColor: "#1e293b",
         }}
       >
-        <div>
-          <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: 0 }}>我的課程</h1>
-          <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>選擇課程開始練習，或輸入老師提供的邀請碼加入新課程</p>
-        </div>
+        <StudentModeTabs />
         <button
           onClick={handleSignOut}
           style={{ padding: "6px 12px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", cursor: "pointer" }}
@@ -127,7 +125,8 @@ export default function StudentCoursesPage() {
       <main style={{ maxWidth: "880px", margin: "28px auto", padding: "0 16px", display: "flex", flexDirection: "column", gap: "20px" }}>
         {/* 輸入邀請碼 */}
         <section style={card}>
-          <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 12px 0" }}>加入課程</h2>
+          <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 4px 0" }}>加入課程</h2>
+          <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0" }}>輸入老師提供的邀請碼。正式課程不限練習次數，成績由老師最終判定。</p>
           <form onSubmit={handleJoin} style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
             <input
               value={inviteCode}
