@@ -12,8 +12,7 @@ type Step = {
   step_order: number;
   step_title: string;
   pass_score: number | null;
-  task_desc?: string;
-  case_content?: string;
+  ai_tools?: { title: string; target_competency: string | null } | null;
 };
 
 type Module = {
@@ -33,21 +32,61 @@ type CoherenceResult = {
   issues: CoherenceIssue[];
 };
 
-// ─── 評分規準維度型別 ───
-interface DimensionScore {
-  name: string;
-  score: number;
-  max_score?: number;
-  feedback?: string;
-}
-
-interface EvaluationResult {
-  passed?: boolean;
-  score?: number;
+// ─── AI 評分串流事件（欄位與 backend/core/ai/agents 的 evaluator_agent、tutor_agent 一致） ───
+type DimensionScore = { dimension: string; score: number; max_score: number; reason?: string; evidence?: string };
+type ScoreComplete = {
+  total_score: number;
   percentage?: number;
-  overall_comment?: string;
+  passed: boolean;
+  overall_feedback: string;
+  confidence?: number;
+  needs_teacher_review?: boolean;
+};
+type Hint = { level: number; content: string; source?: "teacher" | "generated"; is_example?: boolean; warning?: string };
+type DetectedError = { code: string; label: string; severity?: string; evidence?: string; explanation?: string };
+type HintStatus = { hints_used: number; total_levels: number | null; next_level_available: boolean };
+type CaseData = { id: string; title: string; case_background: string };
+
+type Submission = {
+  id: string;
+  attempt_number: number;
+  status: string;
+  created_at: string;
+  user_input_content?: string;
+  ai_evaluations: { total_score: number | null }[] | { total_score: number | null } | null;
+};
+
+// 一次送出的串流結果（逐事件累積）
+type RunState = {
+  decision?: string;
   dimensions: DimensionScore[];
-  suggestions: string[];
+  totalDimensions?: number;
+  score?: ScoreComplete;
+  hint?: Hint;
+  encouragement?: string;
+  escalation?: string;
+  errors: DetectedError[];
+  failure?: string;
+};
+const EMPTY_RUN: RunState = { dimensions: [], errors: [] };
+
+const DECISION_LABEL: Record<string, string> = {
+  evaluate: "AI 正在依評分規準評分",
+  encourage: "接近通過門檻，AI 會評分並給你鼓勵",
+  give_hint: "AI 判斷先給你一則提示，修改後再送出",
+  escalate: "AI 建議你先和老師討論",
+};
+
+const panel: React.CSSProperties = {
+  backgroundColor: "#1e293b",
+  borderRadius: "14px",
+  padding: "20px",
+  border: "1px solid rgba(255,255,255,0.1)",
+};
+
+function attemptScore(s: Submission): number | null {
+  const ev = Array.isArray(s.ai_evaluations) ? s.ai_evaluations[0] : s.ai_evaluations;
+  return ev?.total_score ?? null;
 }
 
 // GET /api/practice/steps/{step_id}/quota 的回應（backend/core/access.py 的 quota_status）
@@ -98,16 +137,35 @@ function StudentWorkspace() {
   const [coherence, setCoherence] = useState<Record<string, CoherenceResult | string>>({});
 
   // 練習工作區狀態
-  const [sessionId, setSessionId] = useState<string>("demo-session");
+  // 後端目前不保存 session（KNOWN_GAPS #3），這裡只需要一個這次練習用的識別碼
+  const [sessionId] = useState(() => crypto.randomUUID());
   const [studentAnswer, setStudentAnswer] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [quotaState, setQuotaState] = useState<QuotaState>(null);
   const [quotaKey, setQuotaKey] = useState(0); // 送出後 +1，重新查剩餘次數
-  const [statusMessage, setStatusMessage] = useState("");
   const [piiWarning, setPiiWarning] = useState("");
-  const [hintText, setHintText] = useState("");
+  const [run, setRun] = useState<RunState | null>(null);
+  const [caseData, setCaseData] = useState<CaseData | null>(null);
+
+  // 分層提示與作答紀錄（GET /hints、GET /history）；送出或取用提示後 progressKey +1 重新抓
+  const [hintStatus, setHintStatus] = useState<HintStatus | null>(null);
+  const [revealedHints, setRevealedHints] = useState<Hint[]>([]);
+  const [hintMessage, setHintMessage] = useState("");
+  const [history, setHistory] = useState<Submission[]>([]);
+  const [progressKey, setProgressKey] = useState(0);
   const [isLoadingHint, setIsLoadingHint] = useState(false);
-  const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
+
+  // 切換步驟或模組時清空這一步的作答狀態
+  const selectStep = (step: Step | null) => {
+    setSelectedStep(step);
+    setStudentAnswer("");
+    setRun(null);
+    setPiiWarning("");
+    setRevealedHints([]);
+    setHintMessage("");
+    setHintStatus(null);
+    setHistory([]);
+  };
 
   // 1. 初始化讀取使用者與模組步驟清單
   useEffect(() => {
@@ -135,7 +193,7 @@ function StudentWorkspace() {
         setStatusByStep(latest);
       };
 
-      const MODULE_SELECT = "id, title, description, module_steps(id, module_id, step_order, step_title, pass_score)";
+      const MODULE_SELECT = "id, title, description, module_steps(id, module_id, step_order, step_title, pass_score, ai_tools(title, target_competency))";
       const toModule = (m: { id: string; title: string; description: string | null; module_steps: unknown }): Module => ({
         id: m.id,
         title: m.title,
@@ -205,6 +263,46 @@ function StudentWorkspace() {
     load();
   }, [supabase, router, courseId]);
 
+  // 教學案例
+  // ⚠️ tool_cases 與步驟之間還沒有關聯欄位（schema 尚未定義），暫時取第一筆案例；送出時把 case_id 一起帶給後端
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from("tool_cases")
+      .select("id, title, case_background")
+      .order("created_at")
+      .limit(1)
+      .then(({ data }) => {
+        if (active) setCaseData((data?.[0] as CaseData | undefined) ?? null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [supabase]);
+
+  // 分層提示狀態（只查不取用）與這一步的作答紀錄
+  useEffect(() => {
+    if (!selectedStep) return;
+    let active = true;
+    const params = new URLSearchParams({ step_id: selectedStep.id }).toString();
+    Promise.all([
+      apiFetch<{ data: HintStatus }>(`/api/practice/sessions/${sessionId}/hints?${params}`),
+      apiFetch<{ data: { submissions: Submission[] } }>(`/api/practice/sessions/${sessionId}/history?${params}`),
+    ]).then(
+      ([hints, hist]) => {
+        if (!active) return;
+        setHintStatus(hints.data);
+        setHistory(hist.data.submissions);
+      },
+      () => {
+        // 提示與紀錄是輔助資訊，讀不到不影響作答（沒被指派等原因會由剩餘次數區塊說明）
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [selectedStep, sessionId, progressKey]);
+
   // 今天還能作答幾次（只查不扣）。切換步驟、送出作答後重新查
   useEffect(() => {
     if (!selectedStep) return;
@@ -229,35 +327,69 @@ function StudentWorkspace() {
     router.push("/");
   };
 
-  // 2. 索取鷹架指引提示 (Scaffolding Hints)
-  // 後端需要 step_id；reveal=true 才會真的取出下一層提示並記錄使用次數
-  const handleFetchHint = async () => {
+  // 2. 分層提示：先顯示還有沒有下一層，學生按下去才真的取用（reveal=true 會記錄使用次數）
+  const handleRevealHint = async () => {
     if (!selectedStep) return;
     setIsLoadingHint(true);
+    setHintMessage("");
     try {
       const params = new URLSearchParams({ step_id: selectedStep.id, reveal: "true" }).toString();
-      const json = await apiFetch<{ data: { hint: { content?: string } | null; message?: string } }>(
+      const res = await apiFetch<{ data: HintStatus & { hint: Hint | null; message?: string } }>(
         `/api/practice/sessions/${sessionId}/hints?${params}`
       );
-      setHintText(json.data.hint?.content || json.data.message || "目前沒有可用的提示。");
+      if (res.data.hint) setRevealedHints((prev) => [...prev, res.data.hint as Hint]);
+      if (res.data.message) setHintMessage(res.data.message);
+      setHintStatus(res.data);
     } catch (err) {
-      setHintText(`⚠️ 取得提示失敗：${err instanceof ApiError ? err.message : "連不到後端，請確認 FastAPI 已啟動後再試一次。"}`);
+      setHintMessage(`取得提示失敗：${err instanceof ApiError ? err.message : "連不到後端，請確認 FastAPI 已啟動。"}`);
     } finally {
       setIsLoadingHint(false);
     }
   };
 
-  // 3. 提交作答並接收 SSE 串流評分（apiFetch / streamSSE 會自動帶登入 token）
+  // 3. 送出作答並逐事件接收 SSE 評分（streamSSE 會自動帶登入 token）
+  const handleEvent = (event: string, data: Record<string, unknown>) => {
+    setRun((prev) => {
+      const r = prev ?? EMPTY_RUN;
+      switch (event) {
+        case "tutor_decision":
+          return { ...r, decision: String(data.action ?? "") };
+        case "analysis_start":
+          return { ...r, totalDimensions: Number(data.total_dimensions ?? 0) };
+        case "dimension_score":
+          return { ...r, dimensions: [...r.dimensions, data as unknown as DimensionScore] };
+        case "score_complete":
+          return { ...r, score: data as unknown as ScoreComplete };
+        case "hint":
+          return { ...r, hint: data as unknown as Hint };
+        case "encouragement":
+          return { ...r, encouragement: String(data.message ?? "") };
+        case "escalation":
+          return { ...r, escalation: String(data.message ?? "") };
+        case "errors_detected":
+          return { ...r, errors: (data.errors as DetectedError[]) ?? [] };
+        case "error":
+          return { ...r, failure: `${String(data.message ?? "AI 評分失敗")}，請稍後再試。` };
+        default:
+          return r;
+      }
+    });
+    if (event === "score_complete" && selectedStep) {
+      const passed = Boolean(data.passed);
+      setStatusByStep((prev) => ({ ...prev, [selectedStep.id]: passed ? "passed" : "revision_required" }));
+    }
+  };
+
   const handleSubmit = async () => {
+    if (!selectedStep) return;
     if (!studentAnswer.trim()) {
-      setStatusMessage("請先輸入作答內容再送出！");
+      setRun({ ...EMPTY_RUN, failure: "請先輸入作答內容再送出。" });
       return;
     }
 
     setIsSubmitting(true);
-    setStatusMessage("");
     setPiiWarning("");
-    setEvalResult({ dimensions: [], suggestions: [] });
+    setRun({ ...EMPTY_RUN });
 
     try {
       await streamSSE(
@@ -265,59 +397,35 @@ function StudentWorkspace() {
         {
           method: "POST",
           body: JSON.stringify({
-            module_id: selectedStep?.module_id, // 後端必填（SubmitAnswerRequest.module_id）
-            step_id: selectedStep?.id,
+            module_id: selectedStep.module_id,
+            step_id: selectedStep.id,
+            case_id: caseData?.id ?? null,
             content: studentAnswer,
             version_note: "學生工作台提交",
           }),
         },
-        (eventType, parsed) => {
-          if (eventType === "score_start") {
-            setStatusMessage("AI 正在閱讀並根據評分規準分析中...");
-          } else if (eventType === "dimension_score") {
-            setEvalResult((prev) => ({
-              ...prev,
-              dimensions: [...(prev?.dimensions || []), parsed as unknown as DimensionScore],
-              suggestions: prev?.suggestions || [],
-            }));
-          } else if (eventType === "score_complete") {
-            const passed = Boolean(parsed.passed);
-            setEvalResult((prev) => ({
-              ...prev,
-              passed,
-              percentage: parsed.percentage as number | undefined,
-              overall_comment: parsed.overall_comment as string | undefined,
-              suggestions: (parsed.suggestions as string[] | undefined) || [],
-              dimensions: prev?.dimensions || [],
-            }));
-            setStatusMessage("評分完成！");
-            if (selectedStep) {
-              setStatusByStep((prev) => ({
-                ...prev,
-                [selectedStep.id]: passed ? "passed" : "revision_required",
-              }));
-            }
-          } else if (eventType === "error") {
-            setStatusMessage(`⚠️ ${String(parsed.message ?? "AI 評分失敗")}，請稍後再試。`);
-          }
-        }
+        handleEvent
       );
     } catch (err) {
       // 顯示真正原因（個資偵測、未登入、沒被指派 403、次數用完 429…），不用假資料蓋掉
       if (err instanceof ApiError && err.code === "PII_DETECTED") {
-        setPiiWarning(err.message);
-      } else if (err instanceof ApiError && err.status === 401) {
-        setStatusMessage("⚠️ 登入已過期，請重新登入後再送出。");
-      } else if (err instanceof ApiError) {
-        setStatusMessage(`⚠️ 送出失敗：${err.message}`);
+        const types = (err.detail as { detected_types?: string[] })?.detected_types ?? [];
+        setPiiWarning(`${err.message}${types.length ? `（偵測到：${types.join("、")}）` : ""}`);
+        setRun(null);
       } else {
-        console.error("送出作答失敗：", err);
-        setStatusMessage("⚠️ 連不到後端，請確認 FastAPI 已啟動後再試一次。");
+        const message =
+          err instanceof ApiError
+            ? err.status === 401
+              ? "登入已過期，請重新登入後再送出。"
+              : `送出失敗：${err.message}`
+            : "連不到後端，請確認 FastAPI 已啟動後再試一次。";
+        if (!(err instanceof ApiError)) console.error("送出作答失敗：", err);
+        setRun({ ...EMPTY_RUN, failure: message });
       }
-      setEvalResult(null);
     } finally {
       setIsSubmitting(false);
       setQuotaKey((k) => k + 1);
+      setProgressKey((k) => k + 1);
     }
   };
 
@@ -458,12 +566,7 @@ function StudentWorkspace() {
                   const next = modules.find((m) => m.id === e.target.value);
                   if (!next) return;
                   setCurrentModuleId(next.id);
-                  setSelectedStep(next.steps[0] || null);
-                  setStudentAnswer("");
-                  setEvalResult(null);
-                  setPiiWarning("");
-                  setHintText("");
-                  setStatusMessage("");
+                  selectStep(next.steps[0] || null);
                 }}
                 style={{ width: "100%", marginBottom: "14px", padding: "8px 10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "13px", colorScheme: "dark" }}
               >
@@ -490,14 +593,7 @@ function StudentWorkspace() {
                 return (
                   <div
                     key={step.id}
-                    onClick={() => {
-                      setSelectedStep(step);
-                      setStudentAnswer("");
-                      setEvalResult(null);
-                      setPiiWarning("");
-                      setHintText("");
-                      setStatusMessage("");
-                    }}
+                    onClick={() => selectStep(step)}
                     style={{
                       padding: "12px 14px",
                       borderRadius: "10px",
@@ -603,7 +699,7 @@ function StudentWorkspace() {
           </div>
         </aside>
 
-        {/* ─── 右側欄：題目卡片、作答輸入與即時評分回饋 ─── */}
+        {/* ─── 右側欄：案例、作答、提示與紀錄｜AI 評分回饋 ─── */}
         <section
           style={{
             display: "grid",
@@ -612,131 +708,45 @@ function StudentWorkspace() {
             alignItems: "start",
           }}
         >
-          {/* 左半邊：案例題目與輸入框 */}
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-            {/* 個案卡片 */}
-            <div
-              style={{
-                backgroundColor: "#1e293b",
-                borderRadius: "14px",
-                padding: "20px",
-                border: "1px solid rgba(255,255,255,0.1)",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: "bold",
-                    color: "#38bdf8",
-                    backgroundColor: "rgba(56,189,248,0.12)",
-                    padding: "4px 10px",
-                    borderRadius: "6px",
-                  }}
-                >
-                  個案情境：小翔（4 歲 2 個月）
-                </span>
-                <button
-                  onClick={handleFetchHint}
-                  disabled={isLoadingHint}
-                  style={{
-                    fontSize: "12px",
-                    padding: "5px 12px",
-                    borderRadius: "6px",
-                    border: "1px solid #38bdf8",
-                    backgroundColor: "transparent",
-                    color: "#38bdf8",
-                    cursor: "pointer",
-                  }}
-                >
-                  {isLoadingHint ? "提示生成中..." : "💡 索取鷹架提示"}
-                </button>
+            {/* 本關任務與教學案例（從資料庫讀，不再寫死） */}
+            <div style={panel}>
+              <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}>
+                📌 關卡 {selectedStep?.step_order}：{selectedStep?.step_title}
+                {selectedStep?.ai_tools?.title && <span>・AI 助教：{selectedStep.ai_tools.title}</span>}
               </div>
-
-              <p style={{ fontSize: "14px", lineHeight: "1.6", color: "#cbd5e1", margin: "0 0 12px 0" }}>
-                在自由角落活動時，小翔經常獨自玩積木並排列特定顏色。當同儕靠近拿積木時會大叫推人，無法以語言或手勢表達意圖。
-              </p>
-              <div
-                style={{
-                  fontSize: "13px",
-                  color: "#94a3b8",
-                  backgroundColor: "rgba(255,255,255,0.03)",
-                  padding: "10px 14px",
-                  borderRadius: "8px",
-                }}
-              >
-                📌 <strong>當前關卡任務：</strong> {selectedStep?.step_title || "擬定介入策略"}
-              </div>
-
-              {hintText && (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    padding: "10px 14px",
-                    borderRadius: "8px",
-                    backgroundColor: "rgba(56, 189, 248, 0.12)",
-                    border: "1px solid rgba(56, 189, 248, 0.3)",
-                    color: "#7dd3fc",
-                    fontSize: "13px",
-                  }}
-                >
-                  {hintText}
-                </div>
+              {selectedStep?.ai_tools?.target_competency && (
+                <div style={{ fontSize: "13px", color: "#cbd5e1", marginBottom: "12px" }}>練習能力：{selectedStep.ai_tools.target_competency}</div>
+              )}
+              {caseData ? (
+                <>
+                  <span style={{ fontSize: "12px", fontWeight: "bold", color: "#38bdf8", backgroundColor: "rgba(56,189,248,0.12)", padding: "4px 10px", borderRadius: "6px" }}>
+                    教學案例：{caseData.title}
+                  </span>
+                  <p style={{ fontSize: "14px", lineHeight: 1.7, color: "#e2e8f0", margin: "10px 0 0", whiteSpace: "pre-wrap" }}>{caseData.case_background}</p>
+                </>
+              ) : (
+                <p style={{ fontSize: "13px", color: "#fbbf24", margin: 0 }}>讀不到教學案例，請聯絡老師確認案例已建立。</p>
               )}
             </div>
 
-            {/* 個資攔截警示 */}
-            {piiWarning && (
-              <div
-                style={{
-                  padding: "12px 16px",
-                  borderRadius: "8px",
-                  backgroundColor: "rgba(239, 68, 68, 0.15)",
-                  border: "1px solid rgba(239, 68, 68, 0.5)",
-                  color: "#fca5a5",
-                  fontSize: "13px",
-                  lineHeight: "1.5",
-                }}
-              >
-                {piiWarning}
-              </div>
-            )}
-
-            {/* 作答區 */}
-            <div
-              style={{
-                backgroundColor: "#1e293b",
-                borderRadius: "14px",
-                padding: "20px",
-                border: "1px solid rgba(255,255,255,0.1)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "12px",
-              }}
-            >
-              <label style={{ fontSize: "14px", fontWeight: "bold" }}>
-                請撰寫您的個別化教育計畫策略：
-              </label>
+            {/* 作答 */}
+            <div style={panel}>
+              <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>你的作答</h3>
+              {piiWarning && (
+                <div style={{ marginBottom: "10px", padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)" }}>
+                  ⚠️ {piiWarning}
+                </div>
+              )}
               <textarea
-                rows={9}
                 value={studentAnswer}
                 onChange={(e) => setStudentAnswer(e.target.value)}
-                placeholder="請具體撰寫行為功能分析、前事介入安排、正向替代行為訓練與評量檢核標準..."
-                style={{
-                  width: "100%",
-                  padding: "12px",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  backgroundColor: "rgba(0,0,0,0.25)",
-                  color: "#fff",
-                  fontSize: "14px",
-                  lineHeight: "1.6",
-                  resize: "vertical",
-                  boxSizing: "border-box",
-                  outline: "none",
-                }}
+                placeholder="請依案例情境完成本關卡的撰寫…"
+                style={{ width: "100%", height: "220px", boxSizing: "border-box", padding: "12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "14px", lineHeight: 1.6, resize: "vertical", outline: "none" }}
               />
-
+              <div style={{ fontSize: "11px", color: "#64748b", margin: "6px 0 12px" }}>
+                字數：{studentAnswer.length}・請勿輸入真實姓名、電話、身分證字號等個資
+              </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                 <QuotaBadge state={quotaState} />
                 <button
@@ -756,132 +766,154 @@ function StudentWorkspace() {
                     cursor: submitDisabled ? "not-allowed" : "pointer",
                   }}
                 >
-                  {isSubmitting ? "AI 評分串流中..." : "送出作答並評分"}
+                  {isSubmitting ? "AI 評分中…" : "送出作答並評分"}
                 </button>
               </div>
             </div>
+
+            {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用 */}
+            <div style={panel}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>💡 分層提示</h3>
+                <button
+                  onClick={handleRevealHint}
+                  // 還沒送出過作答時提示無處記錄，先送出一次再索取
+                  disabled={isLoadingHint || !hintStatus?.next_level_available || history.length === 0}
+                  style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "8px", border: "1px solid #38bdf8", background: "none", color: "#38bdf8", fontSize: "12px", fontWeight: "bold", cursor: "pointer", opacity: isLoadingHint || !hintStatus?.next_level_available || history.length === 0 ? 0.4 : 1 }}
+                >
+                  {isLoadingHint ? "取得中…" : "我需要提示"}
+                </button>
+              </div>
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0" }}>
+                {hintStatus
+                  ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
+                  : "讀取提示狀態中…"}
+                {history.length === 0 && "・先送出一次作答後才能索取提示"}
+              </p>
+              {hintMessage && <p style={{ fontSize: "12px", color: "#cbd5e1", margin: "8px 0 0" }}>{hintMessage}</p>}
+              {[...revealedHints, ...(run?.hint ? [run.hint] : [])].map((h, i) => (
+                <div key={`${h.level}-${i}`} style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)" }}>
+                  <div style={{ fontSize: "11px", fontWeight: "bold", color: "#a5b4fc" }}>
+                    第 {h.level} 層{h.source === "generated" ? "（AI 依評分結果生成）" : ""}
+                  </div>
+                  <p style={{ fontSize: "13px", color: "#e0e7ff", margin: "4px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{h.content}</p>
+                  {h.warning && <p style={{ fontSize: "11px", color: "#c7d2fe", margin: "4px 0 0" }}>{h.warning}</p>}
+                </div>
+              ))}
+            </div>
+
+            {/* 作答版本紀錄 */}
+            {history.length > 0 && (
+              <div style={panel}>
+                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>📜 作答紀錄</h3>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {[...history].reverse().map((sub) => {
+                    const status = STATUS_LABEL[sub.status as AttemptStatus];
+                    const score = attemptScore(sub);
+                    return (
+                      <details key={sub.id} style={{ padding: "8px 10px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)", fontSize: "13px" }}>
+                        <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                          <b>第 {sub.attempt_number} 次</b>
+                          {status && (
+                            <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", color: status.color, backgroundColor: status.bg }}>{status.text}</span>
+                          )}
+                          <span style={{ color: "#cbd5e1" }}>{score == null ? "未評分" : `${Math.round(score)} 分`}</span>
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>{new Date(sub.created_at).toLocaleString()}</span>
+                        </summary>
+                        {sub.user_input_content && (
+                          <div style={{ marginTop: "8px", display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                            <p style={{ flex: 1, margin: 0, whiteSpace: "pre-wrap", color: "#cbd5e1", lineHeight: 1.6 }}>{sub.user_input_content}</p>
+                            <button
+                              onClick={() => setStudentAnswer(sub.user_input_content ?? "")}
+                              style={{ flexShrink: 0, padding: "4px 10px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", fontSize: "11px", cursor: "pointer" }}
+                            >
+                              帶入修改
+                            </button>
+                          </div>
+                        )}
+                      </details>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* 右半邊：即時評分結果反饋 */}
-          <div
-            style={{
-              backgroundColor: "#1e293b",
-              borderRadius: "14px",
-              padding: "20px",
-              border: "1px solid rgba(255,255,255,0.1)",
-              minHeight: "480px",
-            }}
-          >
-            <h2
-              style={{
-                fontSize: "15px",
-                fontWeight: "bold",
-                margin: "0 0 14px 0",
-                borderBottom: "1px solid rgba(255,255,255,0.1)",
-                paddingBottom: "10px",
-              }}
-            >
-              📊 AI 即時評分診斷回饋
-            </h2>
+          {/* AI 評分回饋 */}
+          <div style={{ ...panel, minHeight: "480px", display: "flex", flexDirection: "column", gap: "12px" }}>
+            <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+              📊 AI 評分回饋
+            </h3>
 
-            {statusMessage && (
-              <div
-                style={{
-                  marginBottom: "14px",
-                  padding: "8px 12px",
-                  borderRadius: "6px",
-                  backgroundColor: "rgba(56, 189, 248, 0.1)",
-                  color: "#38bdf8",
-                  fontSize: "13px",
-                }}
-              >
-                {statusMessage}
-              </div>
+            {!run && !isSubmitting && (
+              <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>尚未送出作答。完成撰寫後按「送出作答並評分」。</p>
             )}
 
-            {!evalResult?.percentage && !evalResult?.dimensions?.length && !isSubmitting && (
-              <div style={{ textAlign: "center", color: "#64748b", marginTop: "120px", fontSize: "13px" }}>
-                尚未送出作答。請在左側輸入介入方案後送出評估。
-              </div>
+            {run?.failure && (
+              <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>⚠️ {run.failure}</div>
             )}
 
-            {/* 成績與達成度徽章 */}
-            {evalResult?.percentage !== undefined && (
+            {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
+            {run?.encouragement && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#86efac", backgroundColor: "rgba(34,197,94,0.12)" }}>{run.encouragement}</div>}
+            {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.12)" }}>{run.escalation}</div>}
+            {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "#a5b4fc" }}>AI 給了一則提示，請看左側「分層提示」。</p>}
+
+            {run?.score && (
               <div
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
+                  padding: "16px",
                   borderRadius: "10px",
-                  backgroundColor: evalResult.passed ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
-                  border: `1px solid ${evalResult.passed ? "rgba(34, 197, 94, 0.4)" : "rgba(239, 68, 68, 0.4)"}`,
-                  marginBottom: "16px",
+                  backgroundColor: run.score.passed ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+                  border: `1px solid ${run.score.passed ? "rgba(34,197,94,0.4)" : "rgba(239,68,68,0.4)"}`,
                 }}
               >
-                <div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8" }}>綜合達成度</div>
-                  <div style={{ fontSize: "26px", fontWeight: "bold", color: evalResult.passed ? "#4ade80" : "#f87171" }}>
-                    {evalResult.percentage}%
-                  </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: "26px", fontWeight: "bold", color: run.score.passed ? "#4ade80" : "#f87171" }}>
+                    {Math.round(run.score.percentage ?? run.score.total_score)} 分
+                  </span>
+                  <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "#fff", backgroundColor: run.score.passed ? "#22c55e" : "#ef4444" }}>
+                    {run.score.passed ? "✓ 已達通過門檻" : "✕ 尚未達標，請依回饋修改"}
+                  </span>
                 </div>
-                <span
-                  style={{
-                    padding: "6px 14px",
-                    borderRadius: "9999px",
-                    fontSize: "12px",
-                    fontWeight: "bold",
-                    backgroundColor: evalResult.passed ? "#22c55e" : "#ef4444",
-                    color: "#fff",
-                  }}
-                >
-                  {evalResult.passed ? "✓ 通過標準" : "✕ 建議修訂"}
-                </span>
+                {run.score.overall_feedback && (
+                  <p style={{ margin: "10px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{run.score.overall_feedback}</p>
+                )}
+                {run.score.needs_teacher_review && <p style={{ margin: "8px 0 0", fontSize: "12px", color: "#fbbf24" }}>這次 AI 評分較沒把握，老師會再複核。</p>}
               </div>
             )}
 
-            {/* 規準分維度評量 */}
-            {evalResult?.dimensions && evalResult.dimensions.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "16px" }}>
-                <h3 style={{ fontSize: "13px", color: "#cbd5e1", margin: 0 }}>維度規準評量：</h3>
-                {evalResult.dimensions.map((dim, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      backgroundColor: "rgba(255,255,255,0.03)",
-                      padding: "10px 12px",
-                      borderRadius: "8px",
-                      border: "1px solid rgba(255,255,255,0.05)",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                      <span style={{ fontSize: "13px", fontWeight: "bold", color: "#e2e8f0" }}>{dim.name}</span>
-                      <span style={{ fontSize: "13px", color: "#38bdf8", fontWeight: "bold" }}>{dim.score} 分</span>
+            {run && run.dimensions.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {run.dimensions.map((d) => (
+                  <div key={d.dimension} style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)", fontSize: "13px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
+                      <span>{d.dimension}</span>
+                      <span style={{ color: "#38bdf8" }}>
+                        {d.score} / {d.max_score}
+                      </span>
                     </div>
-                    {dim.feedback && <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>{dim.feedback}</p>}
+                    {d.reason && <p style={{ margin: "4px 0 0", color: "#cbd5e1", lineHeight: 1.5 }}>{d.reason}</p>}
+                    {d.evidence && <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>引用：{d.evidence}</p>}
                   </div>
                 ))}
               </div>
             )}
-
-            {/* 整體評語與建議 */}
-            {evalResult?.overall_comment && (
-              <div style={{ marginBottom: "14px" }}>
-                <h3 style={{ fontSize: "13px", color: "#cbd5e1", margin: "0 0 6px 0" }}>整體回饋意見：</h3>
-                <p style={{ fontSize: "12px", color: "#94a3b8", lineHeight: "1.6", margin: 0 }}>
-                  {evalResult.overall_comment}
-                </p>
-              </div>
+            {isSubmitting && (
+              <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>
+                AI 評分中{run?.totalDimensions ? `（${run.dimensions.length} / ${run.totalDimensions} 個構面）` : "…"}
+              </p>
             )}
 
-            {evalResult?.suggestions && evalResult.suggestions.length > 0 && (
-              <div>
-                <h3 style={{ fontSize: "13px", color: "#cbd5e1", margin: "0 0 6px 0" }}>修訂建議：</h3>
-                <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "#cbd5e1", lineHeight: "1.6" }}>
-                  {evalResult.suggestions.map((sug, idx) => (
-                    <li key={idx}>{sug}</li>
-                  ))}
-                </ul>
+            {run && run.errors.length > 0 && (
+              <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.1)", border: "1px solid rgba(249,115,22,0.3)" }}>
+                <div style={{ fontWeight: "bold", marginBottom: "4px" }}>需要留意的常見錯誤</div>
+                {run.errors.map((err) => (
+                  <div key={err.code} style={{ marginTop: "6px" }}>
+                    <b>{err.label}</b>
+                    {err.explanation && <span style={{ color: "#fed7aa" }}>：{err.explanation}</span>}
+                    {err.evidence && <div style={{ fontSize: "12px", fontStyle: "italic", color: "#fdba74" }}>原文：{err.evidence}</div>}
+                  </div>
+                ))}
               </div>
             )}
           </div>
