@@ -926,6 +926,42 @@ data: {"message": "你已嘗試 4 次，建議與老師討論後再繼續練習�
 
 ---
 
+### `GET /api/practice/steps/:step_id/memory`
+**權限**：登入者（身分取自 token），需已被指派此步驟
+
+查看這支機器人對目前登入者記得什麼。只讀，不呼叫 LLM、不扣額度。規則見 `docs/LLM_SYSTEM.md` 6.3。
+
+**Response 200：**
+```json
+{
+  "data": {
+    "enabled": true,
+    "attempts": [
+      {
+        "attempt_number": 1,
+        "score": 45.0,
+        "weakest_dimension": "功能性描述",
+        "errors": ["僅列診斷名稱"],
+        "hints_given": 1,
+        "teacher_score": null
+      }
+    ],
+    "recurring_errors": [],
+    "prior_steps": [
+      { "step_order": 1, "step_title": "步驟1 案例資料整理", "passed": true }
+    ]
+  }
+}
+```
+- `attempts` 由舊到新；`score` 為 `null` 表示那次只拿到提示、沒有評分。
+- `teacher_score` 只會出現**已發布**的教師複核分數。
+- `prior_steps` 只列步驟，不回傳前面步驟的作答全文。
+- 教授在 `teaching_strategy.memory.enabled` 關掉時，回 `enabled: false` 與空清單。
+
+**錯誤**：401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `PERMISSION_EXPIRED`；步驟不存在 404。
+
+---
+
 ### `GET /api/practice/sessions/:session_id/history`
 **權限**：STUDENT, HOST, ASSISTANT
 

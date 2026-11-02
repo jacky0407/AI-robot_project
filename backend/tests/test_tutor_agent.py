@@ -248,3 +248,50 @@ class TestTutorProcessStream:
         escalation = next(c for c in chunks if c["type"] == "escalation")
         assert "suggest_teacher_review" in escalation["data"]
         assert escalation["data"]["suggest_teacher_review"] is True
+
+
+# ──────────────────────────────────────────
+# 機器人記憶的傳遞
+# ──────────────────────────────────────────
+
+class TestTutorMemory:
+
+    @pytest.mark.asyncio
+    async def test_memory_text_is_passed_to_evaluator(self):
+        from core.ai.memory import AttemptMemory, BotMemory
+
+        agent = TutorAgent()
+        received = {}
+
+        async def mock_evaluate_stream(**kwargs):
+            received.update(kwargs)
+            yield {"type": "analysis_start", "data": {}}
+
+        memory = BotMemory(attempts=[AttemptMemory(attempt_number=1, score=40)])
+        with patch.object(agent._evaluator, "evaluate_stream", mock_evaluate_stream):
+            async for _ in agent.process_stream(
+                student_answer="作答", rubric={}, system_prompt="p",
+                student_context=make_ctx(attempt=1), memory=memory,
+            ):
+                pass
+
+        assert received["memory_text"] == memory.to_prompt_text()
+        assert "第 1 次：40 分" in received["memory_text"]
+
+    @pytest.mark.asyncio
+    async def test_no_memory_passes_empty_text(self):
+        agent = TutorAgent()
+        received = {}
+
+        async def mock_evaluate_stream(**kwargs):
+            received.update(kwargs)
+            yield {"type": "analysis_start", "data": {}}
+
+        with patch.object(agent._evaluator, "evaluate_stream", mock_evaluate_stream):
+            async for _ in agent.process_stream(
+                student_answer="作答", rubric={}, system_prompt="p",
+                student_context=make_ctx(attempt=1),
+            ):
+                pass
+
+        assert received["memory_text"] == ""

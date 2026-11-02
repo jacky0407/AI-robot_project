@@ -210,6 +210,51 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 **仍待教授確認**。學生的作答湊不出任何一條規則時，`coherence_complete.overall_coherent`
 回 `null`，摘要說明還缺哪些步驟——不會在沒檢查的情況下回「一致」。
 
+## 6.3 機器人記憶（`core/ai/memory.py`）
+
+每支機器人（模組裡的一個步驟）對同一位學生記得兩件事，全部從既有資料表組出來，**不新增資料表**：
+
+| 記憶 | 來源 | 內容 |
+|------|------|------|
+| 本步驟歷程 | `step_attempts` + `ai_evaluations` + `prompt_logs` + `teacher_reviews` | 最近幾次的總分、最弱構面、錯誤分類、AI 回饋、已給過的提示、**已發布**的教師複核 |
+| 前面步驟成果 | 同模組 `step_order` 較小的步驟 | 每一步取一筆作答（**通過的版本優先**，否則最新一次），每步最多 400 字 |
+
+記憶用在哪裡：
+
+- **整體回饋**（`_synthesize`）：指出比上次進步的地方、提醒重複的錯誤、留意與前面步驟是否一致
+- **提示**（個人化與生成）：不重複已給過的提示，點出重複出現的錯誤
+
+刻意**不**用在：
+
+- **逐構面評分**：分數只看這次作答對照 Rubric，避免「上次低分、這次也偏低」的錨定效應
+- **TutorAgent 決策**：仍照 6.1 的規則
+
+其他原則：
+
+- 不增加 LLM 呼叫次數，只是加進原本就會送出的 prompt（`personalize: false` 時仍然不呼叫 LLM）
+- 教師複核未發布（`is_published = false`）的意見不放進記憶，AI 不能比老師先說出判定
+- 記憶查詢失敗只記 log，評分照常進行（當作沒有記憶）
+
+教授可以在 `teaching_strategy.memory` 逐支機器人調整，沒填就用預設值：
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "max_attempts": 3,
+    "include_prior_steps": true
+  }
+}
+```
+
+| 欄位 | 預設 | 意義 |
+|------|------|------|
+| `enabled` | `true` | `false` 就完全不讀記憶 |
+| `max_attempts` | `3` | 記住本步驟最近幾次作答（0–10） |
+| `include_prior_steps` | `true` | 是否讀前面步驟的成果（第 1 步本來就沒有） |
+
+查看某支機器人對目前登入者記得什麼：`GET /api/practice/steps/{step_id}/memory`（見 api.md）。
+
 ---
 
 ## 7. 學習歷程記錄

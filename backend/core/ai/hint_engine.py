@@ -260,9 +260,13 @@ class HintEngine:
         hints_used: int = 0,
         requested_by_student: bool = False,
         rubric: dict | None = None,
+        memory_text: str = "",
     ) -> Hint | None:
         """
         取得下一則提示。教授有設定就用他的，沒有就依 Rubric 生成。
+
+        memory_text 是機器人記憶（core/ai/memory.py），只在本來就要呼叫 LLM
+        時加進 prompt（個人化或生成），不會因為有記憶多呼叫一次。
 
         Returns:
             Hint，或 None（此刻不該給提示）
@@ -274,14 +278,15 @@ class HintEngine:
             if selected is None:
                 return None
             return await self._build_teacher_hint(
-                selected, plan, student_answer, dimension_scores
+                selected, plan, student_answer, dimension_scores, memory_text
             )
 
         # 教授沒設定提示 → 依 Rubric 生成，但仍受自動提示額度限制
         if not requested_by_student and hints_used >= DEFAULT_MAX_AUTO_HINTS:
             return None
         return await self._build_generated_hint(
-            student_answer, dimension_scores, rubric, hints_used, requested_by_student
+            student_answer, dimension_scores, rubric, hints_used, requested_by_student,
+            memory_text,
         )
 
     # ── 教授撰寫的提示 ────────────────────────────────────────────
@@ -292,6 +297,7 @@ class HintEngine:
         plan: HintPlan,
         student_answer: str,
         dimension_scores: list[dict] | None,
+        memory_text: str = "",
     ) -> Hint:
         content = selected["content"]
 
@@ -305,6 +311,7 @@ class HintEngine:
                 student_answer=student_answer,
                 dimension_scores=dimension_scores,
                 fallback=content,
+                memory_text=memory_text,
             )
 
         return Hint(
@@ -323,6 +330,7 @@ class HintEngine:
         student_answer: str,
         dimension_scores: list[dict] | None,
         fallback: str,
+        memory_text: str = "",
     ) -> str:
         """把老師的提示模板依學生作答改寫。失敗時原樣回傳模板。"""
         weakest = weakest_dimension(dimension_scores or [])
@@ -341,7 +349,7 @@ class HintEngine:
 
 學生的作答：
 {student_answer}
-
+{_memory_section(memory_text)}
 請把老師的提示改寫得更貼近這位學生的實際作答。"""
 
         try:
@@ -369,6 +377,7 @@ class HintEngine:
         rubric: dict | None,
         hints_used: int,
         requested_by_student: bool,
+        memory_text: str = "",
     ) -> Hint | None:
         weakest = weakest_dimension(dimension_scores or [])
 
@@ -389,7 +398,7 @@ class HintEngine:
 
 【學生的作答】
 {student_answer}
-
+{_memory_section(memory_text)}
 請生成一則引導提示，幫助學生自己發現這個構面還缺什麼。"""
 
         try:
@@ -417,6 +426,17 @@ class HintEngine:
             source=SOURCE_GENERATED,
             dimension=dim_name,
         )
+
+
+def _memory_section(memory_text: str) -> str:
+    """把機器人記憶包成提示 prompt 的一段；沒有記憶時不加任何文字"""
+    if not memory_text:
+        return ""
+    return f"""
+{memory_text}
+
+（以上是學習記憶：不要重複已給過的提示，可以點出仍重複出現的錯誤。）
+"""
 
 
 def _find_dimension_criteria(rubric: dict | None, dim_name: str) -> str:

@@ -67,6 +67,19 @@ def compute_weighted_percentage(dimension_scores: list[dict]) -> float:
     return (total / max_total * 100) if max_total > 0 else 0.0
 
 
+def _memory_section(memory_text: str) -> str:
+    """把機器人記憶包成整體回饋 prompt 的一段；沒有記憶時不加任何文字"""
+    if not memory_text:
+        return ""
+    return f"""
+{memory_text}
+
+（以上是學習記憶，只用來寫回饋：具體指出比上次進步的地方、提醒仍重複的錯誤、
+留意與前面步驟內容是否一致。不要因為先前的分數改變對這次作答的判斷。
+若有教師複核意見，回饋不得與教師意見矛盾。）
+"""
+
+
 class EvaluatorAgent:
     """
     多步驟評分 Agent。
@@ -95,6 +108,7 @@ class EvaluatorAgent:
         student_answer: str,
         rubric: dict,
         system_prompt: str,
+        memory_text: str = "",
     ) -> EvaluationResult:
         """
         完整執行評分流程（非串流版本）。
@@ -103,6 +117,7 @@ class EvaluatorAgent:
             student_answer: 學生作答原文
             rubric: Rubric 資料（dict 格式，含 dimensions）
             system_prompt: 教授設定的機器人角色說明
+            memory_text: 機器人記憶（core/ai/memory.py），只用在整體回饋，不影響構面分數
 
         Returns:
             EvaluationResult
@@ -128,6 +143,7 @@ class EvaluatorAgent:
             rubric_text=rubric_text,
             pass_threshold=pass_threshold,
             system_prompt=system_prompt,
+            memory_text=memory_text,
         )
 
         return final
@@ -137,6 +153,7 @@ class EvaluatorAgent:
         student_answer: str,
         rubric: dict,
         system_prompt: str,
+        memory_text: str = "",
     ) -> AsyncGenerator[dict, None]:
         """
         串流版本：每完成一個構面評分就 yield 一次。
@@ -169,6 +186,7 @@ class EvaluatorAgent:
             rubric_text=rubric_text,
             pass_threshold=pass_threshold,
             system_prompt=system_prompt,
+            memory_text=memory_text,
         )
 
         yield {
@@ -269,8 +287,13 @@ class EvaluatorAgent:
         rubric_text: str,
         pass_threshold: float,
         system_prompt: str,
+        memory_text: str = "",
     ) -> EvaluationResult:
-        """整合所有構面評分，生成整體回饋。"""
+        """
+        整合所有構面評分，生成整體回饋。
+
+        分數在這之前就由各構面決定了；記憶只讓回饋能對照先前作答與前面步驟。
+        """
         percentage = compute_weighted_percentage(dimension_scores)
         has_weights = any(float(d.get("weight") or 0) > 0 for d in dimension_scores)
 
@@ -295,7 +318,7 @@ class EvaluatorAgent:
 
 【學生作答】
 {student_answer}
-
+{_memory_section(memory_text)}
 請根據以上評分結果，生成整體回饋，並評估您的信心值。
 嚴格以 JSON 格式回傳：
 {{
