@@ -38,9 +38,9 @@ const MEMBER_STATUS_LABEL: Record<MemberStatus, string> = {
   removed: "已移出",
 };
 
-const panel: React.CSSProperties = { backgroundColor: "#fff", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" };
-const input: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "13px" };
-const smallBtn: React.CSSProperties = { padding: "4px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid #cbd5e1", backgroundColor: "#fff", color: "#1e293b", cursor: "pointer" };
+const panel: React.CSSProperties = { backgroundColor: "#1e293b", borderRadius: "12px", padding: "20px", border: "1px solid rgba(255,255,255,0.1)" };
+const input: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "13px", outline: "none" };
+const smallBtn: React.CSSProperties = { padding: "4px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "transparent", color: "#cbd5e1", cursor: "pointer" };
 
 const errorText = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
 
@@ -183,14 +183,14 @@ export default function AdminCoursesPage() {
   ];
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#f8fafc", color: "#1e293b", fontFamily: "sans-serif" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 24px", backgroundColor: "#fff", borderBottom: "1px solid #e2e8f0" }}>
+    <div style={{ minHeight: "100vh", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif", colorScheme: "dark" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 24px", backgroundColor: "#1e293b", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <span style={{ backgroundColor: "#16a34a", color: "#fff", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", fontWeight: "bold" }}>
             管理與複核後台
           </span>
           <span style={{ fontWeight: "bold", fontSize: "16px" }}>課程管理</span>
-          <Link href="/admin/tools" style={{ fontSize: "13px", color: "#2563eb", textDecoration: "none", marginLeft: "8px" }}>
+          <Link href="/admin/tools" style={{ fontSize: "13px", color: "#38bdf8", textDecoration: "none", marginLeft: "8px" }}>
             機器人與複核 →
           </Link>
         </div>
@@ -200,7 +200,7 @@ export default function AdminCoursesPage() {
       </header>
 
       {errorMsg && (
-        <div style={{ maxWidth: "1200px", margin: "16px auto 0", padding: "10px 14px", borderRadius: "8px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: "13px" }}>
+        <div style={{ maxWidth: "1200px", margin: "16px auto 0", padding: "10px 14px", borderRadius: "8px", backgroundColor: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", color: "#fca5a5", fontSize: "13px" }}>
           {errorMsg}
         </div>
       )}
@@ -210,33 +210,33 @@ export default function AdminCoursesPage() {
         <div style={panel}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>所有課程</h3>
-            <label style={{ fontSize: "12px", color: "#64748b", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+            <label style={{ fontSize: "12px", color: "#94a3b8", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
               <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
               顯示已封存
             </label>
           </div>
 
-          {courses === null && <p style={{ fontSize: "13px", color: "#64748b" }}>載入中…</p>}
-          {courses?.length === 0 && !errorMsg && <p style={{ fontSize: "13px", color: "#64748b" }}>尚未建立任何課程，請從右側建立。</p>}
+          {courses === null && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
+          {courses?.length === 0 && !errorMsg && <p style={{ fontSize: "13px", color: "#94a3b8" }}>尚未建立任何課程，請從右側建立。</p>}
 
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {courses?.map((c) => (
-              <div key={c.id} style={{ borderRadius: "10px", border: "1px solid #e2e8f0", backgroundColor: c.is_archived ? "#f1f5f9" : "#f8fafc" }}>
+              <div key={c.id} style={{ borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", backgroundColor: c.is_archived ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)" }}>
                 <div style={{ padding: "14px", display: "flex", justifyContent: "space-between", gap: "12px" }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                       <span style={{ fontWeight: "bold", fontSize: "15px" }}>{c.title}</span>
-                      {c.is_archived && <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", backgroundColor: "#e2e8f0", color: "#475569" }}>已封存</span>}
+                      {c.is_archived && <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", backgroundColor: "rgba(255,255,255,0.08)", color: "#94a3b8" }}>已封存</span>}
                       {c.pending_count > 0 && (
-                        <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", backgroundColor: "#fef3c7", color: "#92400e" }}>
+                        <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", backgroundColor: "rgba(245,158,11,0.15)", color: "#fbbf24" }}>
                           {c.pending_count} 筆待審核
                         </span>
                       )}
                     </div>
-                    {c.description && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#64748b" }}>{c.description}</p>}
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px", fontSize: "12px", color: "#475569", flexWrap: "wrap" }}>
+                    {c.description && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#94a3b8" }}>{c.description}</p>}
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px", fontSize: "12px", color: "#cbd5e1", flexWrap: "wrap" }}>
                       邀請碼
-                      <code style={{ fontSize: "14px", fontWeight: "bold", letterSpacing: "2px", padding: "2px 8px", borderRadius: "4px", backgroundColor: "#dbeafe", color: "#1e40af" }}>{c.invite_code}</code>
+                      <code style={{ fontSize: "14px", fontWeight: "bold", letterSpacing: "2px", padding: "2px 8px", borderRadius: "4px", backgroundColor: "rgba(56,189,248,0.15)", color: "#7dd3fc" }}>{c.invite_code}</code>
                       <button onClick={() => copyCode(c.invite_code)} style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px" }}>
                         {copied === c.invite_code ? "已複製" : "複製"}
                       </button>
@@ -254,13 +254,13 @@ export default function AdminCoursesPage() {
                       加入需老師核准
                     </label>
                     <div style={{ display: "flex", gap: "6px" }}>
-                      <button onClick={() => toggleMembers(c.id)} style={{ ...smallBtn, backgroundColor: openCourse === c.id ? "#0f172a" : "#fff", color: openCourse === c.id ? "#fff" : "#1e293b" }}>
+                      <button onClick={() => toggleMembers(c.id)} style={{ ...smallBtn, backgroundColor: openCourse === c.id ? "#16a34a" : "transparent", color: openCourse === c.id ? "#fff" : "#cbd5e1", border: openCourse === c.id ? "1px solid #16a34a" : smallBtn.border }}>
                         {openCourse === c.id ? "收合成員" : "成員與審核"}
                       </button>
                       <button
                         disabled={busyCourse === c.id}
                         onClick={() => updateCourse(c, { is_archived: !c.is_archived })}
-                        style={{ ...smallBtn, color: c.is_archived ? "#16a34a" : "#dc2626" }}
+                        style={{ ...smallBtn, color: c.is_archived ? "#4ade80" : "#f87171" }}
                       >
                         {c.is_archived ? "取消封存" : "封存"}
                       </button>
@@ -269,26 +269,26 @@ export default function AdminCoursesPage() {
                 </div>
 
                 {openCourse === c.id && (
-                  <div style={{ borderTop: "1px solid #e2e8f0", padding: "14px", backgroundColor: "#fff", borderRadius: "0 0 10px 10px" }}>
-                    {members === null && <p style={{ fontSize: "13px", color: "#64748b", margin: 0 }}>載入成員中…</p>}
-                    {memberError && <p style={{ fontSize: "13px", color: "#b91c1c", margin: 0 }}>{memberError}</p>}
-                    {members?.length === 0 && !memberError && <p style={{ fontSize: "13px", color: "#64748b", margin: 0 }}>目前還沒有學生申請或加入。</p>}
+                  <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", padding: "14px", backgroundColor: "rgba(0,0,0,0.15)", borderRadius: "0 0 10px 10px" }}>
+                    {members === null && <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>載入成員中…</p>}
+                    {memberError && <p style={{ fontSize: "13px", color: "#fca5a5", margin: 0 }}>{memberError}</p>}
+                    {members?.length === 0 && !memberError && <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>目前還沒有學生申請或加入。</p>}
 
                     {memberGroups.map(({ status, title }) => {
                       const list = members?.filter((m) => m.status === status) ?? [];
                       if (list.length === 0) return null;
                       return (
                         <div key={status} style={{ marginBottom: "12px" }}>
-                          <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: "0 0 8px 0", color: status === "pending" ? "#92400e" : "#334155" }}>
+                          <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: "0 0 8px 0", color: status === "pending" ? "#fbbf24" : "#cbd5e1" }}>
                             {title}（{list.length}）
                           </h4>
                           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                             {list.map((m) => (
-                              <div key={m.user_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "13px", padding: "8px 10px", borderRadius: "6px", backgroundColor: "#f8fafc" }}>
+                              <div key={m.user_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "13px", padding: "8px 10px", borderRadius: "6px", backgroundColor: "rgba(255,255,255,0.04)" }}>
                                 <span>
                                   {m.full_name || "（未填姓名）"}
-                                  <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>{m.email}</span>
-                                  <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "8px" }}>{MEMBER_STATUS_LABEL[m.status]}</span>
+                                  <span style={{ fontSize: "12px", color: "#94a3b8", marginLeft: "8px" }}>{m.email}</span>
+                                  <span style={{ fontSize: "11px", color: "#64748b", marginLeft: "8px" }}>{MEMBER_STATUS_LABEL[m.status]}</span>
                                 </span>
                                 <span style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
                                   {m.status !== "active" && (
@@ -297,12 +297,12 @@ export default function AdminCoursesPage() {
                                     </button>
                                   )}
                                   {m.status === "pending" && (
-                                    <button disabled={busyMember === m.user_id} onClick={() => handleMemberAction(c.id, m, "reject")} style={{ ...smallBtn, color: "#dc2626" }}>
+                                    <button disabled={busyMember === m.user_id} onClick={() => handleMemberAction(c.id, m, "reject")} style={{ ...smallBtn, color: "#f87171" }}>
                                       拒絕
                                     </button>
                                   )}
                                   {m.status === "active" && (
-                                    <button disabled={busyMember === m.user_id} onClick={() => handleMemberAction(c.id, m, "remove")} style={{ ...smallBtn, color: "#dc2626" }}>
+                                    <button disabled={busyMember === m.user_id} onClick={() => handleMemberAction(c.id, m, "remove")} style={{ ...smallBtn, color: "#f87171" }}>
                                       移出
                                     </button>
                                   )}
@@ -345,11 +345,11 @@ export default function AdminCoursesPage() {
           <button
             type="submit"
             disabled={creating || !form.title.trim()}
-            style={{ padding: "8px 0", backgroundColor: "#0f172a", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: "pointer", opacity: creating || !form.title.trim() ? 0.5 : 1 }}
+            style={{ padding: "8px 0", backgroundColor: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: "pointer", opacity: creating || !form.title.trim() ? 0.5 : 1 }}
           >
             {creating ? "建立中…" : "+ 建立課程並產生邀請碼"}
           </button>
-          {createMsg && <p style={{ margin: 0, fontSize: "12px", color: createMsg.startsWith("建立失敗") ? "#b91c1c" : "#15803d" }}>{createMsg}</p>}
+          {createMsg && <p style={{ margin: 0, fontSize: "12px", color: createMsg.startsWith("建立失敗") ? "#fca5a5" : "#86efac" }}>{createMsg}</p>}
         </form>
       </div>
     </div>
