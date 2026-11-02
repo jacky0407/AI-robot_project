@@ -27,6 +27,15 @@ function describeDetail(detail: unknown): string {
   if (detail && typeof detail === 'object' && 'message' in detail) {
     return String((detail as { message: unknown }).message)
   }
+  // 422 驗證錯誤：detail 是 [{ loc, msg }]，列出是哪個欄位有問題
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => {
+        const loc = Array.isArray(d?.loc) ? d.loc.filter((x: unknown) => x !== 'body').join('.') : ''
+        return `${loc ? `${loc}：` : ''}${d?.msg ?? ''}`
+      })
+      .join('；')
+  }
   return ''
 }
 

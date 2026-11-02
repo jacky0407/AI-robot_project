@@ -240,6 +240,7 @@ export default function StudentIntegratedWorkspacePage() {
         {
           method: "POST",
           body: JSON.stringify({
+            module_id: selectedStep?.module_id, // 後端必填（SubmitAnswerRequest.module_id）
             step_id: selectedStep?.id,
             content: studentAnswer,
             version_note: "學生工作台提交",
