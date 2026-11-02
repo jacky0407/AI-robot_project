@@ -1,8 +1,8 @@
 # 已知落差與技術債
 
-> 掃描時間：2026-09-17｜基準 commit `62f57f4`
-> 標 ✅ 的項目已在「第一批修正」中處理完畢（行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md) 第 10 節）。
-> 其餘項目仍待處理，標 🔴 者會在執行時直接失敗。
+> 初次掃描：2026-09-17（commit `62f57f4`）｜最近更新：2026-11-02（main `77b871c` + PR #28）
+> 標 ✅ 的項目已處理完畢（LLM 相關的行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md) 第 10 節）。
+> 其餘項目仍待處理，標 🔴 者會造成錯誤或安全問題。
 
 ---
 
@@ -173,12 +173,12 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ---
 
-## 7. 🟠 前端未正確消費 SSE
+## 7. ✅ 已修正 — 前端未正確消費 SSE
 
-`/student/practice` 用 `await res.text()` 一次讀完整個串流，等同於同步等待，
-「AI 逐構面即時評分」的體驗完全消失。解析後也只是 `JSON.stringify` 顯示原文。
+原問題：`/student/practice` 用 `await res.text()` 一次讀完整個串流，逐構面即時評分的體驗消失。
 
-修法與範例程式見 [ARCHITECTURE.md](./ARCHITECTURE.md) 第 5 節。
+修法（PR #24）：`/student/practice` 已刪除併入 `/student/modules`，改用 `utils/api.ts` 的
+`streamSSE()`（`fetch` + `getReader()` 逐塊解析），見 [ARCHITECTURE.md](./ARCHITECTURE.md) 第 5 節。
 
 ---
 
@@ -195,12 +195,14 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ---
 
-## 9. 🔴 Supabase RLS 完全未啟用
+## 9. 🟡 Supabase RLS：已啟用，政策未完整存進 schema.sql
 
-`schema.sql` 中沒有任何 `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY`。
-前端 anon key 是公開資訊，目前任何人都能直接讀寫 `profiles`、`ai_tools`、`module_steps`、`tool_cases`。
-
-建議至少：`profiles` 只能讀自己；`ai_tools` 學生只讀 published、寫入限 owner/assistant；學習歷程表學生只讀自己的、寫入一律走後端；`teacher_reviews` 限 owner/assistant。
+- ✅ 所有資料表已開啟 RLS；政策在 migration 005（指派制：學生只看得到被指派的模組、步驟、機器人與自己的作答；
+  教師新增 `ai_tools`）與 006（`profiles` 只能讀自己）
+- ✅ 前端直連只剩讀取與教師新增機器人，評分、複核、刪除都走後端 API
+- 🟡 `schema.sql` 本身沒有 `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY`：只跑 `schema.sql` 的新資料庫
+  **必須再跑 005、006**，否則前端讀不到資料（全部被 RLS 擋下）
+- 🟡 後端用 service_role 不受 RLS 限制，權限完全靠 API 層的 token 檢查（見 #8）
 
 ---
 
@@ -232,14 +234,14 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 | 位置 | 內容 | 狀態 |
 |------|------|------|
-| `frontend/src/app/student/practice/page.tsx` | `http://127.0.0.1:8000` | 待處理 |
-| `frontend/src/app/admin/tools/page.tsx` | `http://127.0.0.1:8000` | 待處理 |
-| `frontend/src/app/student/practice/page.tsx` | session id `temp-session-id` | 待處理 |
+| 前端後端網址 | `http://127.0.0.1:8000` | ✅ 統一由 `utils/api.ts` 讀 `NEXT_PUBLIC_API_URL`（沒設才用本機預設） |
+| 後端 CORS | `http://localhost:3000` | ✅ 改讀 `FRONTEND_URL`（PR #27） |
+| `frontend/src/app/student/modules/page.tsx` | session id 由前端 `crypto.randomUUID()` 產生 | 🟡 後端未落庫也不檢查，見 #3 |
 | `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 | ✅ 已刪除，改用 `HintEngine` |
 | `backend/api/practice.py` | `/hints` 端點整段回傳值 | ✅ 已接真實資料 |
 | `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 | 🟡 步驟編號已改對九步驟（3→5、3→7、5→8），內容待教授確認；入庫待 E 批次 |
 
-前三項應抽成 `NEXT_PUBLIC_API_URL`；`CoherenceAgent` 的規則應改讀資料庫讓教授可自訂。
+`CoherenceAgent` 的規則應改讀資料庫讓教授可自訂。
 
 ---
 
@@ -252,11 +254,12 @@ pass_threshold = step_res.data.get("pass_score") or 75
 | `ai_tools.max_cost_limit` | 無程式碼檢查 |
 | `ai_evaluations.ai_cost` | 恆為 0.0 |
 | `ai_evaluations.suggested_next_step` | 從未寫入 |
-| `module_steps.pass_forward_keys` | 步驟間資料傳遞未實作 |
+| `module_steps.pass_forward_keys` | 步驟間的結構化資料傳遞未實作（機器人記憶目前直接讀前面步驟的作答全文，見 LLM_SYSTEM.md 6.3） |
 | `module_steps.require_teacher_review` | ✅ `/api/review/pending` 已讀取（`review_reasons: step_requires_review`）；但尚無「審核前不能進下一步」的解鎖邏輯 |
 | `step_attempts.structured_data` | 從未寫入 |
 | `prompt_logs.student_reaction` | 從未寫入 |
-| `tool_permissions` / `forms` / `form_responses` | 整張表無人使用 |
+| `tool_permissions` | ✅ 已用於機器人申請與自主模式每日額度（`core/access.py`、`api/tool_requests.py`） |
+| `forms` / `form_responses` | 整張表無人使用（前後測尚未實作） |
 | `backend/core/ai/tools/evaluation_tools.py` | 四個 LangChain tool 未被任何 Agent 掛載 |
 | `core/ai/base.py` / `gemini_provider.py` | `BaseAIProvider` 只有 `GeminiProvider` 繼承，而實際評分流程（各 Agent）直接用 LangChain 建 client，沒有經過這層抽象。AGENTS.md 的「換模型只改 `gemini_provider.py`」目前不成立；換模型請改 `.env` 的 `GEMINI_MODEL` |
 | `supabase/practice_repo.py` | 早期資料存取層，沒有任何檔案 import 它 |
@@ -271,11 +274,11 @@ pass_threshold = step_res.data.get("pass_score") or 75
 |------|------|
 | ~~`ai_evaluations.evidence_text`~~ | ✅ 已改存 AI 各構面實際引用的原文 |
 | `GeminiProvider.evaluate_stream()` | `score_complete` 的 `passed` 寫死 `False`，註解說「由呼叫方補上」但無人補 |
-| `review.py` 的 `d.dict()` | Pydantic v2 已棄用，應改 `d.model_dump()` |
-| `frontend/src/app/layout.tsx` | metadata 仍是 `create-next-app` 預設值（`title: "Create Next App"`） |
-| `frontend/src/app/page.tsx` | 22KB 原型與正式路線並存，職責重疊，且不受 `middleware` 守門 |
-| `/student/practice` 取案例 | `tool_cases.select('*').limit(1)` 固定取第一筆，與步驟無關 |
-| `/student/modules` | 查全部 `module_steps`，未依課程篩選，也沒有解鎖邏輯 |
+| ~~`review.py` 的 `d.dict()`~~ | ✅ 已不再使用 |
+| ~~`frontend/src/app/layout.tsx`~~ | ✅ metadata 已改為「學前特教 AI 培訓平台」 |
+| `frontend/src/app/page.tsx` | 已改為登入與註冊頁（舊原型 `page_origin.tsx` 已刪除）；不受 `middleware` 守門是刻意的 |
+| ~~`/student/practice` 取案例~~ | ✅ 頁面已併入 `/student/modules` |
+| `/student/modules` | ✅ 從課程進入時只顯示該課程指派的模組；🟡 仍沒有「前一步通過才解鎖下一步」的邏輯 |
 | `main.py` | router import 分散在檔案上方與中段，建議集中 |
 
 ---
@@ -285,11 +288,12 @@ pass_threshold = step_res.data.get("pass_score") or 75
 ```
 ✅ 第一批（已完成）    → #1 review 欄位、#2 KeyError、#3 session 欄位、#10 seed.sql
                         外加 #4 pass_score、#5 Rubric levels
-✅ 第二批 LLM（已完成）→ 分層提示、錯誤分類、confidence、scale_type、逾時重試
-   第三批（安全）      → #8 API 身分驗證、#9 RLS      ← 目前最該做的
-   第四批（體驗）      → #7 前端 SSE
-   第五批（可部署）    → #11 環境變數、#6 回應格式
-   第六批（補需求）    → 成本控管、跨步驟傳遞、Coherence 規則入庫
+✅ 第二批 LLM（已完成）→ 分層提示、錯誤分類、confidence、scale_type、逾時重試、機器人記憶
+✅ 第三批（安全）      → #8 API 身分驗證、#9 RLS 政策（005、006）
+✅ 第四批（體驗）      → #7 前端 SSE、課程與分層提示 UI
+   第五批（穩定）      → #17 Gemini 額度與延遲、#18 評分失敗退回次數、#3 Session 落庫   ← 目前最該做的
+   第六批（可部署）    → #6 回應格式、#9 RLS 政策寫回 schema.sql、Vercel / Render 部署
+   第七批（補需求）    → 成本控管、跨步驟結構化傳遞、Coherence 規則入庫、前後測、研究資料匯出
 ```
 
 LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆異動看 `git log`。
@@ -300,7 +304,8 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 
 **後端**
 
-- `api/auth.py`、`api/courses.py`、`api/tools.py`、`api/export.py` — `main.py` 中以 TODO 註解預留，檔案不存在
+- `api/auth.py`、`api/tools.py` — `main.py` 中以 TODO 註解預留，檔案不存在；`api/export.py` 尚未建立（`api/courses.py` 已完成）
+- 練習 Session 落庫（#3）
 - 表單與前後測（`forms` / `form_responses`）
 - 研究資料 CSV 匯出（`/api/export/*`）
 - 研究倫理同意書流程（`/api/consent`）
@@ -310,17 +315,14 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 
 **前端**
 
-- 註冊頁、忘記密碼
-- 課程加入（輸入邀請碼）
-- 分層提示 UI（逐層解鎖）— 後端 `/hints` 已可用，缺畫面
-- 教師複核後台介面
-- 機器人編輯頁、案例管理、提示設定（GPTs Builder 的其他分頁）
+- ✅ 註冊、忘記密碼與重設密碼、課程加入（邀請碼）、分層提示 UI、教師複核介面（PR #24 等）
+- 機器人編輯頁、案例管理（GPTs Builder 的其他分頁；目前只能新增）
 - 作答版本比對介面
+- 機器人記憶的畫面（後端 `GET /api/practice/steps/{id}/memory` 已可用，前端尚未使用）
 
 **安全與部署**
 
-- Supabase RLS 規則（`schema.sql` 完全沒有 `ENABLE ROW LEVEL SECURITY`）
-- 後端 API 的身分驗證（目前所有端點無任何權限檢查，`user_id` 由前端傳入）
+- ✅ 後端 API 身分驗證（#8）、RLS 政策（#9，migration 005、006）
 - Vercel / Render 部署設定
 
 ---
