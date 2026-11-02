@@ -630,6 +630,7 @@
 | 權限 | 方法與路徑 | Request | 成功回應 `data` |
 |------|-----------|---------|----------------|
 | 登入者 | `POST /api/tool-requests` | `{tool_id}` | 申請（`status: "pending"`），201 |
+| 登入者 | `GET /api/tool-requests/tools` | — | 可申請的機器人（已發布）：`[{id, title, domain, target_competency}]`，不含 system_prompt、rubric 等教學內容。學生核准前讀不到 `ai_tools`（RLS），由此端點列出 |
 | 登入者 | `GET /api/tool-requests/mine` | — | 我的申請陣列（新的在前） |
 | 教師 | `GET /api/tool-requests?status=pending` | — | 申請陣列，每筆多 `user_id`、`full_name`、`email` |
 | 教師 | `PATCH /api/tool-requests/:request_id` | `{action: "approve" \| "reject", expire_date?, daily_quota?}` | 更新後的申請 |
