@@ -18,6 +18,11 @@ from core.auth import CurrentUser, get_current_user
 TEACHER = CurrentUser(id="teacher-1", role="owner")
 STUDENT = CurrentUser(id="student-1", role="student")
 
+# 網址裡的 id 必須是 UUID 格式（格式錯誤 FastAPI 直接回 422）
+C1 = "c0000000-0000-0000-0000-000000000001"
+NOPE = "c0000000-0000-0000-0000-00000000dead"
+S1 = "50000000-0000-0000-0000-000000000001"
+
 COURSE = {"id": "c1", "title": "學前特教實習", "require_approval": False, "is_archived": False}
 
 
@@ -156,19 +161,19 @@ class TestListAndUpdateCourses:
     def test_update_require_approval(self, as_user):
         as_user(TEACHER)
         db = fake_db([{"id": "c1", "require_approval": True}])
-        res = call("PATCH", "/api/courses/c1", db, json={"require_approval": True})
+        res = call("PATCH", f"/api/courses/{C1}", db, json={"require_approval": True})
 
         assert res.status_code == 200
         assert written(db, "update") == {"require_approval": True}
 
     def test_update_missing_course_is_404(self, as_user):
         as_user(TEACHER)
-        res = call("PATCH", "/api/courses/nope", fake_db([]), json={"title": "新名稱"})
+        res = call("PATCH", f"/api/courses/{NOPE}", fake_db([]), json={"title": "新名稱"})
         assert res.status_code == 404
 
     def test_update_without_fields_is_400(self, as_user):
         as_user(TEACHER)
-        res = call("PATCH", "/api/courses/c1", fake_db(), json={})
+        res = call("PATCH", f"/api/courses/{C1}", fake_db(), json={})
         assert res.json()["detail"]["code"] == "NO_CHANGES"
 
 
@@ -280,7 +285,7 @@ class TestMembers:
         as_user(TEACHER)
         db = fake_db([COURSE], [{"user_id": "s1", "status": "pending", "joined_at": "t",
                                  "profiles": {"full_name": "王小明", "email": "s1@x.com"}}])
-        res = call("GET", "/api/courses/c1/members?status=pending", db)
+        res = call("GET", f"/api/courses/{C1}/members?status=pending", db)
 
         assert res.json()["data"] == [{
             "user_id": "s1", "full_name": "王小明", "email": "s1@x.com",
@@ -289,17 +294,17 @@ class TestMembers:
 
     def test_invalid_status_filter_is_400(self, as_user):
         as_user(TEACHER)
-        res = call("GET", "/api/courses/c1/members?status=whatever", fake_db())
+        res = call("GET", f"/api/courses/{C1}/members?status=whatever", fake_db())
         assert res.status_code == 400
 
     def test_members_of_missing_course_is_404(self, as_user):
         as_user(TEACHER)
-        res = call("GET", "/api/courses/nope/members", fake_db([]))
+        res = call("GET", f"/api/courses/{NOPE}/members", fake_db([]))
         assert res.status_code == 404
 
     def test_student_cannot_see_members(self, as_user):
         as_user(STUDENT)
-        res = call("GET", "/api/courses/c1/members", fake_db())
+        res = call("GET", f"/api/courses/{C1}/members", fake_db())
         assert res.status_code == 403
 
     @pytest.mark.parametrize("action,before,after", [
@@ -311,7 +316,7 @@ class TestMembers:
     def test_member_actions(self, as_user, action, before, after):
         as_user(TEACHER)
         db = fake_db([{"id": "m1", "status": before}], [{"id": "m1", "status": after}])
-        res = call("PATCH", "/api/courses/c1/members/s1", db, json={"action": action})
+        res = call("PATCH", f"/api/courses/{C1}/members/{S1}", db, json={"action": action})
 
         assert res.status_code == 200
         assert written(db, "update") == {"status": after}
@@ -320,7 +325,7 @@ class TestMembers:
         """已加入的成員要用 remove，不是 reject，以免狀態意義混淆"""
         as_user(TEACHER)
         db = fake_db([{"id": "m1", "status": "active"}])
-        res = call("PATCH", "/api/courses/c1/members/s1", db, json={"action": "reject"})
+        res = call("PATCH", f"/api/courses/{C1}/members/{S1}", db, json={"action": "reject"})
 
         assert res.status_code == 409
         assert res.json()["detail"]["code"] == "INVALID_STATUS_TRANSITION"
@@ -328,15 +333,40 @@ class TestMembers:
 
     def test_unknown_member_is_404(self, as_user):
         as_user(TEACHER)
-        res = call("PATCH", "/api/courses/c1/members/s1", fake_db([]), json={"action": "approve"})
+        res = call("PATCH", f"/api/courses/{C1}/members/{S1}", fake_db([]), json={"action": "approve"})
         assert res.status_code == 404
 
     def test_unknown_action_is_422(self, as_user):
         as_user(TEACHER)
-        res = call("PATCH", "/api/courses/c1/members/s1", fake_db(), json={"action": "delete"})
+        res = call("PATCH", f"/api/courses/{C1}/members/{S1}", fake_db(), json={"action": "delete"})
         assert res.status_code == 422
 
     def test_student_cannot_approve(self, as_user):
         as_user(STUDENT)
-        res = call("PATCH", "/api/courses/c1/members/s1", fake_db(), json={"action": "approve"})
+        res = call("PATCH", f"/api/courses/{C1}/members/{S1}", fake_db(), json={"action": "approve"})
         assert res.status_code == 403
+
+
+# ──────────────────────────────────────────
+# 網址參數格式
+# ──────────────────────────────────────────
+
+class TestPathIdFormat:
+    """
+    回歸：舊版網址裡的 id 是任意字串，亂打的 id 送到資料庫會回 500。
+    改成 UUID 型別後，格式錯誤在進資料庫前就回 422。
+    """
+
+    @pytest.mark.parametrize("method,path,body", [
+        ("PATCH", "/api/courses/not-a-uuid", {"title": "新名稱"}),
+        ("GET", "/api/courses/not-a-uuid/members", None),
+        ("PATCH", f"/api/courses/not-a-uuid/members/{S1}", {"action": "approve"}),
+        ("PATCH", f"/api/courses/{C1}/members/not-a-uuid", {"action": "approve"}),
+    ])
+    def test_non_uuid_id_is_422_and_never_reaches_database(self, as_user, method, path, body):
+        as_user(TEACHER)
+        db = fake_db()
+        res = call(method, path, db, json=body)
+
+        assert res.status_code == 422
+        db.table.assert_not_called()
