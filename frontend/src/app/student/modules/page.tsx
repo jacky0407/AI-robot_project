@@ -69,6 +69,9 @@ export default function StudentIntegratedWorkspacePage() {
   const [statusByStep, setStatusByStep] = useState<Record<string, AttemptStatus>>({});
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
+  const [courseName, setCourseName] = useState("");
+  // 從「我的課程」進來時帶 ?course=<id>，只顯示該課程指派的模組；沒帶則維持原本顯示全部可見模組
+  const courseId = searchParams.get("course");
 
   // 一致性檢核 (Coherence)
   const [checkingModule, setCheckingModule] = useState<string | null>(null);
@@ -95,9 +98,70 @@ export default function StudentIntegratedWorkspacePage() {
         return;
       }
 
+      // 讀取學生作答最新紀錄狀態
+      const loadAttemptStatus = async (uid: string) => {
+        const { data: attempts } = await supabase
+          .from("step_attempts")
+          .select("step_id, status, attempt_number")
+          .eq("user_id", uid)
+          .order("attempt_number", { ascending: false });
+
+        const latest: Record<string, AttemptStatus> = {};
+        for (const a of attempts ?? []) {
+          if (!(a.step_id in latest)) latest[a.step_id] = a.status as AttemptStatus;
+        }
+        setStatusByStep(latest);
+      };
+
+      const MODULE_SELECT = "id, title, description, module_steps(id, module_id, step_order, step_title, pass_score)";
+      const toModule = (m: { id: string; title: string; description: string | null; module_steps: unknown }): Module => ({
+        id: m.id,
+        title: m.title,
+        description: m.description,
+        steps: [...((m.module_steps as Step[]) ?? [])].sort((a, b) => a.step_order - b.step_order),
+      });
+
+      if (courseId) {
+        // 從課程進來：只顯示老師指派給這門課、且已發布的模組（GET /api/courses/{id}/modules）
+        try {
+          const [assigned, mine] = await Promise.all([
+            apiFetch<{ data: { module_id: string }[] }>(`/api/courses/${encodeURIComponent(courseId)}/modules`),
+            apiFetch<{ data: { course_id: string; course_name: string | null }[] }>("/api/courses/mine"),
+          ]);
+          setCourseName(mine.data.find((c) => c.course_id === courseId)?.course_name ?? "");
+
+          const ids = assigned.data.map((a) => a.module_id);
+          if (ids.length === 0) {
+            setErrorMsg("這門課程目前還沒有指派訓練模組，請等老師安排後再回來。");
+          } else {
+            const { data: rows, error } = await supabase.from("learning_modules").select(MODULE_SELECT).in("id", ids);
+            if (error) throw error;
+            // 依老師指派的順序排列
+            const byId = new Map((rows ?? []).map((r) => [r.id, toModule(r)]));
+            const ordered = ids.map((id) => byId.get(id)).filter((m): m is Module => Boolean(m));
+            if (ordered.length === 0) {
+              setErrorMsg("讀不到這門課程的模組內容，請確認模組已發布，或聯絡老師。");
+            } else {
+              setModules(ordered);
+              setCurrentModuleId(ordered[0].id);
+              setSelectedStep(ordered[0].steps[0] || null);
+            }
+          }
+        } catch (err) {
+          setErrorMsg(
+            err instanceof ApiError
+              ? `無法讀取課程模組：${err.message}`
+              : "無法讀取課程模組，請確認後端已啟動後重新整理。"
+          );
+        }
+        await loadAttemptStatus(user.id);
+        setLoading(false);
+        return;
+      }
+
       const { data: moduleRows, error: moduleError } = await supabase
         .from("learning_modules")
-        .select("id, title, description, module_steps(id, module_id, step_order, step_title, pass_score)")
+        .select(MODULE_SELECT)
         .eq("is_published", true)
         .order("created_at");
 
@@ -117,34 +181,18 @@ export default function StudentIntegratedWorkspacePage() {
         setCurrentModuleId(defaultMod.id);
         setSelectedStep(defaultMod.steps[0]);
       } else {
-        const formatted: Module[] = moduleRows.map((m) => ({
-          id: m.id,
-          title: m.title,
-          description: m.description,
-          steps: [...((m.module_steps as Step[]) ?? [])].sort((a, b) => a.step_order - b.step_order),
-        }));
+        const formatted: Module[] = moduleRows.map(toModule);
         setModules(formatted);
         setCurrentModuleId(formatted[0].id);
         setSelectedStep(formatted[0].steps[0] || null);
       }
 
-      // 讀取學生作答最新紀錄狀態
-      const { data: attempts } = await supabase
-        .from("step_attempts")
-        .select("step_id, status, attempt_number")
-        .eq("user_id", user.id)
-        .order("attempt_number", { ascending: false });
-
-      const latest: Record<string, AttemptStatus> = {};
-      for (const a of attempts ?? []) {
-        if (!(a.step_id in latest)) latest[a.step_id] = a.status as AttemptStatus;
-      }
-      setStatusByStep(latest);
+      await loadAttemptStatus(user.id);
       setLoading(false);
     };
 
     load();
-  }, [supabase, router]);
+  }, [supabase, router, courseId]);
 
   // 登出
   const handleSignOut = async () => {
@@ -336,7 +384,7 @@ export default function StudentIntegratedWorkspacePage() {
               學生實踐工作台・{currentMod?.title || "訓練模組"}
             </h1>
             <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
-              循序闖關練習、即時 AI 評分與跨步驟邏輯一致性診斷
+              {courseName ? `課程：${courseName}・` : ""}循序闖關練習、即時 AI 評分與跨步驟邏輯一致性診斷
             </p>
           </div>
         </div>
@@ -356,7 +404,24 @@ export default function StudentIntegratedWorkspacePage() {
         </button>
       </header>
 
+      {(loading || modules.length === 0) && (
+        <div style={{ maxWidth: "640px", margin: "48px auto", padding: "24px", borderRadius: "14px", backgroundColor: "#1e293b", border: "1px solid rgba(255,255,255,0.1)", textAlign: "center" }}>
+          <p style={{ margin: 0, fontSize: "14px", color: loading ? "#94a3b8" : "#fbbf24", lineHeight: 1.6 }}>
+            {loading ? "載入訓練模組中…" : errorMsg || "目前沒有可以練習的訓練模組。"}
+          </p>
+          {!loading && (
+            <button
+              onClick={() => router.push("/student/courses")}
+              style={{ marginTop: "16px", padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
+            >
+              回到我的課程
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 主體兩欄佈局 */}
+      {!loading && modules.length > 0 && (
       <main
         style={{
           maxWidth: "1500px",
@@ -377,6 +442,29 @@ export default function StudentIntegratedWorkspacePage() {
               border: "1px solid rgba(255,255,255,0.1)",
             }}
           >
+            {modules.length > 1 && (
+              <select
+                value={currentMod?.id}
+                onChange={(e) => {
+                  const next = modules.find((m) => m.id === e.target.value);
+                  if (!next) return;
+                  setCurrentModuleId(next.id);
+                  setSelectedStep(next.steps[0] || null);
+                  setStudentAnswer("");
+                  setEvalResult(null);
+                  setPiiWarning("");
+                  setHintText("");
+                  setStatusMessage("");
+                }}
+                style={{ width: "100%", marginBottom: "14px", padding: "8px 10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "13px", colorScheme: "dark" }}
+              >
+                {modules.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.title}
+                  </option>
+                ))}
+              </select>
+            )}
             <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 4px 0", color: "#38bdf8" }}>
               📋 模組關卡進度
             </h2>
@@ -789,6 +877,7 @@ export default function StudentIntegratedWorkspacePage() {
           </div>
         </section>
       </main>
+      )}
     </div>
   );
 }
