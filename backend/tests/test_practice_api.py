@@ -1182,3 +1182,41 @@ class TestBotMemory:
 
         assert res.status_code == 403
         assert fake_db.find("step_attempts", "select") == []
+
+
+# ──────────────────────────────────────────
+# 測試報告 2026-11-02 #5：通過過的作答不算進轉介次數
+# ──────────────────────────────────────────
+
+def scored(number: int, total: int) -> dict:
+    return {"id": f"attempt-{number}", "attempt_number": number,
+            "ai_evaluations": [{"total_score": total, "dimension_scores": LOW_DIMS}]}
+
+
+class TestEscalationCount:
+
+    def test_passed_attempt_does_not_count_toward_escalation(self):
+        """實測：第 1 次 100 分、第 2 次 25 分、第 3 次只給提示、第 4 次 50 分 → 第 5 次不該轉介"""
+        history = [
+            scored(4, 50),
+            {"id": "attempt-3", "attempt_number": 3, "ai_evaluations": []},
+            scored(2, 25),
+            scored(1, 100),
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=history)
+        res, events = submit_with_agents(fake_db, FULL_EVALUATION, hint_llm=mock_llm(["想想看你觀察到什麼？"]))
+
+        decision = next(d for e, d in events if e == "tutor_decision")
+        assert decision["action"] == "give_hint"
+
+    def test_three_failed_evaluations_still_escalate(self):
+        history = [scored(3, 40), scored(2, 30), scored(1, 20)]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=history)
+        res, events = submit_with_agents(fake_db, FULL_EVALUATION)
+
+        decision = next(d for e, d in events if e == "tutor_decision")
+        assert decision["action"] == "escalate"
+
+    def test_count_failed_evaluations_helper(self):
+        attempts = [scored(4, 50), {"id": "a3", "ai_evaluations": []}, scored(2, 70), scored(1, 100)]
+        assert practice._count_failed_evaluations(attempts, 70.0) == 1

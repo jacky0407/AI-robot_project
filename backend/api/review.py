@@ -46,7 +46,8 @@ PENDING_SELECT = (
 class JudgeRequest(BaseModel):
     # 不收 teacher_id：判定者由 token 決定（舊前端仍會送，Pydantic 會直接忽略）
     decision: str = Field(description="accept_ai | modify | override | request_retry")
-    final_score: Optional[int] = None
+    # 0–100 加權百分制，與 ai_evaluations.total_score 同一個尺度；超出範圍 Pydantic 回 422
+    final_score: Optional[int] = Field(default=None, ge=0, le=100)
     final_feedback: str = ""
     is_published: bool = False
 

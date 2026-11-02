@@ -39,8 +39,9 @@ class StudentContext:
     pass_threshold: float        # 通過門檻（百分比）
     last_dimension_scores: list[dict] = field(default_factory=list)  # 上次各構面評分
     requested_hint: bool = False  # 學生是否主動要求提示
-    # 先前「真的有評分」的作答次數。只拿到提示、沒評分的作答不算——
-    # 否則每給一次提示就多佔一次額度，學生還沒用到第 2 層提示就被轉介老師。
+    # 先前「有評分但沒通過」的作答次數，用來決定要不要轉介老師。
+    #   - 只拿到提示、沒評分的不算：否則每給一次提示就多佔一次，還沒用到第 2 層就被轉介
+    #   - 通過過的不算：通過代表學生會寫，不是需要老師介入的訊號
     # None 表示呼叫端沒提供，退回用 attempt_number - 1（假設每次都有評分）。
     evaluated_attempts: int | None = None
 
@@ -84,8 +85,8 @@ class TutorAgent:
     │ 上次分數 >= 門檻                  │ EVALUATE     │
     │ 接近門檻（差 <10%）且嘗試 <=3 次  │ ENCOURAGE    │
     │ 分數 60~門檻                      │ GIVE_HINT    │
-    │ 分數 < 60%，評分過 <= 2 次        │ GIVE_HINT    │
-    │ 分數 < 60%，評分過 >= 3 次        │ ESCALATE     │
+    │ 分數 < 60%，沒通過的評分 <= 2 次  │ GIVE_HINT    │
+    │ 分數 < 60%，沒通過的評分 >= 3 次  │ ESCALATE     │
     └─────────────────────────────────┴──────────────┘
 
     GIVE_HINT 只是「該給提示了」的決策；要不要真的給、給第幾層，

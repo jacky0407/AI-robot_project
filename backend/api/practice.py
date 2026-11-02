@@ -205,8 +205,9 @@ async def submit_answer(
             pass_threshold=float(pass_threshold),
             last_dimension_scores=_extract_last_dimension_scores(last_attempt),
             requested_hint=body.request_hint,
-            # 只拿到提示、沒評分的作答不算進「轉介老師」的次數
-            evaluated_attempts=sum(1 for a in attempts if _extract_last_score_percent(a) is not None),
+            # 「轉介老師」只看有評分但沒通過的次數：只拿到提示沒評分的不算，
+            # 通過過的也不算（2026-11-02 測試報告 #5：第 1 次 100 分也被算進去，第 5 次就被轉介）
+            evaluated_attempts=_count_failed_evaluations(attempts, float(pass_threshold)),
         )
 
         # 機器人記憶：要在寫入這次作答前讀，記憶裡才不會混進這次自己
@@ -658,6 +659,12 @@ def _count_hints_used(db, attempts: list[dict]) -> int:
         .execute()
     )
     return res.count or 0
+
+
+def _count_failed_evaluations(attempts: list[dict], pass_threshold: float) -> int:
+    """此步驟有評分、但分數未達門檻的作答次數。"""
+    scores = (_extract_last_score_percent(a) for a in attempts)
+    return sum(1 for score in scores if score is not None and score < pass_threshold)
 
 
 def _record_tutor_action(db, attempt_id: str, action: str) -> None:
