@@ -296,3 +296,42 @@ class TestWeightedScoreComplete:
 
         assert [d["weight"] for d in dimension_events] == [40, 20]
         assert all(d["score"] == 1 for d in dimension_events)
+
+
+# ──────────────────────────────────────────
+# 機器人記憶：只進整體回饋，不進構面評分
+# ──────────────────────────────────────────
+
+class TestMemoryInPrompts:
+
+    @pytest.mark.asyncio
+    async def test_memory_only_in_synthesis_prompt(self):
+        """記憶不能影響構面分數（避免錨定上次分數），只用來寫整體回饋"""
+        agent = EvaluatorAgent()
+        dim = json.dumps({"dimension": "功能性描述", "score": 3, "max_score": 4,
+                          "reason": "尚可", "evidence": "…"})
+        synth = json.dumps({"overall_feedback": "比上次進步", "confidence": 0.9})
+        agent._llm = make_mock_llm([dim, dim, synth])
+
+        async for _ in agent.evaluate_stream(
+            SAMPLE_ANSWER, SAMPLE_RUBRIC, "prompt", memory_text="第 1 次：40 分"
+        ):
+            pass
+
+        prompts = [call.args[0][1].content for call in agent._llm.ainvoke.call_args_list]
+        assert all("第 1 次：40 分" not in p for p in prompts[:-1])
+        assert "第 1 次：40 分" in prompts[-1]
+        assert "不要因為先前的分數改變對這次作答的判斷" in prompts[-1]
+
+    @pytest.mark.asyncio
+    async def test_no_memory_keeps_original_prompt(self):
+        agent = EvaluatorAgent()
+        dim = json.dumps({"dimension": "功能性描述", "score": 3, "max_score": 4,
+                          "reason": "尚可", "evidence": "…"})
+        synth = json.dumps({"overall_feedback": "良好", "confidence": 0.9})
+        agent._llm = make_mock_llm([dim, dim, synth])
+
+        async for _ in agent.evaluate_stream(SAMPLE_ANSWER, SAMPLE_RUBRIC, "prompt"):
+            pass
+
+        assert "學習記憶" not in agent._llm.ainvoke.call_args_list[-1].args[0][1].content

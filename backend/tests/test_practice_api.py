@@ -923,6 +923,7 @@ class TestAuth:
         ("get", "/api/practice/sessions/s1/history?step_id=step-1"),
         ("post", "/api/practice/modules/m1/coherence-check"),
         ("get", "/api/practice/steps/step-1/quota"),
+        ("get", "/api/practice/steps/step-1/memory"),
     ])
     def test_without_token_returns_401_and_never_touches_db(self, method, path):
         main.app.dependency_overrides.pop(get_current_user, None)
@@ -944,7 +945,8 @@ class TestAuth:
 
         assert res.status_code == 200
         assert fake_db.find("step_attempts", "insert")[0]["payload"]["user_id"] == STUDENT.id
-        assert user_id_filters(fake_db) == [STUDENT.id]
+        # 歷程與機器人記憶各查一次，每次都只能用 token 的使用者
+        assert set(user_id_filters(fake_db)) == {STUDENT.id}
 
     def test_hints_ignore_user_id_in_query(self):
         fake_db = FakeSupabase(STEP_ROW, prev_attempts=[], hint_logs={})
@@ -1101,3 +1103,82 @@ class TestQuotaEndpoint:
 
     def test_unknown_step_returns_404(self):
         assert get_quota(FakeSupabase([], prev_attempts=[])).status_code == 404
+
+
+# ──────────────────────────────────────────
+# 機器人記憶的串接
+# ──────────────────────────────────────────
+
+PASSED_BEFORE = [
+    {"id": "attempt-1", "attempt_number": 1, "status": "passed",
+     "ai_evaluations": [{"total_score": 80, "dimension_scores": [],
+                         "detected_errors": [], "feedback_text": "上次的回饋"}]},
+]
+
+
+def get_memory(fake_db):
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=fake_db):
+        return client.get("/api/practice/steps/step-1/memory")
+
+
+class TestBotMemory:
+
+    def test_submit_puts_memory_into_feedback_prompt(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=PASSED_BEFORE)
+        res, events = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        assert any(e == "score_complete" for e, _ in events)
+        prompts = [
+            call.args[0][1].content
+            for call in practice.tutor_agent._evaluator._llm.ainvoke.call_args_list
+        ]
+        assert "第 1 次：80 分" in prompts[-1]
+        assert all("第 1 次：80 分" not in p for p in prompts[:-1])
+
+    def test_memory_failure_does_not_block_submit(self, monkeypatch):
+        def broken_memory_query(*args, **kwargs):
+            raise RuntimeError("relation does not exist")
+
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        respond = fake_db.respond
+
+        def respond_or_fail(q):
+            if "teacher_reviews" in (q.selected or ""):
+                broken_memory_query()
+            return respond(q)
+
+        fake_db.respond = respond_or_fail
+        res, events = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        assert any(e == "score_complete" for e, _ in events)
+
+    def test_memory_endpoint_returns_summary(self):
+        fake_db = FakeSupabase([STEP_ROW], prev_attempts=PASSED_BEFORE)
+        res = get_memory(fake_db)
+
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["enabled"] is True
+        assert data["attempts"][0]["score"] == 80
+        assert set(user_id_filters(fake_db)) == {STUDENT.id}
+
+    def test_memory_endpoint_when_disabled(self):
+        row = step_row_with(teaching_strategy={"memory": {"enabled": False}})
+        fake_db = FakeSupabase([row], prev_attempts=PASSED_BEFORE)
+        res = get_memory(fake_db)
+
+        assert res.json()["data"] == {
+            "enabled": False, "attempts": [], "recurring_errors": [], "prior_steps": [],
+        }
+        assert fake_db.find("step_attempts", "select") == []
+
+    def test_memory_endpoint_requires_assignment(self, monkeypatch):
+        monkeypatch.setattr(practice, "check_step_access", deny(403, "NOT_ASSIGNED"))
+        fake_db = FakeSupabase([STEP_ROW], prev_attempts=PASSED_BEFORE)
+        res = get_memory(fake_db)
+
+        assert res.status_code == 403
+        assert fake_db.find("step_attempts", "select") == []

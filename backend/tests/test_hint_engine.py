@@ -341,3 +341,61 @@ class TestGeneratedHints:
             rubric=self.RUBRIC,
         )
         assert hint is None
+
+
+# ──────────────────────────────────────────
+# 機器人記憶
+# ──────────────────────────────────────────
+
+class TestHintMemory:
+
+    @pytest.mark.asyncio
+    async def test_memory_is_added_to_personalize_prompt(self):
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=FakeMessage("改寫後的提示"))
+        engine = HintEngine(llm=llm)
+
+        await engine.next_hint(
+            teaching_strategy=TEACHER_STRATEGY,
+            student_answer="作答",
+            dimension_scores=DIMENSION_SCORES,
+            hints_used=0,
+            memory_text="已給過的提示：先看情境",
+        )
+
+        prompt = llm.ainvoke.call_args.args[0][1].content
+        assert "已給過的提示：先看情境" in prompt
+        assert "不要重複已給過的提示" in prompt
+
+    @pytest.mark.asyncio
+    async def test_memory_is_added_to_generated_hint_prompt(self):
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=FakeMessage("你觀察到什麼？"))
+        engine = HintEngine(llm=llm)
+
+        await engine.next_hint(
+            teaching_strategy=None,
+            student_answer="作答",
+            dimension_scores=DIMENSION_SCORES,
+            hints_used=0,
+            memory_text="重複出現的錯誤：僅列診斷名稱",
+        )
+
+        assert "重複出現的錯誤：僅列診斷名稱" in llm.ainvoke.call_args.args[0][1].content
+
+    @pytest.mark.asyncio
+    async def test_memory_does_not_add_llm_calls(self):
+        """personalize: false 時有記憶也不呼叫 LLM（成本控制）"""
+        llm = AsyncMock()
+        engine = HintEngine(llm=llm)
+
+        hint = await engine.next_hint(
+            teaching_strategy={**TEACHER_STRATEGY, "personalize": False},
+            student_answer="作答",
+            dimension_scores=DIMENSION_SCORES,
+            hints_used=0,
+            memory_text="第 1 次：40 分",
+        )
+
+        assert hint.content == "你觀察到哪個具體行為？"
+        assert llm.ainvoke.await_count == 0

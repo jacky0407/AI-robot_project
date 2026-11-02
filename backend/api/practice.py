@@ -6,6 +6,7 @@
   - 接收學生作答並觸發 AI 評分（SSE 串流回傳）與資料庫寫入
   - 提供分層提示
   - 查看練習版本歷程（已串接 step_attempts 與 ai_evaluations）
+  - 查看機器人對這位學生的記憶（core/ai/memory.py）
 
 身分一律以 Authorization: Bearer <token> 為準（core/auth.py），
 前端在 body 或 query 傳來的 user_id 一律忽略，學生不能查或寫別人的作答。
@@ -26,6 +27,7 @@ from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
 from core.ai.error_detector import ErrorDetector
 from core.ai.hint_engine import HintEngine, parse_teaching_strategy, select_hint
+from core.ai.memory import load_bot_memory, parse_memory_config
 from core.ai.rubric_formatter import normalize_rubric
 from core.privacy import detect_pii
 from database.client import get_supabase
@@ -207,6 +209,9 @@ async def submit_answer(
             evaluated_attempts=sum(1 for a in attempts if _extract_last_score_percent(a) is not None),
         )
 
+        # 機器人記憶：要在寫入這次作答前讀，記憶裡才不會混進這次自己
+        memory = load_bot_memory(db, user.id, step_res.data)
+
         # ── 寫入學生作答記錄 ────────────────────────────────────────
         attempt_res = db.table("step_attempts").insert({
             "user_id": user.id,
@@ -243,6 +248,7 @@ async def submit_answer(
                     system_prompt=system_prompt,
                     student_context=student_context,
                     teaching_strategy=teaching_strategy,
+                    memory=memory,
                 ):
                     yield _sse_event(chunk["type"], chunk["data"])
                     if chunk["type"] == "tutor_decision":
@@ -344,7 +350,7 @@ async def get_hint(
     step_res = (
         db.table("module_steps")
         .select(
-            "id, module_id, tool_id, pass_score, "
+            "id, module_id, tool_id, step_order, pass_score, "
             "ai_tools(status, system_prompt, rubric_criteria, scale_type, teaching_strategy)"
         )
         .eq("id", step_id)
@@ -425,6 +431,7 @@ async def get_hint(
         hints_used=hints_used,
         requested_by_student=True,
         rubric=rubric_dict,
+        memory_text=load_bot_memory(db, user.id, step_res.data).to_prompt_text(),
     )
 
     if hint is None:
@@ -485,6 +492,34 @@ async def get_step_quota(step_id: str, user: CurrentUser = Depends(get_current_u
 
     access = check_step_access(db, user, rows[0])
     return {"data": quota_status(access)}
+
+
+@router.get("/steps/{step_id}/memory")
+async def get_step_memory(step_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    查看這支機器人對目前登入者記得什麼（只讀，不呼叫 LLM、不扣額度）。
+
+    回傳摘要：這一步先前各次的分數、最弱構面、錯誤、給過幾則提示、
+    已發布的教師分數，以及讀到了哪些前面步驟。教授在 teaching_strategy.memory
+    關掉記憶時，回傳 enabled=false 與空內容。
+    """
+    db = get_supabase()
+    step_res = (
+        db.table("module_steps")
+        .select("id, module_id, tool_id, step_order, ai_tools(status, teaching_strategy)")
+        .eq("id", step_id)
+        .limit(1)
+        .execute()
+    )
+    rows = step_res.data or []
+    if not rows or not rows[0].get("ai_tools"):
+        raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+
+    check_step_access(db, user, rows[0])
+
+    config = parse_memory_config(rows[0]["ai_tools"].get("teaching_strategy"))
+    memory = load_bot_memory(db, user.id, rows[0])
+    return {"data": {"enabled": config.enabled, **memory.to_event_data()}}
 
 
 @router.get("/sessions/{session_id}/history")

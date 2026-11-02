@@ -18,6 +18,7 @@ from typing import AsyncGenerator
 
 from core.ai.agents.evaluator_agent import EvaluatorAgent
 from core.ai.hint_engine import HintEngine
+from core.ai.memory import BotMemory
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ class TutorAgent:
         system_prompt: str,
         student_context: StudentContext,
         teaching_strategy: dict | None = None,
+        memory: BotMemory | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
         教學主流程（SSE 串流版本）。
@@ -139,8 +141,11 @@ class TutorAgent:
         - EVALUATE / ENCOURAGE → 呼叫 EvaluatorAgent 評分
         - GIVE_HINT → 生成提示，不評分
         - ESCALATE → 回傳建議尋求教師幫助的訊息
+
+        memory（機器人記憶）只傳給整體回饋與提示，不影響決策與構面分數。
         """
         action = self.decide_action(student_context)
+        memory_text = memory.to_prompt_text() if memory else ""
         logger.info(
             f"TutorAgent decision: {action} "
             f"(attempt={student_context.attempt_number}, "
@@ -162,6 +167,7 @@ class TutorAgent:
                 student_answer=student_answer,
                 rubric=rubric,
                 system_prompt=system_prompt,
+                memory_text=memory_text,
             ):
                 yield chunk
 
@@ -182,6 +188,7 @@ class TutorAgent:
                 student_answer=student_answer,
                 rubric=rubric,
                 system_prompt=system_prompt,
+                memory_text=memory_text,
             ):
                 yield chunk
 
@@ -193,6 +200,7 @@ class TutorAgent:
                 hints_used=student_context.hints_used_count,
                 requested_by_student=student_context.requested_hint,
                 rubric=rubric,
+                memory_text=memory_text,
             )
 
             if hint is None:
@@ -203,6 +211,7 @@ class TutorAgent:
                     student_answer=student_answer,
                     rubric=rubric,
                     system_prompt=system_prompt,
+                    memory_text=memory_text,
                 ):
                     yield chunk
                 return
