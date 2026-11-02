@@ -5,10 +5,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const PAGES = [
+const PAGES: { href: string; label: string; also?: string[] }[] = [
   { href: "/admin/courses", label: "課程管理" },
   { href: "/admin/tool-requests", label: "機器人申請" },
-  { href: "/admin/tools", label: "機器人與複核" },
+  // 複核詳情頁（/admin/review/[id]）是從這頁點進去的，也算在這一頁
+  { href: "/admin/tools", label: "機器人與複核", also: ["/admin/review"] },
 ];
 
 export default function AdminNav() {
@@ -16,7 +17,7 @@ export default function AdminNav() {
   return (
     <nav style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
       {PAGES.map((p) => {
-        const active = pathname.startsWith(p.href);
+        const active = [p.href, ...(p.also ?? [])].some((prefix) => pathname.startsWith(prefix));
         return (
           <Link
             key={p.href}

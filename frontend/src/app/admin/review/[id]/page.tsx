@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { apiFetch } from "@/utils/api";
+import AdminNav from "../../AdminNav";
 
 type DimensionScore = { dimension: string; score: number; max_score: number; reason?: string; evidence?: string };
 type DetectedError = { code: string; label?: string; explanation?: string; evidence?: string };
@@ -40,7 +41,9 @@ const DECISIONS = [
   { value: "request_retry", label: "要求學生重做" },
 ];
 
-const card: React.CSSProperties = { backgroundColor: "#fff", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" };
+const card: React.CSSProperties = { backgroundColor: "#1e293b", borderRadius: "12px", padding: "20px", border: "1px solid rgba(255,255,255,0.1)" };
+const field: React.CSSProperties = { padding: "8px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "13px", outline: "none" };
+const inset = "rgba(255,255,255,0.04)";
 
 export default function ReviewDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -108,17 +111,21 @@ export default function ReviewDetailPage() {
   const ev = data?.ai_evaluation;
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#f8fafc", color: "#1e293b", fontFamily: "sans-serif", padding: "24px 16px" }}>
-      <div style={{ maxWidth: "960px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "16px" }}>
-        <Link href="/admin/tools" style={{ fontSize: "13px", color: "#2563eb", textDecoration: "none" }}>
+    <div style={{ minHeight: "100vh", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif", colorScheme: "dark" }}>
+      <header style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px 24px", backgroundColor: "#1e293b", borderBottom: "1px solid rgba(255,255,255,0.1)", flexWrap: "wrap" }}>
+        <span style={{ backgroundColor: "#16a34a", color: "#fff", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", fontWeight: "bold" }}>管理與複核後台</span>
+        <AdminNav />
+      </header>
+      <div style={{ maxWidth: "960px", margin: "0 auto", padding: "24px 16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <Link href="/admin/tools" style={{ fontSize: "13px", color: "#38bdf8", textDecoration: "none" }}>
           ← 返回待複核清單
         </Link>
 
         {errorMsg && (
-          <div style={{ padding: "10px 14px", borderRadius: "8px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: "13px" }}>{errorMsg}</div>
+          <div style={{ padding: "10px 14px", borderRadius: "8px", backgroundColor: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", color: "#fca5a5", fontSize: "13px" }}>{errorMsg}</div>
         )}
 
-        {!data && !errorMsg && <p style={{ fontSize: "13px", color: "#64748b" }}>載入中…</p>}
+        {!data && !errorMsg && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
 
         {data && ev && (
           <>
@@ -126,17 +133,17 @@ export default function ReviewDetailPage() {
               <h1 style={{ fontSize: "18px", fontWeight: "bold", margin: "0 0 6px 0" }}>
                 {data.student.full_name || data.student.email}・{data.step.step_title}
               </h1>
-              <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
                 {data.step.tool?.title}・第 {data.attempt_number} 次作答・門檻 {data.step.pass_score ?? "—"} 分
                 {data.step.require_teacher_review && "・教授設定的強制審核點"}
               </p>
               {data.tutor_action === "escalate" && (
-                <p style={{ marginTop: "10px", fontSize: "13px", color: "#9a3412", backgroundColor: "#ffedd5", padding: "8px 10px", borderRadius: "6px" }}>
+                <p style={{ marginTop: "10px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.15)", padding: "8px 10px", borderRadius: "6px" }}>
                   這位學生多次未達標，AI 沒有評分，而是建議學生找老師討論。
                 </p>
               )}
               <h3 style={{ fontSize: "13px", fontWeight: "bold", margin: "16px 0 6px 0" }}>學生作答</h3>
-              <p style={{ whiteSpace: "pre-wrap", fontSize: "14px", lineHeight: 1.7, backgroundColor: "#f8fafc", padding: "12px", borderRadius: "8px", margin: 0 }}>{data.content}</p>
+              <p style={{ whiteSpace: "pre-wrap", fontSize: "14px", lineHeight: 1.7, backgroundColor: inset, padding: "12px", borderRadius: "8px", margin: 0 }}>{data.content}</p>
             </div>
 
             <div style={card}>
@@ -145,7 +152,7 @@ export default function ReviewDetailPage() {
                 <span style={{ fontSize: "13px" }}>
                   {ev.total_score == null ? "未評分" : `${ev.total_score} 分`}
                   {ev.confidence != null && (
-                    <span style={{ marginLeft: "8px", fontSize: "12px", color: ev.needs_teacher_review ? "#b45309" : "#64748b" }}>
+                    <span style={{ marginLeft: "8px", fontSize: "12px", color: ev.needs_teacher_review ? "#fbbf24" : "#94a3b8" }}>
                       信心值 {ev.confidence.toFixed(2)}
                       {ev.needs_teacher_review && "（偏低）"}
                     </span>
@@ -153,10 +160,10 @@ export default function ReviewDetailPage() {
                 </span>
               </div>
               {ev.dimension_scores.map((d) => (
-                <div key={d.dimension} style={{ marginTop: "10px", fontSize: "13px", padding: "10px", backgroundColor: "#f8fafc", borderRadius: "6px" }}>
+                <div key={d.dimension} style={{ marginTop: "10px", fontSize: "13px", padding: "10px", backgroundColor: inset, borderRadius: "6px" }}>
                   <strong>{d.dimension}</strong>：{d.score} / {d.max_score}
-                  {d.reason && <div style={{ color: "#475569" }}>{d.reason}</div>}
-                  {d.evidence && <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic" }}>引用：{d.evidence}</div>}
+                  {d.reason && <div style={{ color: "#cbd5e1" }}>{d.reason}</div>}
+                  {d.evidence && <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>引用：{d.evidence}</div>}
                 </div>
               ))}
               {ev.feedback_text && <p style={{ fontSize: "13px", marginTop: "12px", whiteSpace: "pre-wrap" }}>{ev.feedback_text}</p>}
@@ -166,13 +173,13 @@ export default function ReviewDetailPage() {
                   {(ev.detected_errors ?? []).map((err) => (
                     <div key={err.code} style={{ marginTop: "4px" }}>
                       {err.label ?? err.code}
-                      {err.evidence && <span style={{ color: "#64748b" }}>（{err.evidence}）</span>}
+                      {err.evidence && <span style={{ color: "#94a3b8" }}>（{err.evidence}）</span>}
                     </div>
                   ))}
                 </div>
               )}
               {data.prompt_logs.length > 0 && (
-                <div style={{ marginTop: "12px", fontSize: "12px", color: "#475569" }}>
+                <div style={{ marginTop: "12px", fontSize: "12px", color: "#cbd5e1" }}>
                   <strong>此次作答使用的提示</strong>
                   {data.prompt_logs.map((log) => (
                     <div key={log.id}>
@@ -199,7 +206,7 @@ export default function ReviewDetailPage() {
               <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>教師最終判定</h3>
               <label style={{ fontSize: "13px", display: "flex", flexDirection: "column", gap: "4px" }}>
                 判定
-                <select value={decision} onChange={(e) => setDecision(e.target.value)} style={{ padding: "8px", borderRadius: "6px", border: "1px solid #cbd5e1" }}>
+                <select value={decision} onChange={(e) => setDecision(e.target.value)} style={field}>
                   {DECISIONS.map((d) => (
                     <option key={d.value} value={d.value}>
                       {d.label}
@@ -215,7 +222,7 @@ export default function ReviewDetailPage() {
                   max={100}
                   value={finalScore}
                   onChange={(e) => setFinalScore(e.target.value)}
-                  style={{ padding: "8px", borderRadius: "6px", border: "1px solid #cbd5e1" }}
+                  style={field}
                 />
               </label>
               <label style={{ fontSize: "13px", display: "flex", flexDirection: "column", gap: "4px" }}>
@@ -224,7 +231,7 @@ export default function ReviewDetailPage() {
                   rows={4}
                   value={finalFeedback}
                   onChange={(e) => setFinalFeedback(e.target.value)}
-                  style={{ padding: "8px", borderRadius: "6px", border: "1px solid #cbd5e1" }}
+                  style={field}
                 />
               </label>
               <label style={{ fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
