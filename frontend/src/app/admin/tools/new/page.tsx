@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/utils/supabase/client'
@@ -34,14 +34,23 @@ const SCALE_OPTIONS = [
 
 const fieldClass = 'w-full rounded border border-gray-300 p-1.5 text-xs focus:outline-none'
 
+// useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
 export default function NewToolPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewToolForm />
+    </Suspense>
+  )
+}
+
+function NewToolForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const supabase = createClient()
 
   // 取得從課程頁帶過來的 courseId
   const courseId = searchParams.get('courseId')
-  const backUrl = courseId ? `/admin/courses/${courseId}` : '/admin/courseId'
+  const backUrl = courseId ? '/admin/courses' : '/admin/tools'
 
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
