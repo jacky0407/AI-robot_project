@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/client";
+import { DEFAULT_AFTER_LOGIN, safeNext, withNext } from "@/utils/redirect";
 
 type RoleType = "student" | "teacher" | null;
 
@@ -13,11 +14,6 @@ const CALLBACK_ERRORS: Record<string, string> = {
   auth: "登入驗證失敗，請再試一次",
 };
 
-const ROUTES = {
-  staff: "/admin/courses",
-  student: "/student/courses",
-  onboarding: "/onboarding",
-};
 
 export default function Home() {
   return (
@@ -29,6 +25,11 @@ export default function Home() {
 
 function HomeContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // 被導來登入前原本要去的頁面（例如 XR 系統的 /xr/）；登入後回到那裡，否則到系統選擇頁
+  const next = safeNext(searchParams.get("next"));
+  // Google 登入、註冊驗證信回來時經過 /auth/callback，要把 next 一起帶過去
+  const callbackUrl = () => `${window.location.origin}${withNext("/auth/callback", next)}`;
   const [selectedRole, setSelectedRole] = useState<RoleType>(null);
   const [isLoginMode, setIsLoginMode] = useState(true);
 
@@ -65,11 +66,11 @@ function HomeContent() {
     }
 
     if (!profile.registration_completed) {
-      router.push(ROUTES.onboarding);
+      router.push(withNext("/onboarding", next));
       return true;
     }
 
-    router.push(isStaff ? ROUTES.staff : ROUTES.student);
+    router.push(next ?? DEFAULT_AFTER_LOGIN);
     return true;
   };
 
@@ -91,7 +92,6 @@ function HomeContent() {
     setExistingUser(null);
   };
 
-  const searchParams = useSearchParams();
   const callbackError = CALLBACK_ERRORS[searchParams.get("error") ?? ""] ?? "";
   const shownError = authError || callbackError;
 
@@ -102,7 +102,7 @@ function HomeContent() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: callbackUrl(),
         queryParams: { prompt: "select_account" },
       },
     });
@@ -158,7 +158,7 @@ function HomeContent() {
       password: formData.password,
       options: {
         data: { full_name: formData.name },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: callbackUrl(),
       },
     });
 
