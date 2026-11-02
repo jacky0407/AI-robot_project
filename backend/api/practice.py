@@ -31,6 +31,7 @@ from core.ai.memory import load_bot_memory, parse_memory_config
 from core.practice_session import ensure_session, parse_session_id
 from core.ai.rubric_formatter import normalize_rubric
 from core.privacy import detect_pii
+from core.step_unlock import check_step_unlocked, load_active_steps, module_progress
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -158,8 +159,10 @@ async def submit_answer(
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
 
-        # 步驟三：沒被指派回 403；Session 屬於別人回 403；自主模式扣一次額度，用完回 429
+        # 步驟三：沒被指派回 403；步驟停用或沒解鎖回 403；Session 屬於別人回 403；自主模式扣一次額度，用完回 429
         access = check_step_access(db, user, step_res.data)
+        # 步驟停用或前面的必修步驟還沒通過 → 403（不建立 Session、不扣額度）
+        check_step_unlocked(db, user, step_res.data)
         linked_session_id = ensure_session(db, session_id, user.id)
         quota = consume_quota(db, access)
 
@@ -564,6 +567,32 @@ async def get_session_history(
         raise HTTPException(status_code=500, detail="無法取得歷史紀錄")
 
 
+@router.get("/modules/{module_id}/progress")
+async def get_module_progress(module_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    目前登入者在模組裡每個啟用中步驟的進度與解鎖狀態（core/step_unlock.py）。
+
+    學生：模組必須已發布，否則 404；前面必修步驟沒通過的步驟 locked = true。
+    教師端：不受解鎖限制（locked 一律 false），方便試做。
+    """
+    db = get_supabase()
+    module = (
+        db.table("learning_modules")
+        .select("id, is_published")
+        .eq("id", module_id)
+        .limit(1)
+        .execute()
+    )
+    rows = module.data if isinstance(module.data, list) else []
+    if not rows or (not user.is_staff and not rows[0].get("is_published")):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "MODULE_NOT_FOUND", "message": "找不到這個模組"},
+        )
+
+    return {"data": module_progress(db, user.id, module_id, bypass_locks=user.is_staff)}
+
+
 @router.post("/modules/{module_id}/coherence-check")
 async def check_module_coherence(module_id: str, user: CurrentUser = Depends(get_current_user)):
     """
@@ -579,19 +608,13 @@ async def check_module_coherence(module_id: str, user: CurrentUser = Depends(get
     """
     db = get_supabase()
 
-    # 讀取此模組此學生每個步驟的最新一次作答（不論是否通過；passed 另外帶給 Agent）
-    steps_res = (
-        db.table("module_steps")
-        .select("id, step_order, step_title")
-        .eq("module_id", module_id)
-        .order("step_order")
-        .execute()
-    )
-    if not steps_res.data:
+    # 讀取此模組此學生每個「啟用中」步驟的最新一次作答（不論是否通過；passed 另外帶給 Agent）
+    steps = load_active_steps(db, module_id)
+    if not steps:
         raise HTTPException(status_code=404, detail="Module not found or has no steps")
 
     step_answers: list[StepAnswer] = []
-    for step in steps_res.data:
+    for step in steps:
         # 抓該步驟最新一筆作答——學生改過的版本才是要比對的內容
         attempt_res = (
             db.table("step_attempts")

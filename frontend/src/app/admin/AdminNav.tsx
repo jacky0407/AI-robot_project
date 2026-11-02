@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 
 const PAGES: { href: string; label: string; also?: string[] }[] = [
   { href: "/admin/courses", label: "課程管理" },
+  { href: "/admin/modules", label: "模組管理" },
   { href: "/admin/tool-requests", label: "機器人申請" },
   // 複核詳情頁（/admin/review/[id]）是從這頁點進去的，也算在這一頁
   { href: "/admin/tools", label: "機器人與複核", also: ["/admin/review"] },

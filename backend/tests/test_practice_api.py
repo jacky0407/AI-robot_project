@@ -39,6 +39,7 @@ def assigned_via_course(monkeypatch):
     """
     monkeypatch.setattr(practice, "check_step_access", lambda db, user, step: StepAccess(mode="course"))
     monkeypatch.setattr(practice, "consume_quota", lambda db, access: None)
+    monkeypatch.setattr(practice, "check_step_unlocked", lambda db, user, step: None)
 
 
 # ──────────────────────────────────────────
@@ -926,6 +927,7 @@ class TestAuth:
         ("get", "/api/practice/sessions/s1/history?step_id=step-1"),
         ("post", "/api/practice/modules/m1/coherence-check"),
         ("get", "/api/practice/steps/step-1/quota"),
+        ("get", "/api/practice/modules/m1/progress"),
         ("get", "/api/practice/steps/step-1/memory"),
     ])
     def test_without_token_returns_401_and_never_touches_db(self, method, path):
@@ -1185,6 +1187,76 @@ class TestBotMemory:
 
         assert res.status_code == 403
         assert fake_db.find("step_attempts", "select") == []
+
+
+# ──────────────────────────────────────────
+# 步驟解鎖與模組進度（core/step_unlock.py）
+# ──────────────────────────────────────────
+
+from tests.inmemory_db import InMemoryDB
+
+
+class TestStepUnlock:
+
+    def test_locked_step_is_rejected_before_consuming_quota(self, monkeypatch):
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(1))
+        monkeypatch.setattr(practice, "check_step_unlocked", deny(403, "STEP_LOCKED"))
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "STEP_LOCKED"
+        assert consumed == []
+        assert fake_db.find("step_attempts", "insert") == []
+
+    def test_unlock_check_receives_step_from_database(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(practice, "check_step_unlocked", lambda db, user, step: seen.append((user.id, step["id"])))
+        submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert seen == [(STUDENT.id, "step-1")]
+
+
+def progress_db(published=True):
+    steps = [
+        {"id": f"s{n}", "module_id": "m1", "step_order": n, "step_title": f"步驟{n}",
+         "is_required": True, "is_active": True, "pass_score": 70}
+        for n in (1, 2)
+    ]
+    return InMemoryDB(
+        learning_modules=[{"id": "m1", "is_published": published}],
+        module_steps=steps,
+        step_attempts=[],
+    )
+
+
+def get_progress(db):
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=db):
+        return client.get("/api/practice/modules/m1/progress")
+
+
+class TestModuleProgressEndpoint:
+
+    def test_student_sees_locks(self):
+        res = get_progress(progress_db())
+
+        assert res.status_code == 200
+        assert [(p["step_id"], p["locked"]) for p in res.json()["data"]] == [("s1", False), ("s2", True)]
+
+    def test_student_cannot_see_unpublished_module(self):
+        res = get_progress(progress_db(published=False))
+
+        assert res.status_code == 404
+        assert res.json()["detail"]["code"] == "MODULE_NOT_FOUND"
+
+    def test_teacher_sees_no_locks_even_when_unpublished(self):
+        main.app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="t1", role="owner")
+        res = get_progress(progress_db(published=False))
+
+        assert res.status_code == 200
+        assert all(p["locked"] is False for p in res.json()["data"])
 
 
 # ──────────────────────────────────────────

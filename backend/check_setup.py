@@ -42,6 +42,7 @@ EXPECTED_COLUMNS = {
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
     "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
+    "module_steps": ["is_active"],      # migration 010：停用步驟
 }
 
 PLACEHOLDERS = {
