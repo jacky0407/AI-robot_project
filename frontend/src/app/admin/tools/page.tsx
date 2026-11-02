@@ -94,6 +94,9 @@ export default function AdminToolsPage() {
             管理與複核後台
           </span>
           <span style={{ fontWeight: "bold", fontSize: "16px" }}>培訓分析儀表板</span>
+          <Link href="/admin/courses" style={{ fontSize: "13px", color: "#2563eb", textDecoration: "none", marginLeft: "8px" }}>
+            課程管理 →
+          </Link>
         </div>
         <button
           onClick={handleSignOut}
