@@ -226,3 +226,15 @@ CLAUDE.local.md
 .claude/settings.local.json
 Claude outputs/
 /CLAUDE.md
+
+# 在 repo 根目錄直接建 venv（python -m venv .）時產生的檔案
+# 注意：venv 會把根目錄的 .gitignore 覆寫成「*」，導致新檔案全部無法 commit；
+# 請改用 python -m venv .venv
+/Lib/
+/Include/
+/Scripts/
+/pyvenv.cfg
+
+# Node
+node_modules/
+.next/

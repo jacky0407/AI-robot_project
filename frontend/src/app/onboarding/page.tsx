@@ -98,7 +98,7 @@ export default function OnboardingPage() {
       .single();
 
     const isStaff = profile?.role === "owner" || profile?.role === "assistant";
-    router.push(isStaff ? "/admin/tools" : "/student/modules");
+    router.push(isStaff ? "/admin/courses" : "/student/courses");
     router.refresh();
   };
 

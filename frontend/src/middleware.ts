@@ -56,7 +56,7 @@ export async function middleware(request: NextRequest) {
       // 2. 已完成註冊的人不需要再填一次，直接送去對應頁面
       if (profile?.registration_completed) {
         return NextResponse.redirect(
-          new URL(isStaff ? '/admin/tools' : '/student/modules', request.url)
+          new URL(isStaff ? '/admin/courses' : '/student/courses', request.url)
         )
       }
     } else {
@@ -67,7 +67,7 @@ export async function middleware(request: NextRequest) {
 
       // 4. /admin 後台只有 owner / assistant 可以進入
       if (pathname.startsWith('/admin') && !isStaff) {
-        return NextResponse.redirect(new URL('/student/modules', request.url))
+        return NextResponse.redirect(new URL('/student/courses', request.url))
       }
     }
   }

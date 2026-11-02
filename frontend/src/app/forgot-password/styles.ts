@@ -1,0 +1,53 @@
+// 忘記密碼／重設密碼兩頁共用的樣式（沿用登入頁的深色風格）
+import type { CSSProperties } from "react";
+
+export const authStyles: Record<string, CSSProperties> = {
+  page: {
+    minHeight: "100vh",
+    backgroundColor: "#0f172a",
+    color: "#f8fafc",
+    fontFamily: "sans-serif",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "24px",
+  },
+  card: {
+    width: "100%",
+    maxWidth: "380px",
+    backgroundColor: "#1e293b",
+    borderRadius: "24px",
+    border: "1px solid rgba(255,255,255,0.15)",
+    padding: "28px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "16px",
+  },
+  title: { fontSize: "18px", fontWeight: "bold", margin: 0 },
+  form: { display: "flex", flexDirection: "column", gap: "12px" },
+  input: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    color: "#fff",
+    fontSize: "14px",
+    outline: "none",
+  },
+  button: {
+    padding: "10px",
+    borderRadius: "8px",
+    border: "none",
+    backgroundColor: "#2563eb",
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: "14px",
+    cursor: "pointer",
+  },
+  hint: { fontSize: "13px", color: "#94a3b8", margin: 0, lineHeight: 1.6 },
+  error: { fontSize: "13px", color: "#fca5a5", margin: 0 },
+  success: { fontSize: "13px", color: "#86efac", margin: 0, lineHeight: 1.6 },
+  link: { fontSize: "12px", color: "#38bdf8", textDecoration: "none", textAlign: "center" },
+};

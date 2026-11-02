@@ -165,6 +165,33 @@ class TestCreateRequest:
         assert res.status_code == 401
 
 
+class TestRequestableTools:
+
+    def test_student_sees_only_published_tools_public_fields(self, as_user):
+        as_user(STUDENT)
+        catalog = [{"id": TOOL_ID, "title": "功能性現況撰寫教練", "domain": "學前IEP", "target_competency": "現況描述"}]
+        db = fake_db(catalog)
+        res = call("GET", "/api/tool-requests/tools", db)
+
+        assert res.status_code == 200
+        assert res.json() == {"data": catalog}
+        db.table.assert_called_once_with("ai_tools")
+        db.table.return_value.eq.assert_called_once_with("status", "published")
+
+    def test_does_not_select_teaching_content(self, as_user):
+        as_user(STUDENT)
+        db = fake_db([])
+        call("GET", "/api/tool-requests/tools", db)
+
+        selected = db.table.return_value.select.call_args.args[0]
+        for secret in ("system_prompt", "rubric_criteria", "role_instruction", "teaching_strategy", "error_taxonomy"):
+            assert secret not in selected
+
+    def test_not_logged_in_is_401(self):
+        res = call("GET", "/api/tool-requests/tools", fake_db())
+        assert res.status_code == 401
+
+
 class TestMyRequests:
 
     def test_lists_own_requests_with_expired_status(self, as_user):

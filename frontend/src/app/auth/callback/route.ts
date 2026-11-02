@@ -5,10 +5,15 @@ export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
   const errorCode = searchParams.get('error_code')
+  // 指定換完 session 後要去的頁面（目前只有重設密碼信會帶 next=/reset-password）
+  // 只接受站內路徑，避免被拿來當開放轉址
+  const next = searchParams.get('next')
+  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : null
 
   // Supabase 在驗證階段就失敗（連結過期或已被使用）
   if (errorCode === 'otp_expired') {
-    return NextResponse.redirect(`${origin}/?error=link_expired`)
+    // 重設密碼頁自己會顯示「連結已失效」並提供重寄
+    return NextResponse.redirect(`${origin}${safeNext ?? '/?error=link_expired'}`)
   }
 
   if (code) {
@@ -16,6 +21,10 @@ export async function GET(request: Request) {
 
     // 把 Google / 驗證信給的 code 換成 session
     const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (!error && safeNext) {
+      return NextResponse.redirect(`${origin}${safeNext}`)
+    }
 
     if (!error) {
       const {
