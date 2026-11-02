@@ -29,6 +29,9 @@ TAIPEI = timezone(timedelta(hours=8))
 
 REQUEST_STATUSES = ("pending", "approved", "rejected", "expired")
 
+# 給學生看的機器人公開資訊（/tools）；不要加入 system_prompt、rubric_criteria 等教學內容
+TOOL_CATALOG_FIELDS = "id, title, domain, target_competency"
+
 REQUEST_FIELDS = "id, user_id, tool_id, status, daily_quota, start_date, expire_date, created_at"
 
 
@@ -127,6 +130,25 @@ async def create_tool_request(body: CreateToolRequest, user: CurrentUser = Depen
         "data": _to_output(res.data[0], {tool_id: tool.data[0]["title"]}, today),
         "message": "已送出申請，請等待老師審核",
     }
+
+
+@router.get("/tools")
+async def list_requestable_tools(user: CurrentUser = Depends(get_current_user)):
+    """
+    可以申請的機器人（已發布的）。
+
+    學生在被核准前讀不到 ai_tools（migrations/005 的 RLS），所以由後端列出。
+    只回傳名稱與領域等公開資訊，不含 system_prompt、rubric 等教學內容。
+    """
+    supabase = get_supabase()
+    res = (
+        supabase.table("ai_tools")
+        .select(TOOL_CATALOG_FIELDS)
+        .eq("status", "published")
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return {"data": res.data or []}
 
 
 @router.get("/mine")
