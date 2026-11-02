@@ -218,6 +218,9 @@ STEP_ROW = {
 
 CLEAN_ANSWER = "小明在積木角能專注建構約二十分鐘，展現良好的視覺空間能力。"
 
+# 前端用 crypto.randomUUID() 產生的練習 Session 編號
+SESSION_ID = "5e551011-0000-4000-8000-000000000001"
+
 BODY = {
     "module_id": "22222222-2222-2222-2222-222222222222",
     "step_id": "step-1",
@@ -273,7 +276,7 @@ def submit(fake_db: FakeSupabase, llm_responses: list[str], body: dict = None):
     with patch.object(practice, "get_supabase", return_value=fake_db):
         practice.tutor_agent._evaluator._llm = mock_llm(llm_responses)
         res = client.post(
-            "/api/practice/sessions/test-session/submit",
+            f"/api/practice/sessions/{SESSION_ID}/submit",
             json=body or BODY,
         )
     events = parse_sse(res.text) if res.status_code == 200 else []
@@ -550,7 +553,7 @@ def submit_with_agents(
         practice.error_detector = ErrorDetector(llm=detector_llm or _AsyncMock())
         practice.tutor_agent._hints = HintEngine(llm=hint_llm or _AsyncMock())
         res = client.post(
-            "/api/practice/sessions/test-session/submit",
+            f"/api/practice/sessions/{SESSION_ID}/submit",
             json=body or BODY,
         )
     events = parse_sse(res.text) if res.status_code == 200 else []
@@ -1220,3 +1223,83 @@ class TestEscalationCount:
     def test_count_failed_evaluations_helper(self):
         attempts = [scored(4, 50), {"id": "a3", "ai_evaluations": []}, scored(2, 70), scored(1, 100)]
         assert practice._count_failed_evaluations(attempts, 70.0) == 1
+
+
+# ──────────────────────────────────────────
+# 練習 Session：第一次送出時建立（migration 009）
+# ──────────────────────────────────────────
+
+def with_session_owner(fake_db: FakeSupabase, owner_id: str | None = None, *, broken: bool = False):
+    """讓 practice_sessions 查詢回傳指定的擁有者，或整張表不存在"""
+    respond = fake_db.respond
+
+    def respond_with_session(q):
+        if q.name == "practice_sessions":
+            if broken:
+                raise RuntimeError('relation "practice_sessions" does not exist')
+            if q.op == "select" and owner_id:
+                return FakeResult([{"user_id": owner_id}])
+        return respond(q)
+
+    fake_db.respond = respond_with_session
+    return fake_db
+
+
+class TestPracticeSession:
+
+    def test_invalid_session_id_returns_400_before_touching_db(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        client = TestClient(main.app)
+        with patch.object(practice, "get_supabase", return_value=fake_db):
+            res = client.post("/api/practice/sessions/temp-session-id/submit", json=BODY)
+
+        assert res.status_code == 400
+        assert res.json()["detail"]["code"] == "INVALID_SESSION_ID"
+        assert fake_db.calls == []
+
+    def test_first_submit_creates_session_and_links_attempt(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        created = fake_db.find("practice_sessions", "insert")
+        assert created[0]["payload"] == {"id": SESSION_ID, "user_id": STUDENT.id}
+        assert fake_db.find("step_attempts", "insert")[0]["payload"]["session_id"] == SESSION_ID
+
+    def test_own_existing_session_is_reused(self):
+        fake_db = with_session_owner(FakeSupabase(STEP_ROW, prev_attempts=[]), STUDENT.id)
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        assert fake_db.find("practice_sessions", "insert") == []
+        assert "last_active_at" in fake_db.find("practice_sessions", "update")[0]["payload"]
+        assert fake_db.find("step_attempts", "insert")[0]["payload"]["session_id"] == SESSION_ID
+
+    def test_someone_elses_session_is_rejected_without_consuming_quota(self, monkeypatch):
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(1))
+        fake_db = with_session_owner(FakeSupabase(STEP_ROW, prev_attempts=[]), OTHER_STUDENT_ID)
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "SESSION_FORBIDDEN"
+        assert consumed == []
+        assert fake_db.find("step_attempts", "insert") == []
+
+    def test_before_migration_009_submit_still_works_without_session(self):
+        fake_db = with_session_owner(FakeSupabase(STEP_ROW, prev_attempts=[]), broken=True)
+        res, events = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        assert any(e == "score_complete" for e, _ in events)
+        assert "session_id" not in fake_db.find("step_attempts", "insert")[0]["payload"]
+
+    def test_uppercase_uuid_is_normalized(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        client = TestClient(main.app)
+        with patch.object(practice, "get_supabase", return_value=fake_db):
+            practice.tutor_agent._evaluator._llm = mock_llm(FULL_EVALUATION)
+            res = client.post(f"/api/practice/sessions/{SESSION_ID.upper()}/submit", json=BODY)
+
+        assert res.status_code == 200
+        assert fake_db.find("practice_sessions", "insert")[0]["payload"]["id"] == SESSION_ID

@@ -831,6 +831,7 @@
 | --- | --- |
 | 個資偵測 | 400 `PII_DETECTED` |
 | 指派：課程指派（active 成員、課程未封存）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；核准已過期為 403 `PERMISSION_EXPIRED` |
+| 練習 Session：`session_id` 必須是 UUID；第一次出現就建立並屬於登入者，之後只有本人能用（migration 009；還沒跑時不檢查、作答照常） | 400 `INVALID_SESSION_ID`；別人的 Session 為 403 `SESSION_FORBIDDEN` |
 | 每日額度（只限逐位核准的自主模式；送出就扣 1，只拿到提示也算，AI 失敗不退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
 
 教師端（owner / assistant）不做指派與額度檢查。

@@ -137,6 +137,14 @@ CREATE TABLE IF NOT EXISTS public.course_modules (
 -- 5. 學習歷程、多次嘗試與評量 (Attempts, Evaluations, Logs)
 -- ==============================================================================
 
+-- 練習 Session：前端產生 id，第一次送出作答時由後端建立（migration 009，只給 service_role）
+CREATE TABLE IF NOT EXISTS public.practice_sessions (
+    id UUID PRIMARY KEY,                   -- 由前端產生（crypto.randomUUID()），所以沒有 DEFAULT
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    started_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    last_active_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- 學生作答嘗試紀錄 (支援反覆練習與版本對比)
 CREATE TABLE IF NOT EXISTS public.step_attempts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -149,6 +157,7 @@ CREATE TABLE IF NOT EXISTS public.step_attempts (
     structured_data JSONB DEFAULT '{}'::jsonb, -- 結構化欄位 (傳遞給下一步用)
     status TEXT CHECK (status IN ('draft', 'submitted', 'passed', 'revision_required')) DEFAULT 'draft',
     tutor_action TEXT CHECK (tutor_action IN ('evaluate', 'give_hint', 'encourage', 'escalate')), -- TutorAgent 決策；escalate 會進教師複核佇列
+    session_id UUID REFERENCES public.practice_sessions(id) ON DELETE SET NULL, -- 屬於哪一次練習（migration 009）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
