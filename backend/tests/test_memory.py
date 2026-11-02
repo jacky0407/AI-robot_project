@@ -313,3 +313,45 @@ class TestOutput:
         assert data["attempts"][0]["hints_given"] == 1
         assert data["prior_steps"] == [{"step_order": 1, "step_title": "步驟1", "passed": True}]
         assert "前一步全文" not in str(data)
+
+
+# ──────────────────────────────────────────
+# 測試報告 2026-11-02 #4：沒評分的作答不能把重複錯誤擠出視窗
+# ──────────────────────────────────────────
+
+class TestRecurringErrorsWindow:
+
+    def test_errors_outside_prompt_window_still_count_as_recurring(self):
+        """
+        實測資料：第 2、4 次都「過度依賴標籤」，第 3 次只給提示、第 5 次轉介老師（都沒評分）。
+        記憶只放最近 3 次（3、4、5），但重複錯誤要看得到第 2 次。
+        """
+        db = FakeDB(step_rows=[
+            attempt(5),
+            attempt(4, score=50, errors=[LABEL_ERROR]),
+            attempt(3, hints=[{"hint_level": 2, "hint_content": "h"}]),
+            attempt(2, score=25, errors=[LABEL_ERROR]),
+            attempt(1, score=100),
+        ])
+        memory = load_bot_memory(db, USER_ID, step_row(step_order=1))
+
+        assert [a.attempt_number for a in memory.attempts] == [3, 4, 5]
+        assert memory.recurring_errors() == ["僅列診斷名稱"]
+        assert "重複出現的錯誤：僅列診斷名稱" in memory.to_prompt_text()
+        assert memory.to_event_data()["recurring_errors"] == ["僅列診斷名稱"]
+
+    def test_recurring_window_is_bounded(self):
+        db = FakeDB(step_rows=[attempt(n, score=40) for n in range(15, 0, -1)])
+        load_bot_memory(db, USER_ID, step_row(step_order=1))
+
+        assert db.calls[0].limit_n == 10
+
+    def test_single_occurrence_is_not_recurring(self):
+        db = FakeDB(step_rows=[
+            attempt(3, score=50, errors=[LABEL_ERROR]),
+            attempt(2),
+            attempt(1, score=40),
+        ])
+        memory = load_bot_memory(db, USER_ID, step_row(step_order=1))
+
+        assert memory.recurring_errors() == []
