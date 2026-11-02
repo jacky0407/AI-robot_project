@@ -28,6 +28,7 @@ from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
 from core.ai.error_detector import ErrorDetector
 from core.ai.hint_engine import HintEngine, parse_teaching_strategy, select_hint
 from core.ai.memory import load_bot_memory, parse_memory_config
+from core.practice_session import ensure_session, parse_session_id
 from core.ai.rubric_formatter import normalize_rubric
 from core.privacy import detect_pii
 from core.step_unlock import check_step_unlocked, load_active_steps, module_progress
@@ -95,8 +96,8 @@ async def create_session(body: CreateSessionRequest, user: CurrentUser = Depends
     
     session_id = str(uuid.uuid4())
 
-    # ⚠️ session_id 目前未落庫，submit 也不驗證它。
-    #    若要正式支援 Session，需新增 practice_sessions 表。
+    # Session 在第一次用這個 id 送出作答時才寫進 practice_sessions（core/practice_session.py），
+    # 前端也可以不呼叫這支、自己產生 UUID
     return {
         "data": {
             "session_id": session_id,
@@ -128,14 +129,17 @@ async def submit_answer(
 ):
     """
     學生提交作答：
+      0. session_id 必須是 UUID（400 INVALID_SESSION_ID）
       1. 個資偵測（PII Check）
       2. 從 Supabase 讀取真實的 step、ai_tools 與 Rubric 設定
-      3. 指派檢查與扣每日額度（core/access.py；個資沒過或沒被指派都不扣）
-      4. 計算嘗試次數並寫入 step_attempts 記錄
+      3. 指派檢查、練習 Session（第一次出現就建立；屬於別人回 403），最後才扣每日額度
+         （core/access.py；個資沒過、沒被指派、Session 不是自己的都不扣）
+      4. 計算嘗試次數並寫入 step_attempts 記錄（連結 session_id）
       5. 呼叫 AI 評分並以 SSE 串流回傳
       6. 串流結束後將評分結果存入 ai_evaluations
     """
     try:
+        session_id = parse_session_id(session_id)
         db = get_supabase()
 
         # 步驟一：個資偵測
@@ -155,10 +159,11 @@ async def submit_answer(
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
 
-        # 步驟三：沒被指派回 403；自主模式扣一次額度，用完回 429
+        # 步驟三：沒被指派回 403；步驟停用或沒解鎖回 403；Session 屬於別人回 403；自主模式扣一次額度，用完回 429
         access = check_step_access(db, user, step_res.data)
-        # 步驟停用或前面的必修步驟還沒通過 → 403（不扣額度）
+        # 步驟停用或前面的必修步驟還沒通過 → 403（不建立 Session、不扣額度）
         check_step_unlocked(db, user, step_res.data)
+        linked_session_id = ensure_session(db, session_id, user.id)
         quota = consume_quota(db, access)
 
         tool = step_res.data["ai_tools"]
@@ -208,15 +213,16 @@ async def submit_answer(
             pass_threshold=float(pass_threshold),
             last_dimension_scores=_extract_last_dimension_scores(last_attempt),
             requested_hint=body.request_hint,
-            # 只拿到提示、沒評分的作答不算進「轉介老師」的次數
-            evaluated_attempts=sum(1 for a in attempts if _extract_last_score_percent(a) is not None),
+            # 「轉介老師」只看有評分但沒通過的次數：只拿到提示沒評分的不算，
+            # 通過過的也不算（2026-11-02 測試報告 #5：第 1 次 100 分也被算進去，第 5 次就被轉介）
+            evaluated_attempts=_count_failed_evaluations(attempts, float(pass_threshold)),
         )
 
         # 機器人記憶：要在寫入這次作答前讀，記憶裡才不會混進這次自己
         memory = load_bot_memory(db, user.id, step_res.data)
 
         # ── 寫入學生作答記錄 ────────────────────────────────────────
-        attempt_res = db.table("step_attempts").insert({
+        attempt_row = {
             "user_id": user.id,
             "module_id": body.module_id,
             "step_id": body.step_id,
@@ -224,7 +230,11 @@ async def submit_answer(
             "attempt_number": next_attempt_number,
             "user_input_content": body.content,
             "status": "submitted"
-        }).execute()
+        }
+        # 還沒跑 migration 009 時 ensure_session 回 None，不能寫不存在的欄位
+        if linked_session_id:
+            attempt_row["session_id"] = linked_session_id
+        attempt_res = db.table("step_attempts").insert(attempt_row).execute()
 
         if not attempt_res.data:
             raise HTTPException(status_code=500, detail="Failed to log student attempt")
@@ -681,6 +691,12 @@ def _count_hints_used(db, attempts: list[dict]) -> int:
         .execute()
     )
     return res.count or 0
+
+
+def _count_failed_evaluations(attempts: list[dict], pass_threshold: float) -> int:
+    """此步驟有評分、但分數未達門檻的作答次數。"""
+    scores = (_extract_last_score_percent(a) for a in attempts)
+    return sum(1 for score in scores if score is not None and score < pass_threshold)
 
 
 def _record_tutor_action(db, attempt_id: str, action: str) -> None:

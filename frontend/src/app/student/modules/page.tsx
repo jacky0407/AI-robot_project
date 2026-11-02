@@ -155,6 +155,7 @@ function StudentWorkspace() {
 
   // 分層提示與作答紀錄（GET /hints、GET /history）；送出或取用提示後 progressKey +1 重新抓
   const [hintStatus, setHintStatus] = useState<HintStatus | null>(null);
+  const [hintStatusError, setHintStatusError] = useState(false);
   const [revealedHints, setRevealedHints] = useState<Hint[]>([]);
   const [hintMessage, setHintMessage] = useState("");
   const [history, setHistory] = useState<Submission[]>([]);
@@ -170,6 +171,7 @@ function StudentWorkspace() {
     setRevealedHints([]);
     setHintMessage("");
     setHintStatus(null);
+    setHintStatusError(false);
     setHistory([]);
   };
 
@@ -298,10 +300,13 @@ function StudentWorkspace() {
       ([hints, hist]) => {
         if (!active) return;
         setHintStatus(hints.data);
+        setHintStatusError(false);
         setHistory(hist.data.submissions);
       },
       () => {
-        // 提示與紀錄是輔助資訊，讀不到不影響作答（沒被指派等原因會由剩餘次數區塊說明）
+        // 提示與紀錄是輔助資訊，讀不到不影響作答（沒被指派等原因會由剩餘次數區塊說明）；
+        // 但要讓畫面離開「讀取中」，學生才知道該重新整理
+        if (active) setHintStatusError(true);
       }
     );
     return () => {
@@ -831,7 +836,9 @@ function StudentWorkspace() {
               <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0" }}>
                 {hintStatus
                   ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
-                  : "讀取提示狀態中…"}
+                  : hintStatusError
+                    ? "讀不到提示狀態，請稍後重新整理頁面"
+                    : "讀取提示狀態中…"}
                 {history.length === 0 && "・先送出一次作答後才能索取提示"}
               </p>
               {hintMessage && <p style={{ fontSize: "12px", color: "#cbd5e1", margin: "8px 0 0" }}>{hintMessage}</p>}
