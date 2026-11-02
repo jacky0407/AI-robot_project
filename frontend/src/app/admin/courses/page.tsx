@@ -31,6 +31,9 @@ type Member = {
 };
 type MemberAction = "approve" | "reject" | "remove";
 
+type AssignedModule = { module_id: string; title: string | null; is_published: boolean };
+type ModuleOption = { id: string; title: string; is_published: boolean };
+
 const MEMBER_STATUS_LABEL: Record<MemberStatus, string> = {
   pending: "待審核",
   active: "已加入",
@@ -64,6 +67,34 @@ export default function AdminCoursesPage() {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [memberError, setMemberError] = useState("");
   const [busyMember, setBusyMember] = useState<string | null>(null);
+
+  // 指派模組
+  const [assigned, setAssigned] = useState<AssignedModule[] | null>(null);
+  const [allModules, setAllModules] = useState<ModuleOption[]>([]);
+  const [moduleToAssign, setModuleToAssign] = useState("");
+  const [moduleMsg, setModuleMsg] = useState("");
+  const [busyModule, setBusyModule] = useState(false);
+
+  const loadAssigned = useCallback(async (courseId: string) => {
+    setAssigned(null);
+    try {
+      const res = await apiFetch<{ data: AssignedModule[] }>(`/api/courses/${courseId}/modules`);
+      setAssigned(res.data);
+    } catch (err) {
+      setAssigned([]);
+      setModuleMsg(`無法讀取已指派模組：${errorText(err, "請稍後再試")}`);
+    }
+  }, []);
+
+  // 所有模組（含未發布）：教師可直接讀 learning_modules（migrations/005 的 RLS 允許教師看全部）
+  const loadAllModules = useCallback(async () => {
+    const { data, error } = await supabase.from("learning_modules").select("id, title, is_published").order("created_at");
+    if (error) {
+      setModuleMsg(`無法讀取模組清單：${error.message}`);
+      return;
+    }
+    setAllModules(data ?? []);
+  }, [supabase]);
 
   // 用 .then 寫：setState 都在非同步回呼裡，避免在 effect 裡同步 setState
   const loadCourses = useCallback(
@@ -150,7 +181,11 @@ export default function AdminCoursesPage() {
       return;
     }
     setOpenCourse(courseId);
+    setModuleMsg("");
+    setModuleToAssign("");
     loadMembers(courseId);
+    loadAssigned(courseId);
+    loadAllModules();
   };
 
   const handleMemberAction = async (courseId: string, member: Member, action: MemberAction) => {
@@ -166,6 +201,39 @@ export default function AdminCoursesPage() {
       alert(`操作失敗：${errorText(err, "請稍後再試")}`);
     } finally {
       setBusyMember(null);
+    }
+  };
+
+  const handleAssign = async (courseId: string) => {
+    if (!moduleToAssign) return;
+    setBusyModule(true);
+    setModuleMsg("");
+    try {
+      const res = await apiFetch<{ message: string }>(`/api/courses/${courseId}/modules`, {
+        method: "POST",
+        body: JSON.stringify({ module_id: moduleToAssign }),
+      });
+      setModuleMsg(res.message);
+      setModuleToAssign("");
+      await loadAssigned(courseId);
+    } catch (err) {
+      setModuleMsg(`指派失敗：${errorText(err, "請稍後再試")}`);
+    } finally {
+      setBusyModule(false);
+    }
+  };
+
+  const handleUnassign = async (courseId: string, m: AssignedModule) => {
+    if (!confirm(`確定要取消指派「${m.title}」嗎？學生將看不到這個模組，但已作答的紀錄會保留。`)) return;
+    setBusyModule(true);
+    setModuleMsg("");
+    try {
+      await apiFetch(`/api/courses/${courseId}/modules/${m.module_id}`, { method: "DELETE" });
+      await loadAssigned(courseId);
+    } catch (err) {
+      setModuleMsg(`取消指派失敗：${errorText(err, "請稍後再試")}`);
+    } finally {
+      setBusyModule(false);
     }
   };
 
@@ -255,7 +323,7 @@ export default function AdminCoursesPage() {
                     </label>
                     <div style={{ display: "flex", gap: "6px" }}>
                       <button onClick={() => toggleMembers(c.id)} style={{ ...smallBtn, backgroundColor: openCourse === c.id ? "#16a34a" : "transparent", color: openCourse === c.id ? "#fff" : "#cbd5e1", border: openCourse === c.id ? "1px solid #16a34a" : smallBtn.border }}>
-                        {openCourse === c.id ? "收合成員" : "成員與審核"}
+                        {openCourse === c.id ? "收合" : "模組與成員"}
                       </button>
                       <button
                         disabled={busyCourse === c.id}
@@ -270,6 +338,63 @@ export default function AdminCoursesPage() {
 
                 {openCourse === c.id && (
                   <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", padding: "14px", backgroundColor: "rgba(0,0,0,0.15)", borderRadius: "0 0 10px 10px" }}>
+                    <div style={{ marginBottom: "16px", paddingBottom: "14px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                      <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: "0 0 8px 0", color: "#38bdf8" }}>
+                        指派的訓練模組{assigned ? `（${assigned.length}）` : ""}
+                      </h4>
+                      {assigned === null && <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>載入中…</p>}
+                      {assigned?.length === 0 && (
+                        <p style={{ fontSize: "13px", color: "#94a3b8", margin: "0 0 8px 0" }}>還沒有指派模組，學生進入課程後會看不到任何練習。</p>
+                      )}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {assigned?.map((m) => (
+                          <div key={m.module_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "13px", padding: "8px 10px", borderRadius: "6px", backgroundColor: "rgba(255,255,255,0.04)" }}>
+                            <span>
+                              {m.title || "（未命名模組）"}
+                              {!m.is_published && (
+                                <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", backgroundColor: "rgba(245,158,11,0.15)", color: "#fbbf24", marginLeft: "8px" }}>
+                                  未發布，學生暫時看不到
+                                </span>
+                              )}
+                            </span>
+                            <button disabled={busyModule} onClick={() => handleUnassign(c.id, m)} style={{ ...smallBtn, color: "#f87171" }}>
+                              取消指派
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {assigned && (() => {
+                        const assignedIds = new Set(assigned.map((a) => a.module_id));
+                        const options = allModules.filter((m) => !assignedIds.has(m.id));
+                        return (
+                          <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                            <select
+                              value={moduleToAssign}
+                              onChange={(e) => setModuleToAssign(e.target.value)}
+                              style={{ ...input, flex: 1, width: "auto", backgroundColor: "#0f172a" }}
+                            >
+                              <option value="">{options.length ? "選擇要指派的模組…" : "沒有其他可指派的模組"}</option>
+                              {options.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.title}{m.is_published ? "" : "（未發布）"}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              disabled={busyModule || !moduleToAssign}
+                              onClick={() => handleAssign(c.id)}
+                              style={{ ...smallBtn, backgroundColor: "#16a34a", color: "#fff", border: "none", opacity: busyModule || !moduleToAssign ? 0.5 : 1 }}
+                            >
+                              指派
+                            </button>
+                          </div>
+                        );
+                      })()}
+                      {moduleMsg && (
+                        <p style={{ fontSize: "12px", margin: "8px 0 0", color: /失敗|無法/.test(moduleMsg) ? "#fca5a5" : "#86efac" }}>{moduleMsg}</p>
+                      )}
+                    </div>
+
                     {members === null && <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>載入成員中…</p>}
                     {memberError && <p style={{ fontSize: "13px", color: "#fca5a5", margin: 0 }}>{memberError}</p>}
                     {members?.length === 0 && !memberError && <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>目前還沒有學生申請或加入。</p>}
