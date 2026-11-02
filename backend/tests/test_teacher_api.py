@@ -6,11 +6,29 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 from postgrest.exceptions import APIError
 
 import main
 from api import teacher
+from core.auth import CurrentUser, get_current_user
+
+PROFESSOR = CurrentUser(id="prof-1", role="owner")
+ASSISTANT = CurrentUser(id="assistant-1", role="assistant")
+STUDENT = CurrentUser(id="student-1", role="student")
+
+
+@pytest.fixture(autouse=True)
+def logged_in_professor():
+    """預設以教授登入（dependency_overrides，不經過真正的 token 驗證，見 test_auth.py）"""
+    main.app.dependency_overrides[get_current_user] = lambda: PROFESSOR
+    yield
+    main.app.dependency_overrides.pop(get_current_user, None)
+
+
+def login_as(user: CurrentUser):
+    main.app.dependency_overrides[get_current_user] = lambda: user
 
 
 def fake_db(*, data=None, error: Exception | None = None) -> MagicMock:
@@ -75,3 +93,51 @@ class TestDeleteTool:
         res = call("DELETE", "/api/teacher/tools/t1", fake_db(error=error))
 
         assert res.status_code == 500
+
+
+# ──────────────────────────────────────────
+# 權限：學生不能看、不能刪；助教能看不能刪
+# ──────────────────────────────────────────
+
+class TestPermissions:
+
+    @pytest.mark.parametrize("method, path", [
+        ("GET", "/api/teacher/tools"),
+        ("DELETE", "/api/teacher/tools/t1"),
+    ])
+    def test_without_token_returns_401_and_never_touches_db(self, method, path):
+        main.app.dependency_overrides.pop(get_current_user, None)
+        db = fake_db(data=[{"id": "t1"}])
+        res = call(method, path, db)
+
+        assert res.status_code == 401
+        assert res.json()["detail"]["code"] == "UNAUTHORIZED"
+        db.table.assert_not_called()
+
+    @pytest.mark.parametrize("method, path", [
+        ("GET", "/api/teacher/tools"),
+        ("DELETE", "/api/teacher/tools/t1"),
+    ])
+    def test_student_gets_403_and_never_touches_db(self, method, path):
+        login_as(STUDENT)
+        db = fake_db(data=[{"id": "t1"}])
+        res = call(method, path, db)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "PERMISSION_DENIED"
+        db.table.assert_not_called()
+
+    def test_assistant_can_list_tools(self):
+        login_as(ASSISTANT)
+        res = call("GET", "/api/teacher/tools", fake_db(data=[{"id": "t1"}]))
+
+        assert res.status_code == 200
+
+    def test_assistant_cannot_delete_tool(self):
+        login_as(ASSISTANT)
+        db = fake_db(data=[{"id": "t1"}])
+        res = call("DELETE", "/api/teacher/tools/t1", db)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "PERMISSION_DENIED"
+        db.table.assert_not_called()
