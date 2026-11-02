@@ -50,6 +50,17 @@ interface EvaluationResult {
   suggestions: string[];
 }
 
+// GET /api/practice/steps/{step_id}/quota 的回應（backend/core/access.py 的 quota_status）
+type Quota = {
+  mode: "staff" | "course" | "permission";
+  used: number | null;
+  quota: number | null;
+  remaining: number | null;
+  expire_date: string | null;
+};
+// null = 尚未載入；{ blocked } = 沒被指派或期限已過（後端回 403），不能送出
+type QuotaState = { quota: Quota } | { blocked: string } | null;
+
 const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: string }> = {
   draft: { text: "草稿", color: "#94a3b8", bg: "rgba(255,255,255,0.08)" },
   submitted: { text: "評分中", color: "#fbbf24", bg: "rgba(245,158,11,0.15)" },
@@ -90,6 +101,8 @@ function StudentWorkspace() {
   const [sessionId, setSessionId] = useState<string>("demo-session");
   const [studentAnswer, setStudentAnswer] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quotaState, setQuotaState] = useState<QuotaState>(null);
+  const [quotaKey, setQuotaKey] = useState(0); // 送出後 +1，重新查剩餘次數
   const [statusMessage, setStatusMessage] = useState("");
   const [piiWarning, setPiiWarning] = useState("");
   const [hintText, setHintText] = useState("");
@@ -177,7 +190,7 @@ function StudentWorkspace() {
       if (moduleError) {
         setErrorMsg(`無法讀取訓練模組：${moduleError.message}`);
       } else if (!moduleRows || moduleRows.length === 0) {
-        setErrorMsg("目前沒有可以練習的訓練模組，請先從「我的課程」加入課程，或等老師指派模組。");
+        setErrorMsg("目前沒有可以練習的訓練模組。請在「自主探索」申請機器人並等老師核准，或從「正式課程」加入課程。");
       } else {
         const formatted: Module[] = moduleRows.map(toModule);
         setModules(formatted);
@@ -191,6 +204,24 @@ function StudentWorkspace() {
 
     load();
   }, [supabase, router, courseId]);
+
+  // 今天還能作答幾次（只查不扣）。切換步驟、送出作答後重新查
+  useEffect(() => {
+    if (!selectedStep) return;
+    let active = true;
+    apiFetch<{ data: Quota }>(`/api/practice/steps/${selectedStep.id}/quota`).then(
+      (res) => active && setQuotaState({ quota: res.data }),
+      (err) => {
+        if (!active) return;
+        // 403：沒被指派或期限已過，送出也會被拒絕，直接停用送出按鈕
+        if (err instanceof ApiError && err.status === 403) setQuotaState({ blocked: err.message });
+        else setQuotaState(null); // 其他錯誤不擋作答，交給送出時的錯誤訊息
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [selectedStep, quotaKey]);
 
   // 登出
   const handleSignOut = async () => {
@@ -286,6 +317,7 @@ function StudentWorkspace() {
       setEvalResult(null);
     } finally {
       setIsSubmitting(false);
+      setQuotaKey((k) => k + 1);
     }
   };
 
@@ -315,6 +347,16 @@ function StudentWorkspace() {
     }
   };
 
+  const quotaBlockReason =
+    quotaState && "blocked" in quotaState
+      ? quotaState.blocked
+      : quotaState?.quota.remaining === 0
+        ? "今天的作答次數已用完，明天（台灣時間 0 點）會恢復"
+        : undefined;
+  // 從課程進來回課程頁；沒帶 course（自主探索的「開始練習」）回自主探索頁
+  const backHref = courseId ? "/student/courses" : "/student/explore";
+  const submitDisabled = isSubmitting || Boolean(quotaBlockReason);
+
   const currentMod = modules.find((m) => m.id === currentModuleId) || modules[0];
   const coherenceData = currentMod ? coherence[currentMod.id] : null;
 
@@ -333,7 +375,7 @@ function StudentWorkspace() {
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <button
-            onClick={() => router.push("/student/courses")}
+            onClick={() => router.push(backHref)}
             style={{
               padding: "6px 12px",
               borderRadius: "6px",
@@ -344,7 +386,7 @@ function StudentWorkspace() {
               fontSize: "13px",
             }}
           >
-            ← 返回課程選單
+            {courseId ? "← 返回課程選單" : "← 返回自主探索"}
           </button>
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: 0 }}>
@@ -378,10 +420,10 @@ function StudentWorkspace() {
           </p>
           {!loading && (
             <button
-              onClick={() => router.push("/student/courses")}
+              onClick={() => router.push(backHref)}
               style={{ marginTop: "16px", padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
             >
-              回到我的課程
+              {courseId ? "回到我的課程" : "回到自主探索"}
             </button>
           )}
         </div>
@@ -695,22 +737,23 @@ function StudentWorkspace() {
                 }}
               />
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "12px", color: "#64748b" }}>
-                  送出後將由 AI 規準引擎串流評估
-                </span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                <QuotaBadge state={quotaState} />
                 <button
                   onClick={handleSubmit}
-                  disabled={isSubmitting}
+                  disabled={submitDisabled}
+                  title={quotaBlockReason}
                   style={{
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
                     padding: "10px 22px",
                     borderRadius: "8px",
                     border: "none",
-                    backgroundColor: isSubmitting ? "#475569" : "#2563eb",
+                    backgroundColor: submitDisabled ? "#475569" : "#2563eb",
                     color: "#fff",
                     fontSize: "13px",
                     fontWeight: "bold",
-                    cursor: isSubmitting ? "not-allowed" : "pointer",
+                    cursor: submitDisabled ? "not-allowed" : "pointer",
                   }}
                 >
                   {isSubmitting ? "AI 評分串流中..." : "送出作答並評分"}
@@ -846,5 +889,26 @@ function StudentWorkspace() {
       </main>
       )}
     </div>
+  );
+}
+
+// 送出按鈕旁的剩餘次數：課程模式不限次數；自主模式顯示今天剩幾次與使用期限
+function QuotaBadge({ state }: { state: QuotaState }) {
+  const base: React.CSSProperties = { fontSize: "12px", lineHeight: 1.5 };
+  if (!state) return <span style={{ ...base, color: "#64748b" }}>送出後將由 AI 規準引擎串流評估</span>;
+  if ("blocked" in state) return <span style={{ ...base, color: "#f87171" }}>⚠️ {state.blocked}</span>;
+
+  const q = state.quota;
+  if (q.mode === "staff") return <span style={{ ...base, color: "#64748b" }}>教師帳號：不限次數</span>;
+  if (q.mode === "course") return <span style={{ ...base, color: "#64748b" }}>正式課程：不限練習次數</span>;
+
+  const color = q.remaining === 0 ? "#f87171" : (q.remaining ?? 0) <= 2 ? "#fbbf24" : "#86efac";
+  return (
+    <span style={{ ...base, color }}>
+      今天還可以作答 <b>{q.remaining}</b> / {q.quota} 次
+      <span style={{ color: "#64748b" }}>
+        {q.expire_date ? `・可使用到 ${q.expire_date}` : "・不限期"}・自主練習，AI 回饋僅供參考
+      </span>
+    </span>
   );
 }
