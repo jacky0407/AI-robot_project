@@ -1,6 +1,6 @@
 # 系統架構
 
-> 描述**現在程式碼實際的樣子**（2026-11-02 更新，基準 main `77b871c` + PR #28）。目標規格見 [api.md](./api.md)；兩者不一致時以程式碼為準，差異記在 [KNOWN_GAPS.md](./KNOWN_GAPS.md)。
+> 描述**現在程式碼實際的樣子**（2026-11-02 更新，基準 main `e465eb3`）。目標規格見 [api.md](./api.md)；兩者不一致時以程式碼為準，差異記在 [KNOWN_GAPS.md](./KNOWN_GAPS.md)。
 > AI 評分、分層提示、錯誤分類、機器人記憶的細節見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)，這裡不重複。
 
 ---
@@ -47,12 +47,15 @@ Summer_project/
 │   │   ├── teacher.py          機器人 list / delete
 │   │   ├── courses.py          課程、邀請碼加入、成員審核
 │   │   ├── course_modules.py   模組指派給課程
+│   │   ├── modules.py          模組與步驟管理（建立、排序、停用、發布）
 │   │   ├── tool_requests.py    學生申請機器人、教師核准（期限、每日次數）
 │   │   └── privacy.py          個資偵測
 │   ├── core/
 │   │   ├── config.py           環境變數（get_settings）
 │   │   ├── auth.py             驗證 Supabase token：get_current_user / require_staff
 │   │   ├── access.py           指派檢查與每日額度（check_step_access / consume_quota）
+│   │   ├── step_unlock.py      步驟解鎖：前面的必修步驟通過才解鎖（check_step_unlocked）
+│   │   ├── practice_session.py 練習 Session：第一次送出時建立並檢查擁有者（ensure_session）
 │   │   ├── privacy.py          PII 正規表達式
 │   │   └── ai/                 ← 見 LLM_SYSTEM.md（含 memory.py 機器人記憶）
 │   ├── database/client.py      get_supabase()：每個執行緒各一個 client
@@ -63,9 +66,9 @@ Summer_project/
 │   ├── utils/supabase/         browser / server client
 │   └── app/                    頁面（見第 5 節）
 ├── supabase/
-│   ├── schema.sql              16 張表 + 觸發器（已同步 migrations）
+│   ├── schema.sql              17 張表 + 觸發器（已同步 migrations）
 │   ├── seed.sql                示範資料（只限本機）
-│   ├── migrations/             001–008，可重複執行
+│   ├── migrations/             001–010，可重複執行
 │   └── practice_repo.py        ⚠️ 已停用，沒有任何地方 import
 └── docs/
 ```
@@ -78,15 +81,19 @@ Summer_project/
 
 ```
 [0] 驗證 token → 作答者一律取自 token（body 的 user_id 忽略）
+    session_id 必須是 UUID ─── 否則 400 INVALID_SESSION_ID
 [1] 個資偵測 ─── 命中 → 400 PII_DETECTED，結束（不呼叫任何 LLM、不扣額度）
 [2] 讀 module_steps JOIN ai_tools
       pass_score ← module_steps（不是 ai_tools）
       normalize_rubric()：max_score 是配分，量表由 scale_type 決定
 [3] 指派檢查（core/access.py）─── 沒被指派 403 NOT_ASSIGNED / 核准過期 403 PERMISSION_EXPIRED
+      解鎖檢查（core/step_unlock.py）─── 步驟停用 403 STEP_DISABLED / 前面必修沒通過 403 STEP_LOCKED
+      練習 Session（core/practice_session.py）─── 第一次出現就建立；別人的 403 SESSION_FORBIDDEN
       自主模式扣 1 次每日額度 ─── 用完 429 QUOTA_EXCEEDED
+      （以上依序；任一不過就不寫入作答、不扣額度。教師端跳過指派、解鎖與額度）
 [4] 查此步驟的歷次嘗試 → attempt_number、上次分數、整個步驟累計的已用提示數
 [5] 讀機器人記憶（core/ai/memory.py）：本步驟歷程 + 前面步驟成果；失敗當作沒有記憶
-[6] INSERT step_attempts（status = submitted）
+[6] INSERT step_attempts（status = submitted，連結 session_id）
 [7] SSE：score_start（含 quota）→ tutor_decision（決策寫入 step_attempts.tutor_action）
 [8] TutorAgent 四選一（規則見 LLM_SYSTEM.md 6.1）
       EVALUATE / ENCOURAGE → 逐構面評分（不看記憶）→ 整體回饋（參考記憶）→ score_complete
@@ -111,13 +118,14 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 
 | 端點 | 權限 | 備註 |
 |------|------|------|
-| `POST /api/practice/sessions` | 登入者 | 🟡 session_id 未落庫；前端目前也沒有呼叫，自己產生 UUID |
-| `POST /api/practice/sessions/{id}/submit` | 已被指派的學生 | 核心流程，SSE；扣每日額度 |
+| `POST /api/practice/sessions` | 登入者 | 只回傳新的 session_id；前端沒有呼叫，自己產生 UUID。Session 在第一次送出時才寫進 `practice_sessions` |
+| `POST /api/practice/sessions/{id}/submit` | 已被指派、步驟已解鎖的學生 | 核心流程，SSE；扣每日額度 |
 | `GET /api/practice/sessions/{id}/hints` | 已被指派的學生 | query：`step_id`、`reveal` |
 | `GET /api/practice/sessions/{id}/history` | 登入者（只看自己） | |
 | `GET /api/practice/steps/{id}/quota` | 已被指派的學生 | 只查不扣 |
 | `GET /api/practice/steps/{id}/memory` | 已被指派的學生 | 機器人記憶摘要，不呼叫 LLM |
-| `POST /api/practice/modules/{id}/coherence-check` | 登入者（只看自己） | SSE，至少 2 步驟有作答 |
+| `GET /api/practice/modules/{id}/progress` | 登入者（只看自己） | 每個啟用中步驟的通過與解鎖狀態；學生看未發布模組回 404 |
+| `POST /api/practice/modules/{id}/coherence-check` | 登入者（只看自己） | SSE，至少 2 步驟有作答；跳過停用的步驟 |
 | `POST /api/privacy/detect` | 不需登入 | 只做規則比對，不存原文 |
 | `GET /api/review/pending` | 教師端 | 無教師判定，且有 AI 初評或被轉介（escalate）；`review_reasons` 非空者排前面 |
 | `GET /api/review/submissions/{id}` | 教師端 | |
@@ -126,6 +134,7 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | `DELETE /api/teacher/tools/{id}` | 只限 owner | 仍被步驟使用時回 409 `TOOL_IN_USE` |
 | `/api/courses/*` | 建立、審核限教師端；加入、查自己的課程限登入者 | 邀請碼加入 |
 | `/api/courses/{id}/modules/*` | 指派、取消限教師端 | 模組 ↔ 課程 |
+| `/api/modules/*` | 讀取限教師端；新增、修改、刪除、排序、發布只限 owner | 有作答的步驟不能刪、不能換機器人，只能停用；需要 migration 010 |
 | `/api/tool-requests/*` | 學生申請；核准、退回限教師端 | 核准時設定期限與每日次數 |
 | `GET /api/health` | 不需登入 | |
 
@@ -147,11 +156,12 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | `/portal` | 系統選擇頁（本平台 / XR 系統） |
 | `/student/courses` | 我的課程、輸入邀請碼加入 |
 | `/student/explore` | 自主探索：申請機器人、查看申請狀態 |
-| `/student/modules` | 學生工作台：依課程列出被指派的模組、作答（SSE 逐構面顯示）、分層提示、作答紀錄、今天剩幾次 |
+| `/student/modules` | 學生工作台：依課程列出被指派的模組、作答（SSE 逐構面顯示）、分層提示、作答紀錄、今天剩幾次；沒解鎖的步驟顯示 🔒 並停用送出，停用的步驟不顯示 |
 | `/admin/tools` | 機器人清單 + 待複核清單 |
 | `/admin/tools/new` | 建立機器人（含分層提示與錯誤分類欄位），直接寫 Supabase |
 | `/admin/review/[id]` | 複核詳情：AI 初評、信心值、錯誤分類，送出教師判定 |
 | `/admin/courses` | 課程管理：成員審核、指派／取消指派模組 |
+| `/admin/modules` | 模組管理：建立模組、新增步驟、↑↓ 排序、停用／啟用、發布（只限教授操作） |
 | `/admin/tool-requests` | 審核學生的機器人申請 |
 | `/xr` | 轉址到 XR 系統（`XR_FRONTEND_URL`），只對這個路徑加 CSP |
 
@@ -168,14 +178,14 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 
 ## 6. 資料庫
 
-16 張表，完整定義在 `supabase/schema.sql`（欄位都有註解）。這裡只列容易踩錯的地方。
+17 張表，完整定義在 `supabase/schema.sql`（欄位都有註解）。這裡只列容易踩錯的地方。
 
 | 分組 | 資料表 |
 |------|--------|
 | 帳號與課程 | `profiles`、`courses`、`course_members`、`tool_permissions`、`course_modules` |
 | 機器人與案例 | `ai_tools`、`tool_cases` |
 | 模組 | `learning_modules`、`module_steps` |
-| 學習歷程 | `step_attempts`、`ai_evaluations`、`teacher_reviews`、`prompt_logs` |
+| 學習歷程 | `practice_sessions`、`step_attempts`、`ai_evaluations`、`teacher_reviews`、`prompt_logs` |
 | 表單與倫理 | `forms`、`form_responses`、`research_consents` |
 
 **容易踩錯的欄位：**
@@ -186,12 +196,16 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | `ai_tools.title` | 不是 `name` |
 | `tool_cases.case_background` | 不是 `content` |
 | `module_steps.pass_score` | 通過門檻在這裡，不在 `ai_tools` |
+| `module_steps.is_active` | false = 停用：學生看不到、不能作答，作答保留。有作答的步驟不能刪（`step_attempts.step_id` 是 ON DELETE CASCADE） |
+| `module_steps.is_required` | 必修：沒通過會鎖住後面的步驟（`core/step_unlock.py`） |
 | `ai_tools.rubric_criteria[].max_score` | 是**配分（權重）**，不是量表上限 |
 | `ai_tools.teaching_strategy.memory` | 機器人記憶的開關與筆數，見 LLM_SYSTEM.md 6.3 |
 | `ai_evaluations.total_score` | 加權後的百分制得分 0–100 |
 | `ai_evaluations` 無 `teacher_review_id` | 刻意的：是否已複核看有無對應 `teacher_reviews` |
 | `step_attempts` 無 `course_id` | 違反共同規範，見 KNOWN_GAPS |
 | `step_attempts.tutor_action` | TutorAgent 決策；只有 `evaluate` / `encourage` 會有對應的 `ai_evaluations` |
+| `step_attempts.session_id` | 屬於哪一次練習；還沒跑 009 時不寫 |
+| `practice_sessions.id` | 由前端產生（`crypto.randomUUID()`），所以沒有 DEFAULT |
 | `tool_permissions.used_today` / `used_date` | 自主模式每日額度；扣次數一律走 `consume_tool_quota()`（migration 008），避免競態 |
 
 **觸發器**：`auth.users` 新增一筆時，自動建立 `profiles`（role 預設 student）並產生匿名研究編號 `SPED-xxxxxxxx`。
@@ -210,6 +224,8 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | 006 | `profiles` RLS |
 | 007 | 課程成員狀態加入 rejected |
 | 008 | 自主模式每日額度（`consume_tool_quota()`） |
+| 009 | 練習 Session：`practice_sessions`、`step_attempts.session_id` |
+| 010 | 模組管理：`module_steps.is_active`、學生看不到停用步驟（重建 005 的政策）、`reorder_module_steps()` |
 
 **種子資料固定 UUID**：
 
@@ -234,6 +250,8 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | 記憶不進逐構面評分 | 避免「上次低分、這次也偏低」的錨定效應；記憶只用在回饋與提示 |
 | Secret key 只在後端 | 後端以最高權限統一操作；前端只拿公開金鑰 |
 | `step_attempts` 保留每次作答 | `attempt_number` 遞增，供版本比對、研究分析與機器人記憶 |
+| 停用取代刪除 | 刪步驟會連學生作答一起刪掉；有作答的步驟與模組只能停用／取消發布，研究資料不會消失 |
+| 教師判定決定是否通過 | 解鎖時，已發布且有給分的教師複核優先於 AI 結果（AI 永不覆蓋教師判定） |
 
 ---
 
