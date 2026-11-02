@@ -236,7 +236,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 |------|------|------|
 | 前端後端網址 | `http://127.0.0.1:8000` | ✅ 統一由 `utils/api.ts` 讀 `NEXT_PUBLIC_API_URL`（沒設才用本機預設） |
 | 後端 CORS | `http://localhost:3000` | ✅ 改讀 `FRONTEND_URL`（PR #27） |
-| `frontend/src/app/student/modules/page.tsx` | session id 由前端 `crypto.randomUUID()` 產生 | 🟡 後端未落庫也不檢查，見 #3 |
+| `frontend/src/app/student/modules/page.tsx` | session id 由前端 `crypto.randomUUID()` 產生 | ✅ 後端第一次送出時落庫並檢查擁有者（migration 009），見 #3 |
 | `backend/core/ai/agents/tutor_agent.py` | `_default_hint()` 的四層提示文字 | ✅ 已刪除，改用 `HintEngine` |
 | `backend/api/practice.py` | `/hints` 端點整段回傳值 | ✅ 已接真實資料 |
 | `backend/core/ai/agents/coherence_agent.py` | `DEFAULT_COHERENCE_CHECKS` 三條規則 | 🟡 步驟編號已改對九步驟（3→5、3→7、5→8），內容待教授確認；入庫待 E 批次 |
@@ -255,7 +255,8 @@ pass_threshold = step_res.data.get("pass_score") or 75
 | `ai_evaluations.ai_cost` | 恆為 0.0 |
 | `ai_evaluations.suggested_next_step` | 從未寫入 |
 | `module_steps.pass_forward_keys` | 步驟間的結構化資料傳遞未實作（機器人記憶目前直接讀前面步驟的作答全文，見 LLM_SYSTEM.md 6.3） |
-| `module_steps.require_teacher_review` | ✅ `/api/review/pending` 已讀取（`review_reasons: step_requires_review`）；但尚無「審核前不能進下一步」的解鎖邏輯 |
+| `module_steps.require_teacher_review` | ✅ `/api/review/pending` 已讀取（`review_reasons: step_requires_review`）；🟡 解鎖只看「是否通過」（教師判定優先），不會等老師審核完才解鎖下一步 |
+| `module_steps.is_required` | ✅ 必修步驟通過才解鎖下一步（`core/step_unlock.py`，2026-11） |
 | `step_attempts.structured_data` | 從未寫入 |
 | `prompt_logs.student_reaction` | 從未寫入 |
 | `tool_permissions` | ✅ 已用於機器人申請與自主模式每日額度（`core/access.py`、`api/tool_requests.py`） |
@@ -278,7 +279,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 | ~~`frontend/src/app/layout.tsx`~~ | ✅ metadata 已改為「學前特教 AI 培訓平台」 |
 | `frontend/src/app/page.tsx` | 已改為登入與註冊頁（舊原型 `page_origin.tsx` 已刪除）；不受 `middleware` 守門是刻意的 |
 | ~~`/student/practice` 取案例~~ | ✅ 頁面已併入 `/student/modules` |
-| `/student/modules` | ✅ 從課程進入時只顯示該課程指派的模組；🟡 仍沒有「前一步通過才解鎖下一步」的邏輯 |
+| `/student/modules` | ✅ 從課程進入時只顯示該課程指派的模組；✅ 前面的必修步驟通過才解鎖下一步（前端顯示 🔒，後端送出時也檢查） |
 | `main.py` | router import 分散在檔案上方與中段，建議集中 |
 
 ---
@@ -291,7 +292,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 ✅ 第二批 LLM（已完成）→ 分層提示、錯誤分類、confidence、scale_type、逾時重試、機器人記憶
 ✅ 第三批（安全）      → #8 API 身分驗證、#9 RLS 政策（005、006）
 ✅ 第四批（體驗）      → #7 前端 SSE、課程與分層提示 UI
-   第五批（穩定）      → #17 Gemini 額度與延遲、#18 評分失敗退回次數、#3 Session 落庫   ← 目前最該做的
+   第五批（穩定）      → #17 Gemini 額度與延遲、#18 評分失敗退回次數（✅ #3 Session 落庫）   ← 目前最該做的
    第六批（可部署）    → #6 回應格式、#9 RLS 政策寫回 schema.sql、Vercel / Render 部署
    第七批（補需求）    → 成本控管、跨步驟結構化傳遞、Coherence 規則入庫、前後測、研究資料匯出
 ```
@@ -305,7 +306,6 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **後端**
 
 - `api/auth.py`、`api/tools.py` — `main.py` 中以 TODO 註解預留，檔案不存在；`api/export.py` 尚未建立（`api/courses.py` 已完成）
-- 練習 Session 落庫（#3）
 - 表單與前後測（`forms` / `form_responses`）
 - 研究資料 CSV 匯出（`/api/export/*`）
 - 研究倫理同意書流程（`/api/consent`）
