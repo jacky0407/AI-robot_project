@@ -1,0 +1,140 @@
+# 進度盤點與 11/16 雲端 Demo 計畫
+
+> 盤點日期：2026-11-04（基準 main `e465eb3`）
+> 目標：**11/16 前**把後端（與前端）部署到雲端，給教授看初步 Demo
+> 下次開會：**11/9**，會議要決定的事項見第 5 節
+
+---
+
+## 1. 目前進度總覽
+
+| 區塊 | 狀態 | 說明 |
+|------|------|------|
+| 後端單元測試 | ✅ | `pytest tests/` **542 passed, 0 failed** |
+| 帳號／註冊／忘記密碼／Onboarding | ✅ | 走 Supabase Auth，前端直連 |
+| 課程、邀請碼加入、成員審核 | ✅ | `api/courses.py`、`/admin/courses` |
+| 模組與步驟管理、指派、必修解鎖 | ✅ | `api/modules.py`、`api/course_modules.py`、`/admin/modules`（PR #32） |
+| 機器人申請與每日額度（自主模式） | ✅ | `api/tool_requests.py`、`core/access.py` |
+| 練習作答 → AI 評分（SSE）→ 分層提示 | ✅ | `api/practice.py`、`core/ai/*`，前端 `/student/modules` |
+| 練習 Session 落庫 | ✅ | migration 009（PR #30） |
+| 機器人記憶、錯誤分類、Coherence 檢核 | ✅ | 細節見 LLM_SYSTEM.md |
+| 個資偵測 | ✅ | 送出前檢查，有風險回警告 |
+| 教師複核（AI 初評與教師判定分開存） | ✅ | `api/review.py`、`/admin/review/[id]` |
+| API 身分驗證、RLS | ✅ | `core/auth.py`、migration 005／006 |
+| 機器人建構器 | 🟡 | 只能**新增**，不能編輯；案例／提示分頁未完成 |
+| 共用登入 Portal（XR 整合） | 🟡 | PR #31 待審 |
+| **雲端部署** | 🔴 | **完全尚未設定**（無 render.yaml / Procfile / CI） |
+| 教授監控總覽、班級分析 | 🔴 | 未實作 |
+| CSV 資料匯出（P0） | 🔴 | 未實作 |
+
+待合併的 PR：#31（Portal 登入）、#34（課程 API UUID 驗證 + pytest 進 requirements）、#35（文件更新）。
+
+---
+
+## 2. 架構缺漏檢查
+
+### 2.1 🔴 會擋住 11/16 Demo 的問題
+
+| # | 問題 | 影響 | 建議處理 |
+|---|------|------|---------|
+| D1 | **沒有任何部署設定** | 無法上雲 | 新增 `render.yaml`（或 Procfile）：`uvicorn main:app --host 0.0.0.0 --port $PORT`，指定 Python 版本 |
+| D2 | **Gemini 免費額度一天 20 次**（KNOWN_GAPS #17） | 一次評分用 3～6 次請求，Demo 當天幾次提交就 429 | Demo 前改付費方案或換額度高的模型；`DEFAULT_TIMEOUT_SECONDS` 調到 90 秒 |
+| D3 | **CORS 只允許單一網址**（`FRONTEND_URL`） | Vercel 正式網址、預覽網址、本機開發不能同時用 | `FRONTEND_URL` 改成支援逗號分隔多個網址 |
+| D4 | **正式環境資料庫未建立** | 雲端後端沒資料可讀 | 開 Demo 用的 Supabase 專案，依序跑 `schema.sql` + migrations 001–010；Auth → URL Configuration 加入 Vercel 網址（驗證信、重設密碼才會導回正確網站） |
+| D5 | **Demo 資料** | 教授看到空畫面 | 準備 1 門課、九步驟模組、至少 2–3 個機器人的完整 Rubric／案例／提示、示範學生與教師帳號（密碼不要用 seed 的 `Test1234!`） |
+| D6 | **Render 免費方案會休眠** | 第一次開啟要等 30–60 秒，SSE 可能逾時 | Demo 前 5 分鐘先打 `/api/health` 喚醒，或用付費方案 |
+
+### 2.2 🟠 Demo 前建議處理（不處理也能上，但容易出事）
+
+| # | 問題 | 建議 |
+|---|------|------|
+| H1 | **根目錄 `node_modules/` 有 152 個檔案被 commit 進 git**，另有空檔案 `git`、`backend/uvicorn`，以及根目錄沒用到的 `package.json`、`utils/supabase.ts` | 從 git 移除，`.gitignore` 加 `node_modules/` |
+| H2 | `requirements.txt` 全用 `>=`，沒有鎖版本 | 雲端每次建置可能裝到新版 langchain 而壞掉；鎖定目前本機能跑的版本 |
+| H3 | 沒有 CI | 新增 GitHub Actions 跑 `pytest`，PR 自動檢查 |
+| H4 | Migration 編號衝突：PR #31 提到的 `009_role_claim.sql` 與已存在的 `009_practice_sessions.sql` 同號 | 改為 `011_role_claim.sql` |
+| H5 | AI 評分失敗不退回額度（KNOWN_GAPS #18） | 配合 D2，額度不足時學生會被白扣次數 |
+| H6 | `ENVIRONMENT=production` 時 `/docs` 仍公開 | 正式環境可關閉 Swagger，或 Demo 時保留給教授看也可以，會議決定 |
+
+### 2.3 🟡 功能缺漏（對照 TEAM_ROLES.md P0 範圍）
+
+| 功能 | P0? | 現況 | 建議時程 |
+|------|-----|------|---------|
+| 教授後台：所有學生 × 機器人對答總覽 | P0 | 後端 `/api/admin/conversations` 與前端頁面都沒有；目前只有待複核清單 | **Demo 前做簡易版**（教授最想看的畫面） |
+| 機器人編輯（GPTs Builder 編輯／案例／提示分頁） | P0 | 只能新增 | Demo 後 |
+| 基礎 CSV 匯出 `/api/export/teaching` | P0 | 未實作 | Demo 後（11 月底） |
+| 學生作答版本比對畫面 | P0 | 未實作（資料已有 `attempt_number`） | Demo 後 |
+| 班級分析儀表板（通過率、常見錯誤） | P0 | 未實作（`detected_errors` 已有資料） | Demo 後 |
+| 機器人記憶畫面 | — | 後端 API 已有，前端沒用 | Demo 後 |
+| `require_teacher_review` 擋解鎖 | — | 欄位有讀，但不會擋下一步 | 會議決定是否需要 |
+| Coherence 規則入庫 | — | 寫死在程式 | 需教授確認內容 |
+| AI 成本記錄（`ai_cost` 恆為 0） | P1 | 未實作 | P1 |
+| 研究同意書、去識別化匯出、前後測 | P1 | 只有資料表 | P1 |
+
+---
+
+## 3. 分工與待辦（依 TEAM_ROLES.md）
+
+> 成員對應依 commit 紀錄推定，**11/9 開會時請確認**。
+
+### 成員一 前端 — @Yorukidzuki
+
+- [ ] PR #31（Portal 登入）處理審查意見並合併；migration 改編號 011（H4）
+- [ ] Vercel 部署：建專案、設定 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`NEXT_PUBLIC_API_URL`（= Render 網址）
+- [ ] 確認 `npm run build` 在乾淨環境可過
+- [ ] 教授監控總覽頁（簡易版）：學生 × 步驟表格，點進去看作答與 AI 評分（配合成員二的 API）
+- [ ] 前端移除已不使用的 `user_id`、`teacher_id` 傳送（KNOWN_GAPS #8）
+- [ ] Demo 後：機器人編輯頁、版本比對頁
+
+### 成員二 資料庫與驗證 — @KafuuBob
+
+- [ ] PR #34 合併
+- [ ] 建立 Demo 用 Supabase 專案：跑 `schema.sql` + migrations 001–010，Auth Redirect URL 加 Vercel 網址（D4）
+- [ ] 把 005／006 的 RLS 政策寫回 `schema.sql`（KNOWN_GAPS #9）
+- [ ] 鎖定 `requirements.txt` 版本（H2）
+- [ ] 教授監控總覽 API：`GET /api/admin/conversations`（學生 × 步驟、最新分數、狀態），需 `require_staff` + 單元測試
+- [ ] 清掉 git 裡的 `node_modules/` 與空檔案（H1）
+- [ ] Demo 後：`/api/export/teaching` CSV 匯出
+
+### 成員三 後端 AI — @jacky0407
+
+- [ ] 部署設定：`render.yaml` / 啟動指令 / Python 版本、在 Render 建服務並設環境變數（D1）
+- [ ] `FRONTEND_URL` 支援多個網址（D3）
+- [ ] Gemini 額度：與教授決定付費方案或換模型；調整逾時（D2）
+- [ ] 評分失敗退回額度（H5）
+- [ ] GitHub Actions 跑 pytest（H3）
+- [ ] 合併 PR #35
+
+### 測試、內容與 Demo 準備 — @nick5wu @RachelWU843
+
+> 兩位目前在程式庫沒有 commit，以下為**暫定**分工，11/9 開會確認。
+
+- [ ] 準備 Demo 資料：與教授確認 2–3 個步驟的 Rubric、練習案例、分層提示文字（D5）
+- [ ] 撰寫 Demo 腳本：學生加入課程 → 作答 → 看 AI 評分與提示 → 修改 → 教師複核
+- [ ] 部署後依 `docs/SETUP.md` 第 4 節驗收清單在雲端環境完整測一輪，問題開 Issue
+- [ ] 確認 Coherence 三條規則內容（KNOWN_GAPS #11），請教授過目
+
+---
+
+## 4. 時程
+
+| 日期 | 里程碑 |
+|------|--------|
+| 11/4–11/8 | 合併 #31 #34 #35；清理 repo；鎖版本；寫部署設定；準備 Demo 內容 |
+| **11/9（日）開會** | 決定第 5 節事項；確認分工 |
+| 11/10–11/12 | Supabase 正式專案 + Render 後端 + Vercel 前端上線；監控總覽 API 與頁面 |
+| 11/13 | 在雲端完整跑一次 Demo 腳本，修 bug |
+| 11/14 | 凍結功能（只修 bug）；彩排 |
+| 11/15 | 緩衝日 |
+| **11/16** | 給教授 Demo |
+
+---
+
+## 5. 11/9 會議要決定的事
+
+1. **成員對應確認**：nick5wu、RachelWU843 的角色
+2. **Gemini 方案**：付費？用哪個模型？預算多少？（D2）
+3. **部署平台**：後端 Render（免費會休眠）或其他（Cloud Run / Railway）；是否付費
+4. **Demo 範圍**：要展示哪幾個步驟／機器人；監控總覽頁是否列入 Demo
+5. **Demo 帳號與資料**：用新的 Supabase 專案，還是沿用開發用的
+6. `require_teacher_review` 是否要擋下一步解鎖
+7. `/docs`（Swagger）正式環境要不要關
