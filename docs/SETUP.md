@@ -171,11 +171,42 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 
 ---
 
-## 6. 部署（尚未設定）
+## 6. 部署
 
 | 層 | 平台 | 環境變數 |
 |----|------|---------|
-| 前端 | Vercel | `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`NEXT_PUBLIC_API_URL`（待建立） |
-| 後端 | Render | `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`GEMINI_MODEL`、`ENVIRONMENT=production`、`FRONTEND_URL` |
+| 前端 | Vercel | `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`NEXT_PUBLIC_API_URL`（= Render 網址，結尾不加 `/`） |
+| 後端 | Render | `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`GEMINI_MODEL`、`ENVIRONMENT=production`、`FRONTEND_URL`、`LLM_TIMEOUT_SECONDS` |
 
-部署前必須先完成：網址改環境變數、API 身分驗證、開啟 RLS（KNOWN_GAPS #8 #9 #11）。
+### 順序
+
+1. **Supabase**：照第 1 節跑 `schema.sql`，再依序跑 migrations `002`、`004`～`011`（全新資料庫不用 001、003；全部可重複執行）。
+   資料庫函式（註冊、扣／退額度、步驟排序）只在 migration 裡，漏跑會在使用時才出錯。
+   Authentication → URL Configuration：Site URL 填 Vercel 網址，Redirect URLs 加 `https://<vercel 網址>/**`
+   （不加的話驗證信、重設密碼信會導回 localhost）
+2. **後端（Render）**：Dashboard → New → **Blueprint** → 選這個 repo，會讀根目錄的 `render.yaml`。
+   建立時填 4 個秘密：`SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`FRONTEND_URL`
+   （Vercel 網址還沒有時先填 `http://localhost:3000`，第 4 步再改）。
+   完成後打開 `https://<render 網址>/api/health` 應回 `{"status":"ok","environment":"production"}`
+3. **前端（Vercel）**：Import repo，Root Directory 選 `frontend`，填上表 3 個環境變數
+4. 回 Render 把 `FRONTEND_URL` 改成 `https://<vercel 網址>,http://localhost:3000`，按 Manual Deploy
+5. 照第 4 節驗收清單在雲端跑一輪
+
+### 每次更新部署的順序（2026-11-04 部署測試的教訓）
+
+1. **先跑新的 migration**：看這次合併有沒有新增 `supabase/migrations/0xx_*.sql`，有就先在 Supabase SQL Editor 執行
+   （後端先上線、資料庫沒跟上時，例如沒跑 010，模組管理頁會回 503 `MIGRATION_REQUIRED`）
+2. 再到 Render 按 Manual Deploy；Vercel 合併到 main 會自動部署
+3. 開 `/api/health` 確認 `branch`、`commit` 是剛部署的版本
+
+### Supabase Auth 網址（漏設會讓登入導到 localhost）
+
+- **Site URL** 要是 Vercel 正式網址，不是 `http://localhost:3000`（忘記密碼、註冊驗證信沒帶 redirect 時會用它）
+- **Redirect URLs** 要有 `https://<vercel 網址>/**`，結尾的 `/**` 不能省，否則配不到 `/auth/callback`
+
+### 注意
+
+- `render.yaml` 設了 `autoDeploy: false`：main 合併後**不會**自動更新，要到 Render 按 Manual Deploy
+- 免費方案閒置 15 分鐘會休眠，第一次請求要等 30–60 秒。Demo 前先開一次 `/api/health`
+- `FRONTEND_URL` 的網址要和瀏覽器網址列**完全一致**（`https`、沒有結尾 `/`），否則前端會出現 CORS 錯誤
+- 單元測試由 GitHub Actions（`.github/workflows/backend-tests.yml`）在 PR 自動執行

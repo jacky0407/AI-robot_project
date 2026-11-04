@@ -15,6 +15,7 @@ AI 評分失敗不退回（見 docs/KNOWN_GAPS.md）。課程指派的學生不�
 後端用 service_role 連線，不受 RLS 限制，所以這些檢查必須在這裡做。
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -22,6 +23,8 @@ from typing import Literal, Optional
 from fastapi import HTTPException, status
 
 from core.auth import CurrentUser
+
+logger = logging.getLogger(__name__)
 
 # 台灣沒有日光節約時間，用固定 +8（與 api/tool_requests.py 相同）
 TAIPEI = timezone(timedelta(hours=8))
@@ -180,4 +183,29 @@ def consume_quota(db, access: StepAccess, today: Optional[date] = None) -> Optio
             "QUOTA_EXCEEDED",
             f"今天的 {row['quota']} 次作答已用完，明天（台灣時間 0 點）會恢復",
         )
+    return {"used": row["used"], "quota": row["quota"]}
+
+
+def refund_quota(db, access: StepAccess, today: Optional[date] = None) -> Optional[dict]:
+    """
+    AI 評分因系統錯誤失敗時退回 1 次額度（KNOWN_GAPS #18，migrations/011）。
+
+    只有 permission 模式會退；跨日、已是 0 次時資料庫不退，回傳 None。
+    這是在 SSE 串流中途呼叫的補救動作，失敗只記 log、不往外拋，
+    以免蓋掉原本要回給學生的錯誤訊息（例如還沒跑 migration 011）。
+    成功回傳 {"used": 退回後今天已用次數, "quota": 每日上限}。
+    """
+    if access.mode != "permission":
+        return None
+    try:
+        res = db.rpc(
+            "refund_tool_quota",
+            {"p_permission_id": access.permission_id, "p_today": (today or today_taipei()).isoformat()},
+        ).execute()
+    except Exception as e:  # noqa: BLE001 - 補救動作失敗不影響主流程
+        logger.warning(f"退回額度失敗（permission {access.permission_id}）：{e}")
+        return None
+    row = (res.data or [None])[0]
+    if row is None:
+        return None
     return {"used": row["used"], "quota": row["quota"]}

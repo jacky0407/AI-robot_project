@@ -167,6 +167,27 @@ class TestInvokeWithRetry:
         assert result == "終於回來了"
 
 
+class TestTimeoutFromSettings:
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_comes_from_settings(self, monkeypatch):
+        """沒指定 timeout 時讀 LLM_TIMEOUT_SECONDS"""
+        from core.config import get_settings
+
+        async def never_returns(*args, **kwargs):
+            await asyncio.sleep(10)
+
+        monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
+        get_settings.cache_clear()
+        try:
+            llm = AsyncMock()
+            llm.ainvoke = never_returns
+            with pytest.raises(LLMTimeoutError, match="0.01"):
+                await invoke_with_retry(llm, [], max_attempts=1, backoff=0)
+        finally:
+            get_settings.cache_clear()
+
+
 class TestInvokeJson:
 
     @pytest.mark.asyncio

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.access import check_step_access, consume_quota, quota_status
+from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser, get_current_user
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
@@ -320,10 +320,23 @@ async def submit_answer(
                         {"status": "revision_required"}
                     ).eq("id", attempt_id).execute()
 
+                # 有構面因 AI 呼叫失敗而給了保底分數：不是學生的問題，退回這次額度
+                if final_data and _has_failed_dimension(final_data):
+                    refunded = refund_quota(db, access) if quota else None
+                    if refunded:
+                        yield _sse_event("quota_refunded", {
+                            "reason": "dimension_failed",
+                            "quota": refunded,
+                        })
+
             except Exception as e:
                 error_detail = traceback.format_exc()
                 logger.error(f"TutorAgent error:\n{error_detail}")
                 yield _sse_event("error", {"message": "AI 評分失敗", "detail": str(e)})
+                # 整次評分失敗（逾時、429…）：退回這次額度（KNOWN_GAPS #18）
+                refunded = refund_quota(db, access) if quota else None
+                if refunded:
+                    yield _sse_event("quota_refunded", {"reason": "evaluation_error", "quota": refunded})
 
         return StreamingResponse(
             event_generator(),
@@ -659,6 +672,11 @@ async def check_module_coherence(module_id: str, user: CurrentUser = Depends(get
 # ──────────────────────────────────────────
 # Helper
 # ──────────────────────────────────────────
+
+def _has_failed_dimension(final_data: dict) -> bool:
+    """EvaluatorAgent 在構面評分失敗時會標 failed=True 並給最低分"""
+    return any(d.get("failed") for d in final_data.get("dimension_scores") or [])
+
 
 def _collect_evidence(dimension_scores: list[dict] | None) -> str:
     """
