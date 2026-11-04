@@ -1,0 +1,32 @@
+# Render Blueprint：後端 FastAPI（docs/SETUP.md 第 6 節）
+# Render Dashboard → New → Blueprint → 選這個 repo，就會依此檔建立服務。
+# 標 sync: false 的變數是秘密，建立時 Render 會要你在網頁上填，不要寫在這裡。
+services:
+  - type: web
+    name: ai-training-backend
+    runtime: python
+    region: singapore          # 離台灣最近
+    plan: free                 # 免費方案閒置 15 分鐘會休眠，Demo 前先開 /api/health 喚醒
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: false          # Demo 前避免 main 一合併就自動重新部署；要更新時手動 Deploy
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"        # 與 CI（.github/workflows/backend-tests.yml）相同
+      - key: ENVIRONMENT
+        value: production
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: LLM_TIMEOUT_SECONDS
+        value: "90"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Vercel 網址與本機，用逗號分隔，例如 https://xxx.vercel.app,http://localhost:3000
+      - key: FRONTEND_URL
+        sync: false

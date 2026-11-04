@@ -13,10 +13,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS 設定：只允許前端網址存取
+# CORS 設定：只允許 FRONTEND_URL 列出的前端網址（可用逗號分隔多個）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,  # 必須為 True 才能接受 Cookie
     allow_methods=["*"],
     allow_headers=["*"],

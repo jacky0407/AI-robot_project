@@ -1044,6 +1044,65 @@ class TestAccessAndQuota:
         assert consumed == []
 
 
+class TestQuotaRefundOnAIFailure:
+    """AI 評分因系統錯誤失敗時退回額度（KNOWN_GAPS #18）"""
+
+    @pytest.fixture
+    def permission_mode(self, monkeypatch):
+        refunds = []
+        monkeypatch.setattr(
+            practice, "check_step_access",
+            lambda db, user, step: StepAccess(mode="permission", permission_id="perm-1"),
+        )
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: {"used": 3, "quota": 10})
+        monkeypatch.setattr(
+            practice, "refund_quota",
+            lambda db, access: refunds.append(access) or {"used": 2, "quota": 10},
+        )
+        return refunds
+
+    def test_whole_evaluation_error_refunds_quota(self, permission_mode, monkeypatch):
+        async def boom(**kwargs):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+            yield  # pragma: no cover - 讓它成為 async generator
+
+        monkeypatch.setattr(practice.tutor_agent, "process_stream", boom)
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        names = [e for e, _ in events]
+        assert "error" in names
+        assert ("quota_refunded", {"reason": "evaluation_error", "quota": {"used": 2, "quota": 10}}) in events
+        assert len(permission_mode) == 1
+
+    def test_failed_dimension_refunds_quota(self, permission_mode):
+        responses = ["這不是 JSON", dim_response("B", 3), dim_response("C", 3), SYNTH_RESPONSE]
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), responses)
+
+        assert any(e == "score_complete" for e, _ in events)
+        assert ("quota_refunded", {"reason": "dimension_failed", "quota": {"used": 2, "quota": 10}}) in events
+        assert len(permission_mode) == 1
+
+    def test_successful_evaluation_does_not_refund(self, permission_mode):
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert not any(e == "quota_refunded" for e, _ in events)
+        assert permission_mode == []
+
+    def test_course_mode_never_refunds(self, monkeypatch):
+        refunds = []
+        monkeypatch.setattr(practice, "refund_quota", lambda db, access: refunds.append(access))
+
+        async def boom(**kwargs):
+            raise RuntimeError("timeout")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(practice.tutor_agent, "process_stream", boom)
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        assert any(e == "error" for e, _ in events)
+        assert refunds == []
+
+
 # ──────────────────────────────────────────
 # GET /steps/{step_id}/quota：剩餘額度（只查不扣）
 # ──────────────────────────────────────────

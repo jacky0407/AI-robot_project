@@ -71,3 +71,29 @@ def test_every_agent_uses_configured_model(model_env):
     assert _model_name(ErrorDetector().llm) == "gemini-test-model"
     assert _model_name(HintEngine().llm) == "gemini-test-model"
     assert GeminiProvider().model_id == "gemini-test-model"
+
+
+# ──────────────────────────────────────────
+# CORS 與 LLM 逾時（部署用設定）
+# ──────────────────────────────────────────
+
+def test_single_frontend_url_is_one_origin():
+    assert Settings(_env_file=None, frontend_url="http://localhost:3000").cors_origins == [
+        "http://localhost:3000"
+    ]
+
+
+def test_frontend_url_accepts_comma_separated_origins():
+    """雲端（Vercel）與本機開發要能同時連線"""
+    s = Settings(_env_file=None, frontend_url=" https://demo.vercel.app/ , http://localhost:3000,, ")
+    assert s.cors_origins == ["https://demo.vercel.app", "http://localhost:3000"]
+
+
+def test_llm_timeout_default_is_90_seconds(monkeypatch):
+    monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
+    assert Settings(_env_file=None).llm_timeout_seconds == 90.0
+
+
+def test_llm_timeout_can_be_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "45")
+    assert Settings(_env_file=None).llm_timeout_seconds == 45.0

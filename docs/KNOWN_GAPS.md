@@ -323,7 +323,7 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **安全與部署**
 
 - ✅ 後端 API 身分驗證（#8）、RLS 政策（#9，migration 005、006）
-- Vercel / Render 部署設定
+- ✅ Render 部署設定（根目錄 `render.yaml`，步驟見 SETUP.md 第 6 節）；Vercel 尚待建立專案
 
 ---
 
@@ -363,12 +363,19 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **待決定**（影響評分品質與成本，需要成員三與教授決定）：
 
 1. 上課前改用付費方案，或改用額度較高的模型（改 `.env` 的 `GEMINI_MODEL` 即可）
-2. 調高 `llm_utils.DEFAULT_TIMEOUT_SECONDS`（例如 90 秒），避免「已經在算了卻被切斷重來」反而多吃額度
+2. ✅ 逾時改由 `.env` 的 `LLM_TIMEOUT_SECONDS` 設定，預設 90 秒（原本寫死 30 秒），避免「已經在算了卻被切斷重來」反而多吃額度
 3. 評分 / 錯誤偵測改用較低的思考等級（`thinking_config={"thinking_level": "low"}`），延遲可降到 2 秒內，但評分品質尚未比較
 
 ---
 
-## 18. 🟡 自主模式的每日額度：AI 評分失敗不退回次數
+## 18. ✅ 已修正 — 自主模式的每日額度：AI 評分失敗不退回次數
+
+> ✅ 2026-11：新增 `refund_tool_quota()`（migration 011）與 `core/access.refund_quota()`。
+> 整次評分拋例外（逾時、429…），或有構面因 AI 呼叫失敗而給保底分數時，退回 1 次，並送出 SSE 事件 `quota_refunded`。
+> 只退同一天扣的次數；沒跑 migration 011 時退回失敗只記 log，不影響評分錯誤訊息。
+> 回歸測試：`test_practice_api.py::TestQuotaRefundOnAIFailure`、`test_access.py::TestRefundQuota`
+>
+> 以下為原始說明。
 
 `core/access.py` 在送出作答時就扣 1 次（只拿到提示、沒評分的那次也算），
 之後 Gemini 逾時或回 429 導致評分失敗，**次數不會退回**。

@@ -164,6 +164,7 @@
 | `escalation` | `message`, `suggest_teacher_review` |
 | `errors_detected` | `errors[]`（`code`, `label`, `severity`, `evidence`, `explanation`）|
 | `error` | `message`, `detail` |
+| `quota_refunded` | `reason`（`evaluation_error` / `dimension_failed`）, `quota`（`used`, `quota`）— 自主模式評分因系統錯誤失敗時退回 1 次，見 KNOWN_GAPS #18 |
 
 ---
 
