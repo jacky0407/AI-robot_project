@@ -74,7 +74,7 @@
 
 ## 3. 分工與待辦（依 TEAM_ROLES.md）
 
-> 成員對應依 commit 紀錄推定，**11/9 開會時請確認**。
+> 專案負責人：@Yorukidzuki、@KafuuBob、@jacky0407。
 
 ### 成員一 前端 — @Yorukidzuki
 
@@ -83,6 +83,7 @@
 - [ ] 確認 `npm run build` 在乾淨環境可過
 - [ ] 教授監控總覽頁（簡易版）：學生 × 步驟表格，點進去看作答與 AI 評分（配合成員二的 API）
 - [ ] 前端移除已不使用的 `user_id`、`teacher_id` 傳送（KNOWN_GAPS #8）
+- [ ] 寫 Demo 腳本：學生加入課程 → 作答 → 看 AI 評分與提示 → 修改 → 教師複核
 - [ ] Demo 後：機器人編輯頁、版本比對頁
 
 ### 成員二 資料庫與驗證 — @KafuuBob
@@ -93,6 +94,7 @@
 - [ ] 鎖定 `requirements.txt` 版本（H2）
 - [ ] 教授監控總覽 API：`GET /api/admin/conversations`（學生 × 步驟、最新分數、狀態），需 `require_staff` + 單元測試
 - [ ] 清掉 git 裡的 `node_modules/` 與空檔案（H1）
+- [ ] Demo 帳號與資料匯入正式 Supabase（密碼不要用 seed 的 `Test1234!`）（D5）
 - [ ] Demo 後：`/api/export/teaching` CSV 匯出
 
 ### 成員三 後端 AI — @jacky0407
@@ -103,15 +105,11 @@
 - [ ] 評分失敗退回額度（H5）
 - [ ] GitHub Actions 跑 pytest（H3）
 - [ ] 合併 PR #35
+- [ ] 和教授確認 2–3 個步驟的 Rubric、練習案例、分層提示文字，以及 Coherence 三條規則（D5、KNOWN_GAPS #11）
 
-### 測試、內容與 Demo 準備 — @nick5wu @RachelWU843
+### 全員
 
-> 兩位目前在程式庫沒有 commit，以下為**暫定**分工，11/9 開會確認。
-
-- [ ] 準備 Demo 資料：與教授確認 2–3 個步驟的 Rubric、練習案例、分層提示文字（D5）
-- [ ] 撰寫 Demo 腳本：學生加入課程 → 作答 → 看 AI 評分與提示 → 修改 → 教師複核
-- [ ] 部署後依 `docs/SETUP.md` 第 4 節驗收清單在雲端環境完整測一輪，問題開 Issue
-- [ ] 確認 Coherence 三條規則內容（KNOWN_GAPS #11），請教授過目
+- [ ] 部署後（11/13）依 `docs/SETUP.md` 第 4 節驗收清單在雲端完整測一輪，問題開 Issue
 
 ---
 
@@ -131,10 +129,9 @@
 
 ## 5. 11/9 會議要決定的事
 
-1. **成員對應確認**：nick5wu、RachelWU843 的角色
-2. **Gemini 方案**：付費？用哪個模型？預算多少？（D2）
-3. **部署平台**：後端 Render（免費會休眠）或其他（Cloud Run / Railway）；是否付費
-4. **Demo 範圍**：要展示哪幾個步驟／機器人；監控總覽頁是否列入 Demo
-5. **Demo 帳號與資料**：用新的 Supabase 專案，還是沿用開發用的
-6. `require_teacher_review` 是否要擋下一步解鎖
-7. `/docs`（Swagger）正式環境要不要關
+1. **Gemini 方案**：付費？用哪個模型？預算多少？（D2）
+2. **部署平台**：後端 Render（免費會休眠）或其他（Cloud Run / Railway）；是否付費
+3. **Demo 範圍**：要展示哪幾個步驟／機器人；監控總覽頁是否列入 Demo
+4. **Demo 帳號與資料**：用新的 Supabase 專案，還是沿用開發用的
+5. `require_teacher_review` 是否要擋下一步解鎖
+6. `/docs`（Swagger）正式環境要不要關
