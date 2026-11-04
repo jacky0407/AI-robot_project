@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -50,4 +52,12 @@ def read_root():
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "environment": settings.environment}
+    # 部署除錯用：看得出雲端跑的是哪個分支／commit、CORS 實際允許哪些前端網址。
+    # 前端網址本來就是公開的，不含任何秘密；RENDER_GIT_* 由 Render 自動提供，本機為 null。
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "branch": os.environ.get("RENDER_GIT_BRANCH"),
+        "commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:7] or None,
+        "cors_origins": settings.cors_origins,
+    }
