@@ -328,7 +328,9 @@ function StudentWorkspace() {
     };
   }, [progressModuleId, progressKey]);
   // 只用目前模組的資料；剛切換模組、還沒讀到時為 null（先全部顯示、不擋）
-  const unlock = unlockState?.moduleId === progressModuleId ? unlockState.byStep : null;
+  // 注意：模組清單還沒載入時 progressModuleId 是 undefined，不能只寫 unlockState?.moduleId === progressModuleId
+  // （undefined === undefined 會成立，接著讀 null.byStep 整頁崩潰，2026-11-04 部署測試）
+  const unlock = unlockState && unlockState.moduleId === progressModuleId ? unlockState.byStep : null;
 
   // 今天還能作答幾次（只查不扣）。切換步驟、送出作答後重新查
   useEffect(() => {

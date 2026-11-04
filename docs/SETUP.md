@@ -192,6 +192,18 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 4. 回 Render 把 `FRONTEND_URL` 改成 `https://<vercel 網址>,http://localhost:3000`，按 Manual Deploy
 5. 照第 4 節驗收清單在雲端跑一輪
 
+### 每次更新部署的順序（2026-11-04 部署測試的教訓）
+
+1. **先跑新的 migration**：看這次合併有沒有新增 `supabase/migrations/0xx_*.sql`，有就先在 Supabase SQL Editor 執行
+   （後端先上線、資料庫沒跟上時，例如沒跑 010，模組管理頁會回 503 `MIGRATION_REQUIRED`）
+2. 再到 Render 按 Manual Deploy；Vercel 合併到 main 會自動部署
+3. 開 `/api/health` 確認 `branch`、`commit` 是剛部署的版本
+
+### Supabase Auth 網址（漏設會讓登入導到 localhost）
+
+- **Site URL** 要是 Vercel 正式網址，不是 `http://localhost:3000`（忘記密碼、註冊驗證信沒帶 redirect 時會用它）
+- **Redirect URLs** 要有 `https://<vercel 網址>/**`，結尾的 `/**` 不能省，否則配不到 `/auth/callback`
+
 ### 注意
 
 - `render.yaml` 設了 `autoDeploy: false`：main 合併後**不會**自動更新，要到 Render 按 Manual Deploy
