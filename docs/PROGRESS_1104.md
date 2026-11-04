@@ -111,6 +111,21 @@
 
 - [ ] 部署後（11/13）依 `docs/SETUP.md` 第 4 節驗收清單在雲端完整測一輪，問題開 Issue
 
+### 對外協作（不屬於本專案分工）
+
+- **教授（RachelWU843）**：Demo 對象；Rubric、案例、提示文字、Coherence 規則的內容由教授確認
+- **nick5wu**：負責把教授的內容（XR 系統）接到我們網站的 `/xr` 底下
+
+要讓 XR 在雲端接上，我們這邊要先做好：
+
+| 項目 | 現況 | 負責 |
+|------|------|------|
+| PR #31（Portal + `/xr` 登入保護） | 待合併 | 前端 |
+| 角色 claim（`011_role_claim.sql` + Supabase Access Token Hook），XR 端讀 token 的 `user_role` 要用 | 未做 | 資料庫 |
+| XR 必須和我們用**同一個** Supabase 專案才能共用登入 → Demo 用哪個 Supabase 要通知 nick5wu | 待 11/9 決定 | 資料庫 |
+| Vercel 設定 `XR_FRONTEND_URL`、`XR_BACKEND_URL`（需 XR 端給雲端網址） | 未做 | 前端 |
+| XR 若用 Unity WebGL，`next.config.ts` 的 CSP 要加 `'wasm-unsafe-eval'` | 等 XR 端回覆 | 前端 |
+
 ---
 
 ## 4. 時程
@@ -135,3 +150,4 @@
 4. **Demo 帳號與資料**：用新的 Supabase 專案，還是沿用開發用的
 5. `require_teacher_review` 是否要擋下一步解鎖
 6. `/docs`（Swagger）正式環境要不要關
+7. **XR 整合要不要列入 11/16 Demo**：要的話，XR 端也要在 11/12 前上雲並給網址
