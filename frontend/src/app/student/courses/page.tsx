@@ -4,6 +4,7 @@
 // 後端：GET /api/courses/mine、POST /api/courses/join（backend/api/courses.py）
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch } from "@/utils/api";
@@ -150,12 +151,17 @@ export default function StudentCoursesPage() {
         }}
       >
         <StudentModeTabs />
-        <button
-          onClick={handleSignOut}
-          style={{ padding: "6px 12px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", cursor: "pointer" }}
-        >
-          登出
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <Link href="/student/profile" style={{ fontSize: "12px", color: "#cbd5e1", textDecoration: "none" }}>
+            👤 個人資料
+          </Link>
+          <button
+            onClick={handleSignOut}
+            style={{ padding: "6px 12px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", cursor: "pointer" }}
+          >
+            登出
+          </button>
+        </div>
       </header>
 
       <main style={{ maxWidth: "1100px", margin: "28px auto", padding: "0 20px" }}>
