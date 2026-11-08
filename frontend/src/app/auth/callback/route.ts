@@ -1,19 +1,19 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/utils/supabase/server'
+import { DEFAULT_AFTER_LOGIN, safeNext, withNext } from '@/utils/redirect'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
   const errorCode = searchParams.get('error_code')
-  // 指定換完 session 後要去的頁面（目前只有重設密碼信會帶 next=/reset-password）
-  // 只接受站內路徑，避免被拿來當開放轉址
-  const next = searchParams.get('next')
-  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : null
+  // 換完 session 後要去的頁面：重設密碼信帶 /reset-password；從 XR 等頁面被導去登入時帶原本的頁面
+  // 只接受站內路徑（utils/redirect.ts），避免被拿來當開放轉址
+  const next = safeNext(searchParams.get('next'))
 
   // Supabase 在驗證階段就失敗（連結過期或已被使用）
   if (errorCode === 'otp_expired') {
     // 重設密碼頁自己會顯示「連結已失效」並提供重寄
-    return NextResponse.redirect(`${origin}${safeNext ?? '/?error=link_expired'}`)
+    return NextResponse.redirect(`${origin}${next === '/reset-password' ? next : '/?error=link_expired'}`)
   }
 
   if (code) {
@@ -22,8 +22,9 @@ export async function GET(request: Request) {
     // 把 Google / 驗證信給的 code 換成 session
     const { error } = await supabase.auth.exchangeCodeForSession(code)
 
-    if (!error && safeNext) {
-      return NextResponse.redirect(`${origin}${safeNext}`)
+    // 重設密碼：不管有沒有完成註冊，都直接去設定新密碼
+    if (!error && next === '/reset-password') {
+      return NextResponse.redirect(`${origin}${next}`)
     }
 
     if (!error) {
@@ -45,14 +46,13 @@ export async function GET(request: Request) {
         }
 
         // 第一次登入（尚未完成註冊）：先補完基本資料與同意條款
+        // 填完後回到原本要去的頁面
         if (!profile.registration_completed) {
-          return NextResponse.redirect(`${origin}/onboarding`)
+          return NextResponse.redirect(`${origin}${withNext('/onboarding', next)}`)
         }
 
-        const isStaff = profile.role === 'owner' || profile.role === 'assistant'
-        return NextResponse.redirect(
-          `${origin}${isStaff ? '/admin/courses' : '/student/courses'}`
-        )
+        // 回到原本要去的頁面，否則到系統選擇頁（兩系統共用登入整合方案 #2）
+        return NextResponse.redirect(`${origin}${next ?? DEFAULT_AFTER_LOGIN}`)
       }
     }
   }
