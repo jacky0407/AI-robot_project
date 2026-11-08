@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
+import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 
 // ─── 步驟與模組型別定義 ───
 type Step = {
@@ -49,14 +50,8 @@ type HintStatus = { hints_used: number; total_levels: number | null; next_level_
 type StepProgress = { step_id: string; passed: boolean; locked: boolean; locked_by: string | null };
 type CaseData = { id: string; title: string; case_background: string };
 
-type Submission = {
-  id: string;
-  attempt_number: number;
-  status: string;
-  created_at: string;
-  user_input_content?: string;
-  ai_evaluations: { total_score: number | null }[] | { total_score: number | null } | null;
-};
+// 歷次作答（GET /history），型別與版本比對共用
+type Submission = HistoryAttempt;
 
 // 一次送出的串流結果（逐事件累積）
 type RunState = {
@@ -159,6 +154,7 @@ function StudentWorkspace() {
   const [revealedHints, setRevealedHints] = useState<Hint[]>([]);
   const [hintMessage, setHintMessage] = useState("");
   const [history, setHistory] = useState<Submission[]>([]);
+  const [showCompare, setShowCompare] = useState(false);
   const [progressKey, setProgressKey] = useState(0);
   const [isLoadingHint, setIsLoadingHint] = useState(false);
 
@@ -173,6 +169,7 @@ function StudentWorkspace() {
     setHintStatus(null);
     setHintStatusError(false);
     setHistory([]);
+    setShowCompare(false);
   };
 
   // 1. 初始化讀取使用者與模組步驟清單
@@ -858,7 +855,17 @@ function StudentWorkspace() {
             {/* 作答版本紀錄 */}
             {history.length > 0 && (
               <div style={panel}>
-                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>📜 作答紀錄</h3>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>📜 作答紀錄</h3>
+                  {history.length >= 2 && (
+                    <button
+                      onClick={() => setShowCompare(true)}
+                      style={{ flexShrink: 0, padding: "5px 12px", borderRadius: "8px", border: "1px solid #38bdf8", background: "none", color: "#38bdf8", fontSize: "12px", fontWeight: "bold", cursor: "pointer" }}
+                    >
+                      ⇄ 比較版本
+                    </button>
+                  )}
+                </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {[...history].reverse().map((sub) => {
                     const status = STATUS_LABEL[sub.status as AttemptStatus];
@@ -973,6 +980,8 @@ function StudentWorkspace() {
         </section>
       </main>
       )}
+
+      {showCompare && history.length >= 2 && <VersionCompare attempts={history} onClose={() => setShowCompare(false)} />}
     </div>
   );
 }
