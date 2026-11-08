@@ -6,8 +6,6 @@ import Link from "next/link";
 import { createClient } from "@/utils/supabase/client";
 import { DEFAULT_AFTER_LOGIN, safeNext, withNext } from "@/utils/redirect";
 
-type RoleType = "student" | "teacher" | null;
-
 const CALLBACK_ERRORS: Record<string, string> = {
   link_expired: "驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。",
   profile: "無法讀取使用者資料，請稍後再試或聯絡管理員",
@@ -30,7 +28,6 @@ function HomeContent() {
   const next = safeNext(searchParams.get("next"));
   // Google 登入、註冊驗證信回來時經過 /auth/callback，要把 next 一起帶過去
   const callbackUrl = () => `${window.location.origin}${withNext("/auth/callback", next)}`;
-  const [selectedRole, setSelectedRole] = useState<RoleType>(null);
   const [isLoginMode, setIsLoginMode] = useState(true);
 
   const [formData, setFormData] = useState({
@@ -45,23 +42,17 @@ function HomeContent() {
   const [infoMsg, setInfoMsg] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const redirectByRole = async (userId: string) => {
+  // 登入後的去向：身分一律以資料庫 profiles.role 為準，不需要在登入前選身分
+  // （學生、教師在 /portal 會看到各自可用的系統，/admin 由 middleware 擋非教師）
+  const redirectAfterLogin = async (userId: string) => {
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("role, registration_completed")
+      .select("registration_completed")
       .eq("id", userId)
       .single();
 
     if (error || !profile) {
-      setAuthError("無法讀取使用者角色權限");
-      return false;
-    }
-
-    const isStaff = profile.role === "owner" || profile.role === "assistant";
-
-    if (selectedRole === "teacher" && !isStaff) {
-      await supabase.auth.signOut();
-      setAuthError("此帳號沒有教師/工作人員權限，請改用學生身分登入");
+      setAuthError("無法讀取使用者資料，請稍後再試或聯絡管理員");
       return false;
     }
 
@@ -84,7 +75,7 @@ function HomeContent() {
   }, []);
 
   const handleContinue = async () => {
-    if (existingUser) await redirectByRole(existingUser.id);
+    if (existingUser) await redirectAfterLogin(existingUser.id);
   };
 
   const handleSignOut = async () => {
@@ -111,11 +102,6 @@ function HomeContent() {
       setAuthError("Google 登入失敗：" + error.message);
       setGoogleLoading(false);
     }
-  };
-
-  const handleSelectRole = (role: RoleType) => {
-    setSelectedRole(role);
-    setIsLoginMode(true);
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -148,7 +134,7 @@ function HomeContent() {
         return;
       }
 
-      const ok = await redirectByRole(data.user.id);
+      const ok = await redirectAfterLogin(data.user.id);
       if (!ok) setSubmitting(false);
       return;
     }
@@ -179,7 +165,7 @@ function HomeContent() {
     }
 
     if (data.session && data.user) {
-      const ok = await redirectByRole(data.user.id);
+      const ok = await redirectAfterLogin(data.user.id);
       if (!ok) setSubmitting(false);
       return;
     }
@@ -199,7 +185,7 @@ function HomeContent() {
           專業能力情境化訓練系統
         </h1>
         <p style={{ fontSize: "14px", color: "#94a3b8", margin: 0 }}>
-          {selectedRole === null ? "請選擇您的身分通道開始登入" : `目前入口：${selectedRole === "student" ? "學生登入" : "教師/工作人員登入"}`}
+          學生、教師與工作人員都從這裡登入，系統會依帳號身分開啟對應功能
         </p>
       </div>
 
@@ -237,172 +223,132 @@ function HomeContent() {
         </div>
       )}
 
-      {selectedRole === null && (
-        <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", justifyContent: "center" }}>
-          <div
-            onClick={() => handleSelectRole("student")}
-            style={{ width: "220px", height: "260px", backgroundColor: "#1e3a8a", border: "2px solid #3b82f6", borderRadius: "24px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "transform 0.2s" }}
-          >
-            <div style={{ width: "50px", height: "50px", borderRadius: "16px", backgroundColor: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
-              🎓
-            </div>
-            <span style={{ fontSize: "24px", fontWeight: "bold", color: "#fff" }}>學生</span>
-            <span style={{ fontSize: "12px", color: "#93c5fd", marginTop: "8px" }}>IEP 逐步撰寫練習</span>
-          </div>
-
-          <div
-            onClick={() => handleSelectRole("teacher")}
-            style={{ width: "220px", height: "260px", backgroundColor: "#14532d", border: "2px solid #22c55e", borderRadius: "24px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", cursor: "pointer", transition: "transform 0.2s" }}
-          >
-            <div style={{ width: "50px", height: "50px", borderRadius: "16px", backgroundColor: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
-              🧑‍🏫
-            </div>
-            <span style={{ fontSize: "24px", fontWeight: "bold", color: "#fff" }}>教師/人員</span>
-            <span style={{ fontSize: "12px", color: "#86efac", marginTop: "8px" }}>後台複核・分析</span>
-          </div>
-        </div>
-      )}
-
-      {selectedRole !== null && (
-        <div style={{ width: "100%", maxWidth: "380px", backgroundColor: "#1e293b", borderRadius: "24px", border: "1px solid rgba(255,255,255,0.15)", padding: "28px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-            <span style={{ fontSize: "12px", padding: "3px 10px", borderRadius: "9999px", backgroundColor: selectedRole === "student" ? "#2563eb" : "#16a34a", color: "#fff" }}>
-              ● {selectedRole === "student" ? "學生登入" : "教師登入"}
-            </span>
+      <div style={{ width: "100%", maxWidth: "380px", backgroundColor: "#1e293b", borderRadius: "24px", border: "1px solid rgba(255,255,255,0.15)", padding: "28px" }}>
+        <div style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)", marginBottom: "16px" }}>
+          {[
+            { label: "登入", value: true },
+            { label: "註冊", value: false },
+          ].map((tab) => (
             <button
-              onClick={() => setSelectedRole(null)}
-              style={{ fontSize: "12px", color: "#94a3b8", background: "none", border: "none", cursor: "pointer" }}
+              key={tab.label}
+              type="button"
+              onClick={() => {
+                setIsLoginMode(tab.value);
+                setAuthError("");
+                setInfoMsg("");
+              }}
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                borderRadius: "8px",
+                border: "none",
+                fontSize: "13px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                backgroundColor: isLoginMode === tab.value ? "#2563eb" : "transparent",
+                color: isLoginMode === tab.value ? "#fff" : "#94a3b8",
+              }}
             >
-              切換身分 ↺
+              {tab.label}
             </button>
-          </div>
+          ))}
+        </div>
 
-          <div style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)", marginBottom: "16px" }}>
-            {[
-              { label: "登入", value: true },
-              { label: "註冊", value: false },
-            ].map((tab) => (
-              <button
-                key={tab.label}
-                type="button"
-                onClick={() => {
-                  setIsLoginMode(tab.value);
-                  setAuthError("");
-                  setInfoMsg("");
-                }}
-                style={{
-                  flex: 1,
-                  padding: "8px 0",
-                  borderRadius: "8px",
-                  border: "none",
-                  fontSize: "13px",
-                  fontWeight: "bold",
-                  cursor: "pointer",
-                  backgroundColor: isLoginMode === tab.value ? (selectedRole === "student" ? "#2563eb" : "#16a34a") : "transparent",
-                  color: isLoginMode === tab.value ? "#fff" : "#94a3b8",
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+        <h2 style={{ fontSize: "18px", fontWeight: "bold", margin: "0 0 16px 0" }}>
+          {isLoginMode ? "登入您的帳號" : "註冊新帳號"}
+        </h2>
 
-          <h2 style={{ fontSize: "18px", fontWeight: "bold", margin: "0 0 16px 0" }}>
-            {isLoginMode ? "登入您的帳號" : "註冊新帳號"}
-          </h2>
+        {!isLoginMode && (
+          <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 16px 0", lineHeight: 1.6 }}>
+            新帳號預設為學生身分。教師／工作人員註冊後，請聯絡管理員開通後台權限。
+          </p>
+        )}
 
-          {!isLoginMode && selectedRole === "teacher" && (
-            <p style={{ fontSize: "12px", color: "#fbbf24", margin: "0 0 16px 0", lineHeight: 1.5 }}>
-              教師／工作人員帳號註冊後，需由管理員開通權限才能進入後台。
-            </p>
-          )}
+        <button
+          type="button"
+          onClick={handleGoogleLogin}
+          disabled={googleLoading}
+          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "#fff", color: "#1f2937", fontWeight: "bold", fontSize: "14px", cursor: googleLoading ? "not-allowed" : "pointer", opacity: googleLoading ? 0.5 : 1 }}
+        >
+          <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+          </svg>
+          {googleLoading ? "跳轉中..." : isLoginMode ? "使用 Google 帳號登入" : "使用 Google 帳號註冊"}
+        </button>
 
-          <button
-            type="button"
-            onClick={handleGoogleLogin}
-            disabled={googleLoading}
-            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "#fff", color: "#1f2937", fontWeight: "bold", fontSize: "14px", cursor: googleLoading ? "not-allowed" : "pointer", opacity: googleLoading ? 0.5 : 1 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-            </svg>
-            {googleLoading ? "跳轉中..." : isLoginMode ? "使用 Google 帳號登入" : "使用 Google 帳號註冊"}
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", margin: "16px 0", fontSize: "12px", color: "#64748b" }}>
+          <div style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.15)" }} />
+          或使用電子郵件
+          <div style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.15)" }} />
+        </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", margin: "16px 0", fontSize: "12px", color: "#64748b" }}>
-            <div style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.15)" }} />
-            或使用電子郵件
-            <div style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.15)" }} />
-          </div>
-
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {!isLoginMode && (
-              <input
-                type="text"
-                name="name"
-                required
-                placeholder="姓名 / 稱呼"
-                value={formData.name}
-                onChange={handleChange}
-                style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none" }}
-              />
-            )}
-
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          {!isLoginMode && (
             <input
-              type="email"
-              name="email"
+              type="text"
+              name="name"
               required
-              placeholder="電子信箱 (Email)"
-              value={formData.email}
+              placeholder="姓名 / 稱呼"
+              value={formData.name}
               onChange={handleChange}
               style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none" }}
             />
+          )}
 
-            <div>
-              <input
-                type="password"
-                name="password"
-                required
-                placeholder="密碼"
-                value={formData.password}
-                onChange={handleChange}
-                style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none", boxSizing: "border-box" }}
-              />
-              {/* 忘記密碼連結 */}
-              {isLoginMode && (
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
-                  <Link
-                    href={`/forgot-password?email=${encodeURIComponent(formData.email)}`}
-                    style={{ fontSize: "12px", color: "#38bdf8", textDecoration: "none" }}
-                  >
-                    忘記密碼？
-                  </Link>
-                </div>
-              )}
-            </div>
+          <input
+            type="email"
+            name="email"
+            required
+            placeholder="電子信箱 (Email)"
+            value={formData.email}
+            onChange={handleChange}
+            style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none" }}
+          />
 
-            <button
-              type="submit"
-              disabled={submitting}
-              style={{ marginTop: "8px", opacity: submitting ? 0.5 : 1, padding: "10px", borderRadius: "8px", border: "none", backgroundColor: selectedRole === "student" ? "#2563eb" : "#16a34a", color: "#fff", fontWeight: "bold", fontSize: "14px", cursor: "pointer" }}
-            >
-              {submitting ? "處理中..." : isLoginMode ? "登入並進入系統" : "建立帳號"}
-            </button>
-          </form>
-
-          <div style={{ marginTop: "16px", textAlign: "center", fontSize: "12px", color: "#94a3b8" }}>
-            <button
-              onClick={() => setIsLoginMode(!isLoginMode)}
-              style={{ background: "none", border: "none", color: "#38bdf8", cursor: "pointer", textDecoration: "underline" }}
-            >
-              {isLoginMode ? "還沒有帳號？前往註冊 →" : "← 已有帳號？返回登入"}
-            </button>
+          <div>
+            <input
+              type="password"
+              name="password"
+              required
+              placeholder="密碼"
+              value={formData.password}
+              onChange={handleChange}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", outline: "none", boxSizing: "border-box" }}
+            />
+            {/* 忘記密碼連結 */}
+            {isLoginMode && (
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
+                <Link
+                  href={`/forgot-password?email=${encodeURIComponent(formData.email)}`}
+                  style={{ fontSize: "12px", color: "#38bdf8", textDecoration: "none" }}
+                >
+                  忘記密碼？
+                </Link>
+              </div>
+            )}
           </div>
+
+          <button
+            type="submit"
+            disabled={submitting}
+            style={{ marginTop: "8px", opacity: submitting ? 0.5 : 1, padding: "10px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontWeight: "bold", fontSize: "14px", cursor: "pointer" }}
+          >
+            {submitting ? "處理中..." : isLoginMode ? "登入並進入系統" : "建立帳號"}
+          </button>
+        </form>
+
+        <div style={{ marginTop: "16px", textAlign: "center", fontSize: "12px", color: "#94a3b8" }}>
+          <button
+            onClick={() => setIsLoginMode(!isLoginMode)}
+            style={{ background: "none", border: "none", color: "#38bdf8", cursor: "pointer", textDecoration: "underline" }}
+          >
+            {isLoginMode ? "還沒有帳號？前往註冊 →" : "← 已有帳號？返回登入"}
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
