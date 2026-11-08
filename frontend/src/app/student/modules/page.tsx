@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
 import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
+import BotMemoryPanel from "./BotMemoryPanel";
 
 // ─── 步驟與模組型別定義 ───
 type Step = {
@@ -851,6 +852,9 @@ function StudentWorkspace() {
                 </div>
               ))}
             </div>
+
+            {/* 機器人記憶：送出後（progressKey 變動）重新讀 */}
+            {selectedStep && <BotMemoryPanel stepId={selectedStep.id} refreshKey={progressKey} panelStyle={panel} />}
 
             {/* 作答版本紀錄 */}
             {history.length > 0 && (
