@@ -10,7 +10,7 @@ from datetime import date
 import pytest
 from fastapi import HTTPException
 
-from core.access import StepAccess, check_step_access, consume_quota, quota_status
+from core.access import StepAccess, check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser
 
 TODAY = date(2026, 10, 21)
@@ -257,6 +257,37 @@ class TestConsumeQuota:
         with pytest.raises(HTTPException) as exc:
             consume_quota(db, StepAccess(mode="permission", permission_id="perm-1"), TODAY)
         assert_denied(exc, 403, "NOT_ASSIGNED")
+
+
+class TestRefundQuota:
+
+    @pytest.mark.parametrize("mode", ["staff", "course"])
+    def test_staff_and_course_mode_are_not_refunded(self, mode):
+        db = FakeDB()
+        assert refund_quota(db, StepAccess(mode=mode), TODAY) is None
+        assert db.rpc_calls == []
+
+    def test_permission_mode_refunds_one_with_taipei_date(self):
+        db = FakeDB(rpc_result=[{"used": 2, "quota": 10}])
+        result = refund_quota(db, StepAccess(mode="permission", permission_id="perm-1"), TODAY)
+
+        assert result == {"used": 2, "quota": 10}
+        assert db.rpc_calls == [
+            ("refund_tool_quota", {"p_permission_id": "perm-1", "p_today": "2026-10-21"})
+        ]
+
+    def test_nothing_to_refund_returns_none(self):
+        """跨日或已經是 0 次：資料庫函式回傳空集合"""
+        db = FakeDB(rpc_result=[])
+        assert refund_quota(db, StepAccess(mode="permission", permission_id="perm-1"), TODAY) is None
+
+    def test_database_error_is_swallowed(self):
+        """還沒跑 migration 011 時 rpc 會失敗：只記 log，不可蓋掉原本的評分錯誤"""
+        class BrokenDB(FakeDB):
+            def rpc(self, name, params):
+                raise RuntimeError("function refund_tool_quota does not exist")
+
+        assert refund_quota(BrokenDB(), StepAccess(mode="permission", permission_id="perm-1"), TODAY) is None
 
 
 # ──────────────────────────────────────────

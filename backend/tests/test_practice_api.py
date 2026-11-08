@@ -39,6 +39,7 @@ def assigned_via_course(monkeypatch):
     """
     monkeypatch.setattr(practice, "check_step_access", lambda db, user, step: StepAccess(mode="course"))
     monkeypatch.setattr(practice, "consume_quota", lambda db, access: None)
+    monkeypatch.setattr(practice, "check_step_unlocked", lambda db, user, step: None)
 
 
 # ──────────────────────────────────────────
@@ -218,6 +219,9 @@ STEP_ROW = {
 
 CLEAN_ANSWER = "小明在積木角能專注建構約二十分鐘，展現良好的視覺空間能力。"
 
+# 前端用 crypto.randomUUID() 產生的練習 Session 編號
+SESSION_ID = "5e551011-0000-4000-8000-000000000001"
+
 BODY = {
     "module_id": "22222222-2222-2222-2222-222222222222",
     "step_id": "step-1",
@@ -273,7 +277,7 @@ def submit(fake_db: FakeSupabase, llm_responses: list[str], body: dict = None):
     with patch.object(practice, "get_supabase", return_value=fake_db):
         practice.tutor_agent._evaluator._llm = mock_llm(llm_responses)
         res = client.post(
-            "/api/practice/sessions/test-session/submit",
+            f"/api/practice/sessions/{SESSION_ID}/submit",
             json=body or BODY,
         )
     events = parse_sse(res.text) if res.status_code == 200 else []
@@ -550,7 +554,7 @@ def submit_with_agents(
         practice.error_detector = ErrorDetector(llm=detector_llm or _AsyncMock())
         practice.tutor_agent._hints = HintEngine(llm=hint_llm or _AsyncMock())
         res = client.post(
-            "/api/practice/sessions/test-session/submit",
+            f"/api/practice/sessions/{SESSION_ID}/submit",
             json=body or BODY,
         )
     events = parse_sse(res.text) if res.status_code == 200 else []
@@ -923,6 +927,7 @@ class TestAuth:
         ("get", "/api/practice/sessions/s1/history?step_id=step-1"),
         ("post", "/api/practice/modules/m1/coherence-check"),
         ("get", "/api/practice/steps/step-1/quota"),
+        ("get", "/api/practice/modules/m1/progress"),
         ("get", "/api/practice/steps/step-1/memory"),
     ])
     def test_without_token_returns_401_and_never_touches_db(self, method, path):
@@ -1037,6 +1042,65 @@ class TestAccessAndQuota:
 
         assert res.status_code == 403
         assert consumed == []
+
+
+class TestQuotaRefundOnAIFailure:
+    """AI 評分因系統錯誤失敗時退回額度（KNOWN_GAPS #18）"""
+
+    @pytest.fixture
+    def permission_mode(self, monkeypatch):
+        refunds = []
+        monkeypatch.setattr(
+            practice, "check_step_access",
+            lambda db, user, step: StepAccess(mode="permission", permission_id="perm-1"),
+        )
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: {"used": 3, "quota": 10})
+        monkeypatch.setattr(
+            practice, "refund_quota",
+            lambda db, access: refunds.append(access) or {"used": 2, "quota": 10},
+        )
+        return refunds
+
+    def test_whole_evaluation_error_refunds_quota(self, permission_mode, monkeypatch):
+        async def boom(**kwargs):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+            yield  # pragma: no cover - 讓它成為 async generator
+
+        monkeypatch.setattr(practice.tutor_agent, "process_stream", boom)
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        names = [e for e, _ in events]
+        assert "error" in names
+        assert ("quota_refunded", {"reason": "evaluation_error", "quota": {"used": 2, "quota": 10}}) in events
+        assert len(permission_mode) == 1
+
+    def test_failed_dimension_refunds_quota(self, permission_mode):
+        responses = ["這不是 JSON", dim_response("B", 3), dim_response("C", 3), SYNTH_RESPONSE]
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), responses)
+
+        assert any(e == "score_complete" for e, _ in events)
+        assert ("quota_refunded", {"reason": "dimension_failed", "quota": {"used": 2, "quota": 10}}) in events
+        assert len(permission_mode) == 1
+
+    def test_successful_evaluation_does_not_refund(self, permission_mode):
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert not any(e == "quota_refunded" for e, _ in events)
+        assert permission_mode == []
+
+    def test_course_mode_never_refunds(self, monkeypatch):
+        refunds = []
+        monkeypatch.setattr(practice, "refund_quota", lambda db, access: refunds.append(access))
+
+        async def boom(**kwargs):
+            raise RuntimeError("timeout")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(practice.tutor_agent, "process_stream", boom)
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        assert any(e == "error" for e, _ in events)
+        assert refunds == []
 
 
 # ──────────────────────────────────────────
@@ -1182,3 +1246,191 @@ class TestBotMemory:
 
         assert res.status_code == 403
         assert fake_db.find("step_attempts", "select") == []
+
+
+# ──────────────────────────────────────────
+# 步驟解鎖與模組進度（core/step_unlock.py）
+# ──────────────────────────────────────────
+
+from tests.inmemory_db import InMemoryDB
+
+
+class TestStepUnlock:
+
+    def test_locked_step_is_rejected_before_consuming_quota(self, monkeypatch):
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(1))
+        monkeypatch.setattr(practice, "check_step_unlocked", deny(403, "STEP_LOCKED"))
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "STEP_LOCKED"
+        assert consumed == []
+        assert fake_db.find("step_attempts", "insert") == []
+
+    def test_unlock_check_receives_step_from_database(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(practice, "check_step_unlocked", lambda db, user, step: seen.append((user.id, step["id"])))
+        submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert seen == [(STUDENT.id, "step-1")]
+
+
+def progress_db(published=True):
+    steps = [
+        {"id": f"s{n}", "module_id": "m1", "step_order": n, "step_title": f"步驟{n}",
+         "is_required": True, "is_active": True, "pass_score": 70}
+        for n in (1, 2)
+    ]
+    return InMemoryDB(
+        learning_modules=[{"id": "m1", "is_published": published}],
+        module_steps=steps,
+        step_attempts=[],
+    )
+
+
+def get_progress(db):
+    client = TestClient(main.app)
+    with patch.object(practice, "get_supabase", return_value=db):
+        return client.get("/api/practice/modules/m1/progress")
+
+
+class TestModuleProgressEndpoint:
+
+    def test_student_sees_locks(self):
+        res = get_progress(progress_db())
+
+        assert res.status_code == 200
+        assert [(p["step_id"], p["locked"]) for p in res.json()["data"]] == [("s1", False), ("s2", True)]
+
+    def test_student_cannot_see_unpublished_module(self):
+        res = get_progress(progress_db(published=False))
+
+        assert res.status_code == 404
+        assert res.json()["detail"]["code"] == "MODULE_NOT_FOUND"
+
+    def test_teacher_sees_no_locks_even_when_unpublished(self):
+        main.app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="t1", role="owner")
+        res = get_progress(progress_db(published=False))
+
+        assert res.status_code == 200
+        assert all(p["locked"] is False for p in res.json()["data"])
+
+
+# ──────────────────────────────────────────
+# 測試報告 2026-11-02 #5：通過過的作答不算進轉介次數
+# ──────────────────────────────────────────
+
+def scored(number: int, total: int) -> dict:
+    return {"id": f"attempt-{number}", "attempt_number": number,
+            "ai_evaluations": [{"total_score": total, "dimension_scores": LOW_DIMS}]}
+
+
+class TestEscalationCount:
+
+    def test_passed_attempt_does_not_count_toward_escalation(self):
+        """實測：第 1 次 100 分、第 2 次 25 分、第 3 次只給提示、第 4 次 50 分 → 第 5 次不該轉介"""
+        history = [
+            scored(4, 50),
+            {"id": "attempt-3", "attempt_number": 3, "ai_evaluations": []},
+            scored(2, 25),
+            scored(1, 100),
+        ]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=history)
+        res, events = submit_with_agents(fake_db, FULL_EVALUATION, hint_llm=mock_llm(["想想看你觀察到什麼？"]))
+
+        decision = next(d for e, d in events if e == "tutor_decision")
+        assert decision["action"] == "give_hint"
+
+    def test_three_failed_evaluations_still_escalate(self):
+        history = [scored(3, 40), scored(2, 30), scored(1, 20)]
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=history)
+        res, events = submit_with_agents(fake_db, FULL_EVALUATION)
+
+        decision = next(d for e, d in events if e == "tutor_decision")
+        assert decision["action"] == "escalate"
+
+    def test_count_failed_evaluations_helper(self):
+        attempts = [scored(4, 50), {"id": "a3", "ai_evaluations": []}, scored(2, 70), scored(1, 100)]
+        assert practice._count_failed_evaluations(attempts, 70.0) == 1
+
+
+# ──────────────────────────────────────────
+# 練習 Session：第一次送出時建立（migration 009）
+# ──────────────────────────────────────────
+
+def with_session_owner(fake_db: FakeSupabase, owner_id: str | None = None, *, broken: bool = False):
+    """讓 practice_sessions 查詢回傳指定的擁有者，或整張表不存在"""
+    respond = fake_db.respond
+
+    def respond_with_session(q):
+        if q.name == "practice_sessions":
+            if broken:
+                raise RuntimeError('relation "practice_sessions" does not exist')
+            if q.op == "select" and owner_id:
+                return FakeResult([{"user_id": owner_id}])
+        return respond(q)
+
+    fake_db.respond = respond_with_session
+    return fake_db
+
+
+class TestPracticeSession:
+
+    def test_invalid_session_id_returns_400_before_touching_db(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        client = TestClient(main.app)
+        with patch.object(practice, "get_supabase", return_value=fake_db):
+            res = client.post("/api/practice/sessions/temp-session-id/submit", json=BODY)
+
+        assert res.status_code == 400
+        assert res.json()["detail"]["code"] == "INVALID_SESSION_ID"
+        assert fake_db.calls == []
+
+    def test_first_submit_creates_session_and_links_attempt(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        created = fake_db.find("practice_sessions", "insert")
+        assert created[0]["payload"] == {"id": SESSION_ID, "user_id": STUDENT.id}
+        assert fake_db.find("step_attempts", "insert")[0]["payload"]["session_id"] == SESSION_ID
+
+    def test_own_existing_session_is_reused(self):
+        fake_db = with_session_owner(FakeSupabase(STEP_ROW, prev_attempts=[]), STUDENT.id)
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        assert fake_db.find("practice_sessions", "insert") == []
+        assert "last_active_at" in fake_db.find("practice_sessions", "update")[0]["payload"]
+        assert fake_db.find("step_attempts", "insert")[0]["payload"]["session_id"] == SESSION_ID
+
+    def test_someone_elses_session_is_rejected_without_consuming_quota(self, monkeypatch):
+        consumed = []
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: consumed.append(1))
+        fake_db = with_session_owner(FakeSupabase(STEP_ROW, prev_attempts=[]), OTHER_STUDENT_ID)
+        res, _ = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "SESSION_FORBIDDEN"
+        assert consumed == []
+        assert fake_db.find("step_attempts", "insert") == []
+
+    def test_before_migration_009_submit_still_works_without_session(self):
+        fake_db = with_session_owner(FakeSupabase(STEP_ROW, prev_attempts=[]), broken=True)
+        res, events = submit(fake_db, FULL_EVALUATION)
+
+        assert res.status_code == 200
+        assert any(e == "score_complete" for e, _ in events)
+        assert "session_id" not in fake_db.find("step_attempts", "insert")[0]["payload"]
+
+    def test_uppercase_uuid_is_normalized(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        client = TestClient(main.app)
+        with patch.object(practice, "get_supabase", return_value=fake_db):
+            practice.tutor_agent._evaluator._llm = mock_llm(FULL_EVALUATION)
+            res = client.post(f"/api/practice/sessions/{SESSION_ID.upper()}/submit", json=BODY)
+
+        assert res.status_code == 200
+        assert fake_db.find("practice_sessions", "insert")[0]["payload"]["id"] == SESSION_ID

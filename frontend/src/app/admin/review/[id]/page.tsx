@@ -78,8 +78,17 @@ export default function ReviewDetailPage() {
 
   const handleJudge = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setErrorMsg("");
+
+    // 後端也會擋（422），這裡先給看得懂的訊息
+    if (finalScore !== "") {
+      const score = Number(finalScore);
+      if (!Number.isInteger(score) || score < 0 || score > 100) {
+        setErrorMsg("最終分數要是 0–100 的整數");
+        return;
+      }
+    }
+    setSaving(true);
 
     const {
       data: { user },
@@ -222,6 +231,8 @@ export default function ReviewDetailPage() {
                   max={100}
                   value={finalScore}
                   onChange={(e) => setFinalScore(e.target.value)}
+                  // 預填 AI 分數：點進來就全選，直接打字會取代而不是接在後面（50 → 5040）
+                  onFocus={(e) => e.target.select()}
                   style={field}
                 />
               </label>

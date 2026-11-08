@@ -45,6 +45,8 @@ type ScoreComplete = {
 type Hint = { level: number; content: string; source?: "teacher" | "generated"; is_example?: boolean; warning?: string };
 type DetectedError = { code: string; label: string; severity?: string; evidence?: string; explanation?: string };
 type HintStatus = { hints_used: number; total_levels: number | null; next_level_available: boolean };
+// GET /api/practice/modules/{id}/progress：只列啟用中的步驟；locked = 前面的必修步驟還沒通過
+type StepProgress = { step_id: string; passed: boolean; locked: boolean; locked_by: string | null };
 type CaseData = { id: string; title: string; case_background: string };
 
 type Submission = {
@@ -100,6 +102,8 @@ type Quota = {
 // null = 尚未載入；{ blocked } = 沒被指派或期限已過（後端回 403），不能送出
 type QuotaState = { quota: Quota } | { blocked: string } | null;
 
+const LOCKED_LABEL = { text: "🔒 未解鎖", color: "#94a3b8", bg: "rgba(255,255,255,0.06)" };
+
 const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: string }> = {
   draft: { text: "草稿", color: "#94a3b8", bg: "rgba(255,255,255,0.08)" },
   submitted: { text: "評分中", color: "#fbbf24", bg: "rgba(245,158,11,0.15)" },
@@ -143,12 +147,15 @@ function StudentWorkspace() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [quotaState, setQuotaState] = useState<QuotaState>(null);
   const [quotaKey, setQuotaKey] = useState(0); // 送出後 +1，重新查剩餘次數
+  // 解鎖狀態（step_id → 進度），記下是哪個模組的；讀取失敗時不擋（後端送出時仍會檢查）
+  const [unlockState, setUnlockState] = useState<{ moduleId: string; byStep: Record<string, StepProgress> } | null>(null);
   const [piiWarning, setPiiWarning] = useState("");
   const [run, setRun] = useState<RunState | null>(null);
   const [caseData, setCaseData] = useState<CaseData | null>(null);
 
   // 分層提示與作答紀錄（GET /hints、GET /history）；送出或取用提示後 progressKey +1 重新抓
   const [hintStatus, setHintStatus] = useState<HintStatus | null>(null);
+  const [hintStatusError, setHintStatusError] = useState(false);
   const [revealedHints, setRevealedHints] = useState<Hint[]>([]);
   const [hintMessage, setHintMessage] = useState("");
   const [history, setHistory] = useState<Submission[]>([]);
@@ -164,6 +171,7 @@ function StudentWorkspace() {
     setRevealedHints([]);
     setHintMessage("");
     setHintStatus(null);
+    setHintStatusError(false);
     setHistory([]);
   };
 
@@ -292,16 +300,37 @@ function StudentWorkspace() {
       ([hints, hist]) => {
         if (!active) return;
         setHintStatus(hints.data);
+        setHintStatusError(false);
         setHistory(hist.data.submissions);
       },
       () => {
-        // 提示與紀錄是輔助資訊，讀不到不影響作答（沒被指派等原因會由剩餘次數區塊說明）
+        // 提示與紀錄是輔助資訊，讀不到不影響作答（沒被指派等原因會由剩餘次數區塊說明）；
+        // 但要讓畫面離開「讀取中」，學生才知道該重新整理
+        if (active) setHintStatusError(true);
       }
     );
     return () => {
       active = false;
     };
   }, [selectedStep, sessionId, progressKey]);
+
+  // 模組裡每一步的解鎖狀態。切換模組、送出作答後重新查（通過一步就可能解鎖下一步）
+  const progressModuleId = currentModuleId || modules[0]?.id;
+  useEffect(() => {
+    if (!progressModuleId) return;
+    let active = true;
+    apiFetch<{ data: StepProgress[] }>(`/api/practice/modules/${encodeURIComponent(progressModuleId)}/progress`).then(
+      (res) => active && setUnlockState({ moduleId: progressModuleId, byStep: Object.fromEntries(res.data.map((p) => [p.step_id, p])) }),
+      () => active && setUnlockState(null)
+    );
+    return () => {
+      active = false;
+    };
+  }, [progressModuleId, progressKey]);
+  // 只用目前模組的資料；剛切換模組、還沒讀到時為 null（先全部顯示、不擋）
+  // 注意：模組清單還沒載入時 progressModuleId 是 undefined，不能只寫 unlockState?.moduleId === progressModuleId
+  // （undefined === undefined 會成立，接著讀 null.byStep 整頁崩潰，2026-11-04 部署測試）
+  const unlock = unlockState && unlockState.moduleId === progressModuleId ? unlockState.byStep : null;
 
   // 今天還能作答幾次（只查不扣）。切換步驟、送出作答後重新查
   useEffect(() => {
@@ -463,7 +492,17 @@ function StudentWorkspace() {
         : undefined;
   // 從課程進來回課程頁；沒帶 course（自主探索的「開始練習」）回自主探索頁
   const backHref = courseId ? "/student/courses" : "/student/explore";
-  const submitDisabled = isSubmitting || Boolean(quotaBlockReason);
+  // 停用的步驟不在進度清單裡；前面的必修步驟沒通過就鎖住
+  const selectedProgress = selectedStep && unlock ? unlock[selectedStep.id] : undefined;
+  const lockReason =
+    selectedStep && unlock
+      ? !selectedProgress
+        ? "這個步驟已停用，請選擇其他步驟"
+        : selectedProgress.locked
+          ? `請先通過「${selectedProgress.locked_by}」，這一步才會解鎖`
+          : undefined
+      : undefined;
+  const submitDisabled = isSubmitting || Boolean(quotaBlockReason) || Boolean(lockReason);
 
   const currentMod = modules.find((m) => m.id === currentModuleId) || modules[0];
   const coherenceData = currentMod ? coherence[currentMod.id] : null;
@@ -585,10 +624,13 @@ function StudentWorkspace() {
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {currentMod?.steps.map((step) => {
+              {currentMod?.steps
+                .filter((step) => !unlock || step.id in unlock)
+                .map((step) => {
                 const isCurrent = selectedStep?.id === step.id;
                 const status = statusByStep[step.id] || "draft";
-                const badge = STATUS_LABEL[status];
+                const stepLock = unlock?.[step.id];
+                const badge = stepLock?.locked ? LOCKED_LABEL : STATUS_LABEL[status];
 
                 return (
                   <div
@@ -626,6 +668,11 @@ function StudentWorkspace() {
                     {step.pass_score && (
                       <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
                         通過標準：{step.pass_score} 分
+                      </div>
+                    )}
+                    {stepLock?.locked && (
+                      <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
+                        先通過「{stepLock.locked_by}」才會解鎖
                       </div>
                     )}
                   </div>
@@ -748,11 +795,15 @@ function StudentWorkspace() {
                 字數：{studentAnswer.length}・請勿輸入真實姓名、電話、身分證字號等個資
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                <QuotaBadge state={quotaState} />
+                {lockReason ? (
+                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>🔒 {lockReason}</span>
+                ) : (
+                  <QuotaBadge state={quotaState} />
+                )}
                 <button
                   onClick={handleSubmit}
                   disabled={submitDisabled}
-                  title={quotaBlockReason}
+                  title={lockReason ?? quotaBlockReason}
                   style={{
                     flexShrink: 0,
                     whiteSpace: "nowrap",
@@ -787,7 +838,9 @@ function StudentWorkspace() {
               <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0" }}>
                 {hintStatus
                   ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
-                  : "讀取提示狀態中…"}
+                  : hintStatusError
+                    ? "讀不到提示狀態，請稍後重新整理頁面"
+                    : "讀取提示狀態中…"}
                 {history.length === 0 && "・先送出一次作答後才能索取提示"}
               </p>
               {hintMessage && <p style={{ fontSize: "12px", color: "#cbd5e1", margin: "8px 0 0" }}>{hintMessage}</p>}

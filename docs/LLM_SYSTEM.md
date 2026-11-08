@@ -164,6 +164,7 @@
 | `escalation` | `message`, `suggest_teacher_review` |
 | `errors_detected` | `errors[]`（`code`, `label`, `severity`, `evidence`, `explanation`）|
 | `error` | `message`, `detail` |
+| `quota_refunded` | `reason`（`evaluation_error` / `dimension_failed`）, `quota`（`used`, `quota`）— 自主模式評分因系統錯誤失敗時退回 1 次，見 KNOWN_GAPS #18 |
 
 ---
 
@@ -194,12 +195,12 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 | 上次分數 ≥ 門檻 | 評分 |
 | 差門檻不到 10 分，且嘗試 ≤ 3 次 | 鼓勵 + 評分 |
 | 分數 60～門檻 | 給下一層提示 |
-| 分數 < 60，先前**被評分** ≤ 2 次 | 給下一層提示 |
-| 分數 < 60，先前**被評分** ≥ 3 次 | 建議找老師（escalate） |
+| 分數 < 60，先前**有評分且未通過** ≤ 2 次 | 給下一層提示 |
+| 分數 < 60，先前**有評分且未通過** ≥ 3 次 | 建議找老師（escalate） |
 
 - 「給提示」只是決策；給不給、給第幾層由 `HintEngine` 依 `teaching_strategy` 決定
   （`max_auto_hints`、`trigger`）。沒有可給的提示時**改為直接評分**，不會無限給提示。
-- 只拿到提示、沒評分的作答**不算**進轉介老師的次數。
+- 只拿到提示、沒評分的作答，以及**已經通過**的作答，都**不算**進轉介老師的次數。
 - 每次決策寫入 `step_attempts.tutor_action`（migration 003）。`escalate` 的作答沒有 AI 初評，
   但會出現在 `/api/review/pending`，`review_reasons` 含 `escalated`。
 - 只給提示或轉介、沒有評分的作答，狀態改為 `revision_required`（不會停在 `submitted`）。

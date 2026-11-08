@@ -17,10 +17,11 @@ import json
 import logging
 import re
 
+from core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
-# 預設值：評分是學生等在畫面前的同步操作，不宜等太久
-DEFAULT_TIMEOUT_SECONDS = 30.0
+# 逾時預設讀 .env 的 LLM_TIMEOUT_SECONDS（core/config.py，預設 90 秒）
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BACKOFF_SECONDS = 1.0
 
@@ -146,7 +147,7 @@ async def invoke_with_retry(
     messages: list,
     *,
     label: str = "llm",
-    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout: float | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     backoff: float = DEFAULT_BACKOFF_SECONDS,
 ) -> str:
@@ -161,7 +162,7 @@ async def invoke_with_retry(
         llm:          具備 async ainvoke(messages) 的物件（LangChain ChatModel）
         messages:     傳給 ainvoke 的訊息列表
         label:        記錄用的標籤，方便從 log 追是哪一步失敗
-        timeout:      單次呼叫的逾時秒數
+        timeout:      單次呼叫的逾時秒數；不給就用設定的 LLM_TIMEOUT_SECONDS
         max_attempts: 總嘗試次數（含第一次）
     Returns:
         LLM 回應的文字內容
@@ -169,6 +170,8 @@ async def invoke_with_retry(
         LLMTimeoutError: 每一次嘗試都逾時
         Exception:       最後一次嘗試的原始例外
     """
+    if timeout is None:
+        timeout = get_settings().llm_timeout_seconds
     last_error: Exception | None = None
 
     for attempt in range(1, max_attempts + 1):

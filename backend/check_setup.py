@@ -25,16 +25,24 @@ EXPECTED_TABLES = [
     "ai_tools", "tool_cases", "learning_modules", "module_steps",
     "step_attempts", "ai_evaluations", "teacher_reviews", "prompt_logs",
     "forms", "form_responses", "research_consents",
-    "course_modules",  # migration 005 才有（新建資料庫跑 schema.sql 就會有）
+    "course_modules",     # migration 005 才有（新建資料庫跑 schema.sql 就會有）
+    "practice_sessions",  # migration 009 才有
 ]
+
+# 只靠 migration 建立的資料表 → 缺少時要跑哪一支
+TABLE_MIGRATIONS = {
+    "course_modules": "005_rls_policies.sql",
+    "practice_sessions": "009_practice_sessions.sql",
+}
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
 EXPECTED_COLUMNS = {
     "ai_evaluations": ["confidence", "needs_teacher_review"],
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
-    "step_attempts": ["tutor_action"],
+    "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
     "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
+    "module_steps": ["is_active"],      # migration 010：停用步驟
 }
 
 PLACEHOLDERS = {
@@ -155,8 +163,9 @@ def main() -> int:
 
     if missing_tables:
         print(f"  {FAIL} 缺少 {len(missing_tables)} 張表：{', '.join(missing_tables)}")
-        if missing_tables == ["course_modules"]:
-            print("     → 請在 Supabase SQL Editor 執行 supabase/migrations/005_rls_policies.sql")
+        if all(t in TABLE_MIGRATIONS for t in missing_tables):
+            for t in missing_tables:
+                print(f"     → 請在 Supabase SQL Editor 執行 supabase/migrations/{TABLE_MIGRATIONS[t]}")
         else:
             print("     → 請在 Supabase SQL Editor 執行 supabase/schema.sql")
         return 1
