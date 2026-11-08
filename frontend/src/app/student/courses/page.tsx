@@ -27,11 +27,27 @@ const STATUS_LABEL: Record<MemberStatus, { text: string; color: string; bg: stri
   removed: { text: "已被移出", color: "#94a3b8", bg: "rgba(255,255,255,0.08)" },
 };
 
-const card: React.CSSProperties = {
-  backgroundColor: "#1e293b",
-  borderRadius: "16px",
-  border: "1px solid rgba(255,255,255,0.1)",
-  padding: "20px",
+// 課程卡片（長方形），與「＋ 加入課程」共用尺寸
+const tile: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  minHeight: "150px",
+  padding: "18px",
+  borderRadius: "14px",
+  font: "inherit",
+  color: "inherit",
+};
+
+// 說明文字最多兩行，超過以「…」截斷，卡片高度才會一致
+const clamp2: React.CSSProperties = {
+  margin: "6px 0 0",
+  fontSize: "12px",
+  color: "#94a3b8",
+  lineHeight: 1.5,
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
+  overflow: "hidden",
 };
 
 export default function StudentCoursesPage() {
@@ -45,6 +61,25 @@ export default function StudentCoursesPage() {
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState("");
   const [joinInfo, setJoinInfo] = useState("");
+  const [showJoin, setShowJoin] = useState(false);
+
+  const openJoin = () => {
+    setInviteCode("");
+    setJoinError("");
+    setJoinInfo("");
+    setShowJoin(true);
+  };
+  const closeJoin = () => {
+    if (!joining) setShowJoin(false);
+  };
+
+  // 對話框開著時按 Esc 關閉
+  useEffect(() => {
+    if (!showJoin) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowJoin(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showJoin]);
 
   // 用 .then 寫：setState 都在非同步回呼裡，避免在 effect 裡同步 setState
   const loadCourses = useCallback(
@@ -85,6 +120,7 @@ export default function StudentCoursesPage() {
       );
       setJoinInfo(`${res.data.course_name}：${res.message}`);
       setInviteCode("");
+      setShowJoin(false);
       await loadCourses();
     } catch (err) {
       setJoinError(err instanceof ApiError ? err.message : "加入失敗，請確認網路連線後再試一次");
@@ -122,82 +158,132 @@ export default function StudentCoursesPage() {
         </button>
       </header>
 
-      <main style={{ maxWidth: "880px", margin: "28px auto", padding: "0 16px", display: "flex", flexDirection: "column", gap: "20px" }}>
-        {/* 輸入邀請碼 */}
-        <section style={card}>
-          <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 4px 0" }}>加入課程</h2>
-          <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0" }}>輸入老師提供的邀請碼。正式課程不限練習次數，成績由老師最終判定。</p>
-          <form onSubmit={handleJoin} style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-            <input
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-              placeholder="輸入課程邀請碼，例如 AB3K9XQZ"
-              maxLength={32}
-              autoComplete="off"
-              style={{ flex: 1, minWidth: "200px", padding: "10px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "14px", letterSpacing: "2px", outline: "none" }}
-            />
-            <button
-              type="submit"
-              disabled={joining || !inviteCode.trim()}
-              style={{ padding: "10px 20px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontWeight: "bold", fontSize: "14px", cursor: joining ? "not-allowed" : "pointer", opacity: joining || !inviteCode.trim() ? 0.5 : 1 }}
-            >
-              {joining ? "送出中…" : "加入"}
-            </button>
-          </form>
-          {joinError && <p style={{ margin: "10px 0 0", fontSize: "13px", color: "#fca5a5" }}>{joinError}</p>}
-          {joinInfo && <p style={{ margin: "10px 0 0", fontSize: "13px", color: "#86efac" }}>{joinInfo}</p>}
-        </section>
-
-        {/* 課程清單 */}
-        <section style={card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-            <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>已加入／申請中的課程</h2>
-            <button onClick={loadCourses} style={{ fontSize: "12px", color: "#38bdf8", background: "none", border: "none", cursor: "pointer" }}>
-              重新整理
-            </button>
+      <main style={{ maxWidth: "1100px", margin: "28px auto", padding: "0 20px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "12px", marginBottom: "16px" }}>
+          <div>
+            <h1 style={{ fontSize: "20px", fontWeight: "bold", margin: "0 0 4px 0" }}>我的課程</h1>
+            <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>點選課程開始練習。正式課程不限練習次數，成績由老師最終判定。</p>
           </div>
+          <button onClick={loadCourses} style={{ flexShrink: 0, fontSize: "12px", color: "#38bdf8", background: "none", border: "none", cursor: "pointer" }}>
+            重新整理
+          </button>
+        </div>
 
-          {loadError && <p style={{ fontSize: "13px", color: "#fca5a5" }}>{loadError}</p>}
-          {courses === null && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
-          {courses !== null && !loadError && visible.length === 0 && (
-            <p style={{ fontSize: "13px", color: "#94a3b8" }}>還沒有加入任何課程，請在上方輸入老師提供的邀請碼。</p>
-          )}
+        {joinInfo && (
+          <p style={{ margin: "0 0 16px", padding: "10px 14px", borderRadius: "8px", fontSize: "13px", color: "#86efac", backgroundColor: "rgba(34,197,94,0.12)" }}>{joinInfo}</p>
+        )}
+        {loadError && <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#fca5a5" }}>{loadError}</p>}
+        {courses === null && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
 
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        {/* 課程卡片：由左上往右排列，排滿換行；最後一張是「＋ 加入課程」 */}
+        {courses !== null && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "16px" }}>
             {visible.map((c) => {
               const label = STATUS_LABEL[c.status];
               const canEnter = c.status === "active" && !c.is_archived;
+              const hint =
+                c.is_archived ? "課程已封存" : c.status === "pending" ? "等老師核准後就能進入" : c.status === "rejected" ? "可按「＋」重新輸入邀請碼申請" : "";
               return (
-                <div
+                <button
                   key={c.course_id}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", padding: "14px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+                  type="button"
+                  disabled={!canEnter}
+                  onClick={() => router.push(`/student/modules?course=${encodeURIComponent(c.course_id)}`)}
+                  title={canEnter ? "進入練習" : hint}
+                  className="course-card"
+                  style={{
+                    ...tile,
+                    textAlign: "left",
+                    alignItems: "stretch",
+                    justifyContent: "space-between",
+                    gap: "12px",
+                    backgroundColor: "#1e293b",
+                    border: `1px solid ${canEnter ? "rgba(56,189,248,0.35)" : "rgba(255,255,255,0.1)"}`,
+                    cursor: canEnter ? "pointer" : "default",
+                    opacity: canEnter ? 1 : 0.65,
+                  }}
                 >
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: "bold", fontSize: "15px" }}>{c.course_name || "（未命名課程）"}</span>
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" }}>
                       <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: label.color, backgroundColor: label.bg }}>{label.text}</span>
                       {c.is_archived && (
                         <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: "#94a3b8", backgroundColor: "rgba(255,255,255,0.08)" }}>已封存</span>
                       )}
                     </div>
-                    {c.description && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#94a3b8" }}>{c.description}</p>}
-                    {c.status === "rejected" && (
-                      <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#94a3b8" }}>如需重新申請，請再輸入一次邀請碼。</p>
-                    )}
+                    <div style={{ fontWeight: "bold", fontSize: "16px", color: "#f8fafc", lineHeight: 1.4 }}>{c.course_name || "（未命名課程）"}</div>
+                    {c.description && <p style={clamp2}>{c.description}</p>}
                   </div>
-                  <button
-                    disabled={!canEnter}
-                    onClick={() => router.push(`/student/modules?course=${encodeURIComponent(c.course_id)}`)}
-                    style={{ flexShrink: 0, padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: canEnter ? "#2563eb" : "rgba(255,255,255,0.08)", color: canEnter ? "#fff" : "#64748b", fontSize: "13px", fontWeight: "bold", cursor: canEnter ? "pointer" : "not-allowed" }}
-                  >
-                    進入練習 →
-                  </button>
-                </div>
+                  <span style={{ fontSize: "12px", fontWeight: "bold", color: canEnter ? "#38bdf8" : "#64748b" }}>{canEnter ? "進入練習 →" : hint}</span>
+                </button>
               );
             })}
+
+            <button
+              type="button"
+              onClick={openJoin}
+              className="course-card"
+              style={{ ...tile, alignItems: "center", justifyContent: "center", gap: "6px", backgroundColor: "transparent", border: "2px dashed rgba(148,163,184,0.45)", color: "#94a3b8", cursor: "pointer" }}
+            >
+              <span style={{ fontSize: "40px", lineHeight: 1, fontWeight: 300 }}>＋</span>
+              <span style={{ fontSize: "14px", fontWeight: "bold" }}>加入課程</span>
+              <span style={{ fontSize: "12px", color: "#64748b" }}>輸入老師提供的邀請碼</span>
+            </button>
           </div>
-        </section>
+        )}
       </main>
+
+      {/* 加入課程對話框 */}
+      {showJoin && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="join-title"
+          onClick={closeJoin}
+          style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", backgroundColor: "rgba(2,6,23,0.7)" }}
+        >
+          <form
+            onSubmit={handleJoin}
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "100%", maxWidth: "400px", padding: "24px", borderRadius: "16px", backgroundColor: "#1e293b", border: "1px solid rgba(255,255,255,0.12)" }}
+          >
+            <h2 id="join-title" style={{ fontSize: "17px", fontWeight: "bold", margin: "0 0 6px 0" }}>加入課程</h2>
+            <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 16px 0" }}>輸入老師提供的邀請碼。有些課程需要老師核准後才能進入。</p>
+            <input
+              autoFocus
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+              placeholder="例如 AB3K9XQZ"
+              maxLength={32}
+              autoComplete="off"
+              style={{ width: "100%", boxSizing: "border-box", padding: "12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "16px", letterSpacing: "3px", textAlign: "center", outline: "none" }}
+            />
+            {joinError && <p style={{ margin: "10px 0 0", fontSize: "13px", color: "#fca5a5" }}>{joinError}</p>}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "18px" }}>
+              <button
+                type="button"
+                onClick={closeJoin}
+                style={{ padding: "9px 16px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", fontSize: "13px", cursor: "pointer" }}
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={joining || !inviteCode.trim()}
+                style={{ padding: "9px 20px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontWeight: "bold", fontSize: "13px", cursor: joining ? "not-allowed" : "pointer", opacity: joining || !inviteCode.trim() ? 0.5 : 1 }}
+              >
+                {joining ? "送出中…" : "加入"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* 卡片滑過與鍵盤焦點的效果（inline style 做不到 :hover） */}
+      <style>{`
+        .course-card { transition: transform 0.15s, border-color 0.15s, background-color 0.15s; }
+        .course-card:not(:disabled):hover { transform: translateY(-2px); border-color: #38bdf8 !important; }
+        .course-card:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+      `}</style>
     </div>
   );
 }
