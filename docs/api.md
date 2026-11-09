@@ -1249,7 +1249,71 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 
 > 📌 **開會新增**：教授後台需能完整查看所有學生與各支機器人的對話紀錄、AI 評分結果與學習歷程，以支持教學決策。
 
-### `GET /api/admin/conversations`
+### ✅ `GET /api/admin/overview`（已實作，2026-11）
+**權限**：HOST, ASSISTANT（學生 403 `PERMISSION_DENIED`）
+
+一門課「所有學生 × 所有步驟」的作答狀況總表。**取代下方 `/conversations` 的列表**：前端每次開練習頁都會產生新的
+`session_id`，同一位學生在同一步的作答會散在好幾個 Session，依 Session 列出看不出進度，所以改以「學生 × 步驟」為單位。
+
+**Query**：`course_id`（必填，UUID）、`module_id`（選填，必須已指派給該課程，否則 404 `MODULE_NOT_IN_COURSE`）
+
+- 只列課程中 `active` 的學生，不含 owner／assistant；只列啟用中的步驟
+- 學生排序：有作答等老師看的在前，其次依最後作答時間新到舊
+
+**Response 200：**
+```json
+{
+  "data": {
+    "course": { "id": "uuid", "title": "學前 IEP 培訓", "is_archived": false },
+    "student_count": 2,
+    "modules": [
+      {
+        "module_id": "uuid", "title": "學前 IEP 逐步撰寫", "is_published": true,
+        "steps": [
+          {
+            "step_id": "uuid", "step_order": 1, "step_title": "步驟1 案例整理", "tool_title": "案例整理教練",
+            "is_required": true, "pass_score": 70, "require_teacher_review": false,
+            "summary": { "started": 2, "passed": 1, "needs_review": 0, "avg_latest_ai_score": 75.0 }
+          }
+        ],
+        "students": [
+          {
+            "user_id": "uuid", "full_name": "王小美", "email": "amy@example.com", "joined_at": "…",
+            "required_passed": 1, "required_total": 2, "needs_review_count": 1, "last_activity_at": "…",
+            "cells": {
+              "<step_id>": {
+                "status": "needs_review",
+                "attempt_count": 2, "evaluated_count": 2,
+                "latest_ai_score": 82, "best_ai_score": 82, "teacher_score": null,
+                "passed": true, "hints_used": 1,
+                "needs_review_count": 1, "review_reasons": ["low_confidence"],
+                "last_activity_at": "…"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+格子 `status`：`not_started`（沒作答）、`needs_review`（有作答等老師：`escalated`／`low_confidence`／`step_requires_review`，且尚無教師判定）、
+`passed`（已發布的教師判定優先於 AI，規則同步驟解鎖）、`in_progress`（有作答、未通過）。
+
+錯誤：課程不存在 404 `COURSE_NOT_FOUND`；`course_id` 不是 UUID 422。
+
+### ✅ `GET /api/admin/students/:user_id/steps/:step_id`（已實作，2026-11）
+**權限**：HOST, ASSISTANT
+
+點進總覽的一格：這位學生在這一步的每一次作答，新到舊。每筆含 `submission_id`、`attempt_number`、`submitted_at`、`status`、
+`tutor_action`、`content`、`ai_evaluation`（`total_score`、`confidence`、`needs_teacher_review`、`feedback_text`、`dimension_scores`、`detected_errors`）、
+`teacher_review`、`hints`（`hint_level`、`hint_trigger`、`hint_source`、`created_at`）、`review_reasons`；另有 `summary`（同總覽的格子）。
+要送出教師判定，用 `submission_id` 走 `/api/review/submissions/:id`。
+
+錯誤：404 `STEP_NOT_FOUND`、404 `STUDENT_NOT_FOUND`。
+
+### ⏳ `GET /api/admin/conversations`（未實作，已由 `/api/admin/overview` 取代）
 **權限**：HOST, ASSISTANT
 
 取得課程內所有學生與機器人的對答紀錄列表（支援多維度篩選）。
