@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const PAGES: { href: string; label: string; also?: string[] }[] = [
+  { href: "/admin/overview", label: "監控總覽" },
   { href: "/admin/courses", label: "課程管理" },
   { href: "/admin/modules", label: "模組管理" },
   { href: "/admin/tool-requests", label: "機器人申請" },
@@ -16,12 +17,12 @@ const PAGES: { href: string; label: string; also?: string[] }[] = [
 export default function AdminNav() {
   const pathname = usePathname();
   return (
-    <nav style={{ display: "flex", alignItems: "center", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
+    <nav style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
       {/* 回到 /portal 選擇其他系統（例如 XR 訪談訓練） */}
       <Link
         href="/portal"
         title="回到系統選擇頁"
-        style={{ padding: "6px 10px", borderRadius: "8px", fontSize: "13px", textDecoration: "none", color: "#94a3b8", borderRight: "1px solid rgba(255,255,255,0.1)", marginRight: "4px" }}
+        style={{ padding: "6px 10px", borderRadius: "8px", fontSize: "13px", textDecoration: "none", whiteSpace: "nowrap", color: "#94a3b8", borderRight: "1px solid rgba(255,255,255,0.1)", marginRight: "4px" }}
       >
         ⌂ 選擇系統
       </Link>
@@ -37,6 +38,7 @@ export default function AdminNav() {
               fontSize: "13px",
               fontWeight: "bold",
               textDecoration: "none",
+              whiteSpace: "nowrap",
               backgroundColor: active ? "#16a34a" : "transparent",
               color: active ? "#fff" : "#94a3b8",
             }}
