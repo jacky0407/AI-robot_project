@@ -658,7 +658,7 @@ export default function AdminCoursesPage() {
             disabled={creating || !form.title.trim()}
             style={{ padding: "8px 0", backgroundColor: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: "pointer", opacity: creating || !form.title.trim() ? 0.5 : 1 }}
           >
-            {creating ? "建立中…" : "+ 建立課程並產生邀請碼"}
+            {creating ? "建立中…" : "+ 建立課程（之後再產生邀請碼）"}
           </button>
           {createMsg && <p style={{ margin: 0, fontSize: "12px", color: createMsg.startsWith("建立失敗") ? "#fca5a5" : "#86efac" }}>{createMsg}</p>}
         </form>
