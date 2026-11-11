@@ -204,6 +204,36 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 - **Site URL** 要是 Vercel 正式網址，不是 `http://localhost:3000`（忘記密碼、註冊驗證信沒帶 redirect 時會用它）
 - **Redirect URLs** 要有 `https://<vercel 網址>/**`，結尾的 `/**` 不能省，否則配不到 `/auth/callback`
 
+### 忘記密碼信件範本（每個 Supabase 專案都要改一次）
+
+Authentication → Emails → Templates → **Reset Password**，把信中的連結改成：
+
+```html
+<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password">重設密碼</a>
+```
+
+預設範本的 `{{ .ConfirmationURL }}` 走 PKCE：只有在**寄信的同一個瀏覽器**開信才有效，
+寄第二封後舊信也會失效，使用者會被導回登入頁看到「登入驗證失敗」。
+改成上面的 `/auth/confirm`（token_hash）後，在手機、別的瀏覽器開信都可以。
+`{{ .SiteURL }}` 就是上面設定的 Site URL，本機測試時是 `http://localhost:3000`。
+
+註冊驗證信（**Confirm signup** 範本）有一樣的問題，建議一起改成：
+`{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`
+
+### 寄信服務（SMTP，正式給學生用之前要設定）
+
+Supabase 內建的寄信服務每小時只能寄很少封，而且只寄給專案成員的信箱，一般學生收不到重設密碼信。
+Authentication → Emails → **SMTP Settings** 改用自己的寄信服務（免費方案即可設定），例如專案專用的 Gmail：
+
+| 欄位 | 值 |
+|------|----|
+| Host / Port | `smtp.gmail.com` / `465` |
+| Username | 專案 Gmail 信箱 |
+| Password | Gmail「應用程式密碼」（帳號要先開兩步驟驗證；不是 Gmail 登入密碼） |
+| Sender email / name | 同一個 Gmail / 平台名稱 |
+
+設定好後到 Authentication → **Rate Limits** 調高寄信上限。應用程式密碼只填在 Supabase 後台，不要寫進程式碼、`.env` 或文件。
+
 ### 注意
 
 - `render.yaml` 設了 `autoDeploy: false`：main 合併後**不會**自動更新，要到 Render 按 Manual Deploy
