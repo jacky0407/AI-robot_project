@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ATTEMPTS = 3
 MAX_ATTEMPTS_LIMIT = 10           # 再多 prompt 會太長，教授填更大也夾回來
 
+# 「重複出現的錯誤」看最近幾次作答。比 max_attempts 大：只給提示、轉介老師的作答
+# 沒有評分，會把有錯誤的作答擠出最近 3 次的視窗（2026-11-02 測試報告 #4）
+RECURRING_WINDOW = 10
+
 # 各段文字截斷長度：記憶是背景資訊，不能蓋過這次作答本身
 PRIOR_STEP_CHARS = 400
 FEEDBACK_CHARS = 150
@@ -89,6 +93,8 @@ class PriorStepMemory:
 class BotMemory:
     attempts: list[AttemptMemory] = field(default_factory=list)       # 舊 → 新
     prior_steps: list[PriorStepMemory] = field(default_factory=list)  # 依步驟順序
+    # 最近 RECURRING_WINDOW 次作答各自的錯誤；None 表示沒另外讀，改用 attempts
+    error_history: list[list[str]] | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -96,7 +102,10 @@ class BotMemory:
 
     def recurring_errors(self) -> list[str]:
         """在兩次以上作答都出現的錯誤，依出現次數排序"""
-        counts = Counter(label for a in self.attempts for label in set(a.errors))
+        history = self.error_history
+        if history is None:
+            history = [a.errors for a in self.attempts]
+        counts = Counter(label for errors in history for label in set(errors))
         return [label for label, n in counts.most_common() if n >= 2]
 
     def to_prompt_text(self) -> str:
@@ -205,7 +214,9 @@ def load_bot_memory(db, user_id: str, step_row: dict) -> BotMemory:
 
     try:
         if config.max_attempts:
-            memory.attempts = _load_attempts(db, user_id, step_row["id"], config.max_attempts)
+            recent = _load_attempts(db, user_id, step_row["id"], RECURRING_WINDOW)
+            memory.attempts = recent[-config.max_attempts:]
+            memory.error_history = [a.errors for a in recent]
     except Exception as e:  # noqa: BLE001
         logger.warning(f"讀取本步驟記憶失敗，改為無記憶：{e}")
 

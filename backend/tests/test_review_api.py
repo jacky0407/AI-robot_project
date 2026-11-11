@@ -261,6 +261,25 @@ class TestJudge:
         assert res.json()["detail"]["code"] == "INVALID_DECISION"
         assert db.calls == []
 
+    @pytest.mark.parametrize("score", [5040, 101, -1])
+    def test_out_of_range_score_is_rejected(self, score):
+        """測試報告 2026-11-02 #7：前端預填 50 再輸入 40 變成 5040，後端不能照存"""
+        db = FakeSupabase({})
+        res = post("/api/review/submissions/a1/judge", db, {**self.BODY, "final_score": score})
+
+        assert res.status_code == 422
+        assert db.calls == []
+
+    @pytest.mark.parametrize("score", [0, 100, None])
+    def test_boundary_scores_are_accepted(self, score):
+        db = FakeSupabase({
+            ("step_attempts", "select"): [{"id": "a1"}],
+            ("teacher_reviews", "insert"): [{"id": "r1"}],
+        })
+        res = post("/api/review/submissions/a1/judge", db, {**self.BODY, "final_score": score})
+
+        assert res.status_code == 201
+
     def test_request_retry_sets_revision_required(self):
         db = FakeSupabase({
             ("step_attempts", "select"): [{"id": "a1"}],

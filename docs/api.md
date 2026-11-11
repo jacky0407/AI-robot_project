@@ -654,6 +654,47 @@
 
 ---
 
+## 三之二、模組與步驟管理 (Modules)
+
+教授在後台（`/admin/modules`）建立學習模組，把機器人排成步驟 1、2、3…。實作在 `backend/api/modules.py`，需要 migration 010。
+
+**權限**：讀取限教師端（owner / assistant）；新增、修改、刪除、排序、發布**只限 owner**（助教回 403 `PERMISSION_DENIED`）。
+
+| 方法與路徑 | 用途 |
+| --- | --- |
+| `GET /api/modules` | 所有模組（含未發布），附 `step_count`、`active_step_count` |
+| `POST /api/modules` | 建立模組 `{title, description?, domain?}`；一律從未發布開始 |
+| `GET /api/modules/:module_id` | 模組與全部步驟（含停用）；每步附 `tool_title`、`tool_status`、`attempt_count`、`can_delete` |
+| `PATCH /api/modules/:module_id` | 修改 `title` / `description` / `domain` / `is_published` |
+| `DELETE /api/modules/:module_id` | 刪除模組（會一併取消課程指派） |
+| `POST /api/modules/:module_id/steps` | 在最後新增步驟 `{tool_id, step_title, is_required?, pass_score?, require_teacher_review?}` |
+| `PATCH /api/modules/:module_id/steps/:step_id` | 修改步驟；停用／啟用用 `{is_active: false/true}` |
+| `DELETE /api/modules/:module_id/steps/:step_id` | 刪除步驟，其餘步驟重新編號 1、2、3… |
+| `PUT /api/modules/:module_id/steps/order` | 重排 `{step_ids: [...]}`，必須剛好是模組的全部步驟 |
+
+寫入成功時回傳更新後的模組詳情 `{"data": {..., "steps": [...]}}`（刪除模組回 `{success, message}`）。
+
+**保護研究資料**（`step_attempts.step_id` 是 ON DELETE CASCADE，刪步驟會連作答一起刪掉）：
+
+| 情況 | 結果 |
+| --- | --- |
+| 刪除已有作答的步驟 | 409 `STEP_HAS_ATTEMPTS`，請改用停用：學生看不到、不能作答，作答完整保留 |
+| 已有作答的步驟換機器人 | 409 `STEP_HAS_ATTEMPTS`，請停用這一步再新增一個 |
+| 刪除已有作答的模組 | 409 `MODULE_HAS_ATTEMPTS`，請改成取消發布 |
+
+**其他檢查**：
+
+| 情況 | 結果 |
+| --- | --- |
+| 發布時沒有啟用中的步驟 | 400 `MODULE_EMPTY` |
+| 發布時有啟用中步驟的機器人未發布 | 400 `TOOL_NOT_PUBLISHED`（訊息列出是哪幾支） |
+| 新增／更換的機器人不存在或已封存 | 400 `TOOL_NOT_FOUND` / `TOOL_NOT_AVAILABLE`（草稿機器人可以先排，發布模組時才檢查） |
+| `pass_score` 不在 0–100、名稱空白或超過 100 字 | 422 |
+| 重排清單和模組的步驟不一致 | 400 `INVALID_ORDER` |
+| 還沒跑 migration 010 | 503 `MIGRATION_REQUIRED`（訊息寫出要跑哪一支） |
+
+---
+
 ## 四、AI 工具管理 (Tools)
 
 ### `GET /api/tools`
@@ -831,9 +872,11 @@
 | --- | --- |
 | 個資偵測 | 400 `PII_DETECTED` |
 | 指派：課程指派（active 成員、課程未封存）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；核准已過期為 403 `PERMISSION_EXPIRED` |
+| 解鎖：步驟啟用中，且前面的必修步驟都已通過（教師已發布的判定分數優先於 AI 結果；規則見 `core/step_unlock.py`） | 403 `STEP_DISABLED`；前面還有必修步驟沒通過為 403 `STEP_LOCKED`（訊息會寫出是哪一步） |
+| 練習 Session：`session_id` 必須是 UUID；第一次出現就建立並屬於登入者，之後只有本人能用（migration 009；還沒跑時不檢查、作答照常） | 400 `INVALID_SESSION_ID`；別人的 Session 為 403 `SESSION_FORBIDDEN` |
 | 每日額度（只限逐位核准的自主模式；送出就扣 1，只拿到提示也算，AI 失敗不退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
 
-教師端（owner / assistant）不做指派與額度檢查。
+教師端（owner / assistant）不做指派、解鎖與額度檢查。
 
 **Response**：`Content-Type: text/event-stream`
 
@@ -924,6 +967,29 @@ data: {"message": "你已嘗試 4 次，建議與老師討論後再繼續練習�
 
 **錯誤**：與送出作答相同 — 401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `PERMISSION_EXPIRED`；步驟不存在 404。
 `remaining` 為 0 時送出會得到 429 `QUOTA_EXCEEDED`，前端可先停用送出按鈕。
+
+---
+
+### `GET /api/practice/modules/:module_id/progress`
+**權限**：登入者（身分取自 token）
+
+目前登入者在模組裡每個**啟用中**步驟的進度與解鎖狀態，前端用來顯示 🔒 與停用送出按鈕。停用的步驟不會出現在清單裡。
+
+**Response 200：**
+```json
+{
+  "data": [
+    { "step_id": "…", "step_order": 1, "step_title": "步驟1 案例資料整理", "is_required": true, "passed": true,  "locked": false, "locked_by": null },
+    { "step_id": "…", "step_order": 2, "step_title": "步驟2 功能性現況",   "is_required": true, "passed": false, "locked": false, "locked_by": null },
+    { "step_id": "…", "step_order": 3, "step_title": "步驟3 優勢與需求",   "is_required": true, "passed": false, "locked": true,  "locked_by": "步驟2 功能性現況" }
+  ]
+}
+```
+- 前面的**必修**步驟沒通過，後面的步驟 `locked = true`；選修步驟沒通過不擋。
+- 「通過」：該步驟任一次作答通過即可；有已發布且有給分的教師複核時以教師分數對照 `pass_score`，否則看 AI 評分結果。
+- 教師端不受解鎖限制，`locked` 一律為 `false`。
+
+**錯誤**：401 `UNAUTHORIZED`；學生查詢未發布的模組 404 `MODULE_NOT_FOUND`。
 
 ---
 
@@ -1183,7 +1249,71 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 
 > 📌 **開會新增**：教授後台需能完整查看所有學生與各支機器人的對話紀錄、AI 評分結果與學習歷程，以支持教學決策。
 
-### `GET /api/admin/conversations`
+### ✅ `GET /api/admin/overview`（已實作，2026-11）
+**權限**：HOST, ASSISTANT（學生 403 `PERMISSION_DENIED`）
+
+一門課「所有學生 × 所有步驟」的作答狀況總表。**取代下方 `/conversations` 的列表**：前端每次開練習頁都會產生新的
+`session_id`，同一位學生在同一步的作答會散在好幾個 Session，依 Session 列出看不出進度，所以改以「學生 × 步驟」為單位。
+
+**Query**：`course_id`（必填，UUID）、`module_id`（選填，必須已指派給該課程，否則 404 `MODULE_NOT_IN_COURSE`）
+
+- 只列課程中 `active` 的學生，不含 owner／assistant；只列啟用中的步驟
+- 學生排序：有作答等老師看的在前，其次依最後作答時間新到舊
+
+**Response 200：**
+```json
+{
+  "data": {
+    "course": { "id": "uuid", "title": "學前 IEP 培訓", "is_archived": false },
+    "student_count": 2,
+    "modules": [
+      {
+        "module_id": "uuid", "title": "學前 IEP 逐步撰寫", "is_published": true,
+        "steps": [
+          {
+            "step_id": "uuid", "step_order": 1, "step_title": "步驟1 案例整理", "tool_title": "案例整理教練",
+            "is_required": true, "pass_score": 70, "require_teacher_review": false,
+            "summary": { "started": 2, "passed": 1, "needs_review": 0, "avg_latest_ai_score": 75.0 }
+          }
+        ],
+        "students": [
+          {
+            "user_id": "uuid", "full_name": "王小美", "email": "amy@example.com", "joined_at": "…",
+            "required_passed": 1, "required_total": 2, "needs_review_count": 1, "last_activity_at": "…",
+            "cells": {
+              "<step_id>": {
+                "status": "needs_review",
+                "attempt_count": 2, "evaluated_count": 2,
+                "latest_ai_score": 82, "best_ai_score": 82, "teacher_score": null,
+                "passed": true, "hints_used": 1,
+                "needs_review_count": 1, "review_reasons": ["low_confidence"],
+                "last_activity_at": "…"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+格子 `status`：`not_started`（沒作答）、`needs_review`（有作答等老師：`escalated`／`low_confidence`／`step_requires_review`，且尚無教師判定）、
+`passed`（已發布的教師判定優先於 AI，規則同步驟解鎖）、`in_progress`（有作答、未通過）。
+
+錯誤：課程不存在 404 `COURSE_NOT_FOUND`；`course_id` 不是 UUID 422。
+
+### ✅ `GET /api/admin/students/:user_id/steps/:step_id`（已實作，2026-11）
+**權限**：HOST, ASSISTANT
+
+點進總覽的一格：這位學生在這一步的每一次作答，新到舊。每筆含 `submission_id`、`attempt_number`、`submitted_at`、`status`、
+`tutor_action`、`content`、`ai_evaluation`（`total_score`、`confidence`、`needs_teacher_review`、`feedback_text`、`dimension_scores`、`detected_errors`）、
+`teacher_review`、`hints`（`hint_level`、`hint_trigger`、`hint_source`、`created_at`）、`review_reasons`；另有 `summary`（同總覽的格子）。
+要送出教師判定，用 `submission_id` 走 `/api/review/submissions/:id`。
+
+錯誤：404 `STEP_NOT_FOUND`、404 `STUDENT_NOT_FOUND`。
+
+### ⏳ `GET /api/admin/conversations`（未實作，已由 `/api/admin/overview` 取代）
 **權限**：HOST, ASSISTANT
 
 取得課程內所有學生與機器人的對答紀錄列表（支援多維度篩選）。
