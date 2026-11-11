@@ -17,6 +17,7 @@
 import re
 import secrets
 from typing import Literal, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from postgrest.exceptions import APIError
@@ -253,7 +254,7 @@ async def list_courses(
 
 
 @router.patch("/{course_id}")
-async def update_course(course_id: str, body: UpdateCourseRequest, user: CurrentUser = Depends(require_staff)):
+async def update_course(course_id: UUID, body: UpdateCourseRequest, user: CurrentUser = Depends(require_staff)):
     """修改課程名稱、說明、是否需審核、是否封存"""
     changes = body.model_dump(exclude_unset=True)
     if not changes:
@@ -262,7 +263,7 @@ async def update_course(course_id: str, body: UpdateCourseRequest, user: Current
         raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_FORMAT", "課程名稱不可空白")
 
     supabase = get_supabase()
-    res = supabase.table("courses").update(changes).eq("id", course_id).execute()
+    res = supabase.table("courses").update(changes).eq("id", str(course_id)).execute()
     if not res.data:
         raise _error(status.HTTP_404_NOT_FOUND, "COURSE_NOT_FOUND", "找不到這門課程")
     return {"data": res.data[0], "message": "課程已更新"}
@@ -270,7 +271,7 @@ async def update_course(course_id: str, body: UpdateCourseRequest, user: Current
 
 @router.get("/{course_id}/members")
 async def list_members(
-    course_id: str,
+    course_id: UUID,
     member_status: Optional[str] = Query(None, alias="status", description="pending | active | rejected | removed"),
     user: CurrentUser = Depends(require_staff),
 ):
@@ -279,6 +280,7 @@ async def list_members(
         raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_STATUS", f"status 只能是 {' / '.join(MEMBER_STATUSES)}")
 
     supabase = get_supabase()
+    course_id = str(course_id)
     _get_course_or_404(supabase, course_id)
 
     query = (
@@ -305,8 +307,8 @@ async def list_members(
 
 @router.patch("/{course_id}/members/{user_id}")
 async def update_member(
-    course_id: str,
-    user_id: str,
+    course_id: UUID,
+    user_id: UUID,
     body: MemberActionRequest,
     user: CurrentUser = Depends(require_staff),
 ):
@@ -315,8 +317,8 @@ async def update_member(
     existing = (
         supabase.table("course_members")
         .select("id, status")
-        .eq("course_id", course_id)
-        .eq("user_id", user_id)
+        .eq("course_id", str(course_id))
+        .eq("user_id", str(user_id))
         .limit(1)
         .execute()
     )
