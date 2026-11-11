@@ -202,20 +202,26 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 ### Supabase Auth 網址（漏設會讓登入導到 localhost）
 
 - **Site URL** 要是 Vercel 正式網址，不是 `http://localhost:3000`（忘記密碼、註冊驗證信沒帶 redirect 時會用它）
-- **Redirect URLs** 要有 `https://<vercel 網址>/**`，結尾的 `/**` 不能省，否則配不到 `/auth/callback`
+- **Redirect URLs** 要有 `https://<vercel 網址>/**`，結尾的 `/**` 不能省，否則配不到 `/auth/callback`、`/auth/confirm`。
+  本機也要能收重設密碼信的話，再加一行 `http://localhost:3000/**`
 
 ### 忘記密碼信件範本（每個 Supabase 專案都要改一次）
 
-Authentication → Emails → Templates → **Reset Password**，把信中的連結改成：
+Authentication → Emails → Templates → **Reset Password** → Body 切到 **Source**（要先設好下面的 SMTP 才能編輯），整段換成：
 
 ```html
-<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password">重設密碼</a>
+<h2>重設密碼</h2>
+<p>我們收到重設這個帳號密碼的申請，請點擊下面的連結設定新密碼：</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=recovery">設定新密碼</a></p>
+<p>如果不是你本人申請，請忽略這封信，你的密碼不會被更改。</p>
 ```
 
-預設範本的 `{{ .ConfirmationURL }}` 走 PKCE：只有在**寄信的同一個瀏覽器**開信才有效，
-寄第二封後舊信也會失效，使用者會被導回登入頁看到「登入驗證失敗」。
-改成上面的 `/auth/confirm`（token_hash）後，在手機、別的瀏覽器開信都可以。
-`{{ .SiteURL }}` 就是上面設定的 Site URL，本機測試時是 `http://localhost:3000`。
+- `{{ .RedirectTo }}` 是忘記密碼頁送出的 `<目前網站>/auth/confirm?next=/reset-password`：
+  在本機申請就連回本機，在 Vercel 申請就連回 Vercel。兩個網站都要在 **Redirect URLs** 清單裡（見上一節），
+  不在清單的話 Supabase 會改用 Site URL，連結就會壞掉
+- 預設範本的 `{{ .ConfirmationURL }}` 走 PKCE：只有在**寄信的同一個瀏覽器**開信才有效，
+  寄第二封後舊信也會失效。改成上面的 token_hash 後，在手機、別的瀏覽器開信都可以
+- 範本還沒改時忘記密碼仍然能用，只是要在同一個瀏覽器開最新一封信
 
 註冊驗證信（**Confirm signup** 範本）有一樣的問題，建議一起改成：
 `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`
