@@ -180,7 +180,7 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 
 ### 順序
 
-1. **Supabase**：照第 1 節跑 `schema.sql`，再依序跑 migrations `002`、`004`～`012`（全新資料庫不用 001、003；全部可重複執行）。
+1. **Supabase**：照第 1 節跑 `schema.sql`，再依序跑 migrations `002`、`004`～`013`（全新資料庫不用 001、003；全部可重複執行）。
    資料庫函式（註冊、扣／退額度、步驟排序）只在 migration 裡，漏跑會在使用時才出錯。
    Authentication → URL Configuration：Site URL 填 Vercel 網址，Redirect URLs 加 `https://<vercel 網址>/**`
    （不加的話驗證信、重設密碼信會導回 localhost）
