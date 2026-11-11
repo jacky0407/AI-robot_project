@@ -7,9 +7,15 @@
                 且今天（台灣時間）在 start_date ~ expire_date 之間
 兩種都要求模組已發布、機器人為 published。教師端（owner / assistant）不檢查。
 
-額度（10/18 做法 A）只管 permission 模式：每次送出扣 1，只拿到提示的那次也算；
-AI 評分失敗不退回（見 docs/KNOWN_GAPS.md）。課程指派的學生不扣次數。
-扣次數由資料庫函式 consume_tool_quota() 一步完成（migrations/008），避免連按時超用；
+課程指派另外看學生加入時用的邀請碼（migrations/013）：
+    - 過了邀請碼的可用日期 access_until（台灣時間）→ 403 ACCESS_EXPIRED
+    - 免費方案（plan = free）→ 每天 daily_quota 次，和自主模式一樣扣次數
+    - 自備金鑰方案（plan = self_key）→ 第二階段（/api/me/api-key）上線前一律 403 API_KEY_REQUIRED
+    - 沒有掛邀請碼（舊資料或後台直接加入）→ 不限期、不限次數
+    課程被擋時，若同時有自主模式的有效核准，改用核准那筆。
+
+額度：每次送出扣 1，只拿到提示的那次也算；AI 評分因系統錯誤失敗時退回（migrations/011、013）。
+扣次數由資料庫函式一步完成（consume_tool_quota / consume_course_quota），避免連按時超用；
 送出前查剩餘次數用 quota_status()，只查不扣。
 
 後端用 service_role 連線，不受 RLS 限制，所以這些檢查必須在這裡做。
@@ -33,6 +39,12 @@ AccessMode = Literal["staff", "course", "permission"]
 
 PERMISSION_FIELDS = "id, tool_id, start_date, expire_date, daily_quota, used_today, used_date"
 
+# course_members 同時連到 courses 與 course_invite_codes，embed 要指定外鍵（見 api/courses.py 檔頭）
+MEMBERSHIP_FIELDS = (
+    "id, course_id, used_today, used_date, courses!course_members_course_id_fkey(is_archived), "
+    "course_invite_codes!course_members_invite_code_id_fkey(plan, daily_quota, access_until)"
+)
+
 # 與 schema.sql 的 tool_permissions.daily_quota 預設值、consume_tool_quota() 的 COALESCE 一致
 DEFAULT_DAILY_QUOTA = 10
 
@@ -44,6 +56,10 @@ class StepAccess:
     permission_id: Optional[str] = None
     # 同一筆的完整資料，給剩餘額度查詢用（不參與比較）
     permission: Optional[dict] = field(default=None, compare=False)
+    # mode == "course" 且是免費方案時，要扣額度的那筆 course_members（不限次數時為 None）
+    member_id: Optional[str] = None
+    # 同一筆成員資料（含 used_today、邀請碼的 daily_quota / access_until），給剩餘額度查詢用
+    member: Optional[dict] = field(default=None, compare=False)
 
 
 def today_taipei() -> date:
@@ -62,21 +78,49 @@ def _parse_date(value) -> Optional[date]:
     return date.fromisoformat(value) if value else None
 
 
-def _assigned_via_course(db, user_id: str, module_id: str) -> bool:
+@dataclass(frozen=True)
+class CourseMembership:
+    # 可以作答的成員資料（優先順序：不限次數 > 免費方案）；沒有就是 None
+    usable: Optional[dict] = None
+    # 有被指派、但因為可用日期已過而不能用
+    expired: bool = False
+    # 有被指派、但只有自備金鑰方案（第二階段前不能作答）
+    needs_api_key: bool = False
+
+
+def _membership_for_module(db, user_id: str, module_id: str, today: date) -> CourseMembership:
+    """學生透過課程被指派這個模組的狀況；一個學生可能從多門課被指派同一個模組"""
     assignments = db.table("course_modules").select("course_id").eq("module_id", module_id).execute()
     course_ids = [row["course_id"] for row in assignments.data or []]
     if not course_ids:
-        return False
+        return CourseMembership()
 
     memberships = (
         db.table("course_members")
-        .select("course_id, courses(is_archived)")
+        .select(MEMBERSHIP_FIELDS)
         .eq("user_id", user_id)
         .eq("status", "active")
         .in_("course_id", course_ids)
         .execute()
     )
-    return any(not (row.get("courses") or {}).get("is_archived") for row in memberships.data or [])
+    unlimited, free, expired, self_key = [], [], False, False
+    for row in memberships.data or []:
+        if (row.get("courses") or {}).get("is_archived"):
+            continue
+        invite = row.get("course_invite_codes")
+        if not invite:
+            unlimited.append(row)
+            continue
+        access_until = _parse_date(invite.get("access_until"))
+        if access_until is not None and access_until < today:
+            expired = True
+        elif invite.get("plan") == "self_key":
+            self_key = True
+        else:
+            free.append(row)
+
+    usable = (unlimited or free or [None])[0]
+    return CourseMembership(usable=usable, expired=expired, needs_api_key=self_key)
 
 
 def _find_permission(db, user_id: str, tool_id: str, today: date) -> tuple[Optional[dict], bool]:
@@ -127,12 +171,25 @@ def check_step_access(db, user: CurrentUser, step: dict, today: Optional[date] =
     if not module.data or not module.data[0].get("is_published"):
         raise _not_assigned()
 
-    if _assigned_via_course(db, user.id, step["module_id"]):
+    today = today or today_taipei()
+    membership = _membership_for_module(db, user.id, step["module_id"], today)
+    if membership.usable is not None:
+        member = membership.usable
+        if member.get("course_invite_codes"):
+            return StepAccess(mode="course", member_id=member["id"], member=member)
         return StepAccess(mode="course")
 
-    permission, expired = _find_permission(db, user.id, step["tool_id"], today or today_taipei())
+    permission, expired = _find_permission(db, user.id, step["tool_id"], today)
     if permission:
         return StepAccess(mode="permission", permission_id=permission["id"], permission=permission)
+    if membership.needs_api_key:
+        raise _error(
+            status.HTTP_403_FORBIDDEN,
+            "API_KEY_REQUIRED",
+            "這門課需要使用自己的 Gemini 金鑰作答，請先到個人資料頁填寫金鑰",
+        )
+    if membership.expired:
+        raise _error(status.HTTP_403_FORBIDDEN, "ACCESS_EXPIRED", "這門課的可用日期已過，請向老師索取新的邀請碼")
     if expired:
         raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_EXPIRED", "這支機器人的使用期限已過，請重新申請")
     raise _not_assigned()
@@ -140,42 +197,56 @@ def check_step_access(db, user: CurrentUser, step: dict, today: Optional[date] =
 
 def quota_status(access: StepAccess, today: Optional[date] = None) -> dict:
     """
-    剩餘額度（只查不扣）。跨日時 used 視為 0，規則與 consume_tool_quota() 一致。
-    course / staff 模式不限次數，used / quota / remaining / expire_date 都是 None。
+    剩餘額度（只查不扣）。跨日時 used 視為 0，規則與 consume_tool_quota() / consume_course_quota() 一致。
+    不限次數（staff、沒掛邀請碼的課程成員）時 used / quota / remaining / expire_date 都是 None。
+    課程免費方案的 expire_date 是邀請碼的可用日期。
     """
-    if access.mode != "permission":
+    today = today or today_taipei()
+    if access.mode == "permission":
+        row = access.permission or {}
+        quota, expire_date = row.get("daily_quota"), row.get("expire_date")
+    elif access.mode == "course" and access.member_id:
+        row = access.member or {}
+        invite = row.get("course_invite_codes") or {}
+        quota, expire_date = invite.get("daily_quota"), invite.get("access_until")
+    else:
         return {"mode": access.mode, "used": None, "quota": None, "remaining": None, "expire_date": None}
 
-    row = access.permission or {}
-    today = today or today_taipei()
-    quota = row.get("daily_quota")
     quota = DEFAULT_DAILY_QUOTA if quota is None else quota
     used = (row.get("used_today") or 0) if _parse_date(row.get("used_date")) == today else 0
     return {
-        "mode": "permission",
+        "mode": access.mode,
         "used": used,
         "quota": quota,
         "remaining": max(quota - used, 0),
-        "expire_date": row.get("expire_date"),
+        "expire_date": expire_date,
     }
+
+
+def _quota_rpc(access: StepAccess, action: Literal["consume", "refund"]) -> Optional[tuple[str, dict]]:
+    """要呼叫的資料庫函式與參數；不限次數時回 None"""
+    if access.mode == "permission":
+        return f"{action}_tool_quota", {"p_permission_id": access.permission_id}
+    if access.mode == "course" and access.member_id:
+        return f"{action}_course_quota", {"p_member_id": access.member_id}
+    return None
 
 
 def consume_quota(db, access: StepAccess, today: Optional[date] = None) -> Optional[dict]:
     """
-    permission 模式扣一次額度；其他模式不扣，回傳 None。
+    自主模式、課程免費方案扣一次額度；不限次數時不扣，回傳 None。
     額度用完時拋 HTTPException（429），不扣。
     成功回傳 {"used": 今天已用次數, "quota": 每日上限}。
     """
-    if access.mode != "permission":
+    rpc = _quota_rpc(access, "consume")
+    if rpc is None:
         return None
 
-    res = db.rpc(
-        "consume_tool_quota",
-        {"p_permission_id": access.permission_id, "p_today": (today or today_taipei()).isoformat()},
-    ).execute()
+    name, params = rpc
+    res = db.rpc(name, {**params, "p_today": (today or today_taipei()).isoformat()}).execute()
     row = (res.data or [None])[0]
     if row is None:
-        # 核准紀錄在檢查後被刪除：當作沒有權限
+        # 核准紀錄或成員資料在檢查後被刪除：當作沒有權限
         raise _not_assigned()
     if not row["allowed"]:
         raise _error(
@@ -188,22 +259,21 @@ def consume_quota(db, access: StepAccess, today: Optional[date] = None) -> Optio
 
 def refund_quota(db, access: StepAccess, today: Optional[date] = None) -> Optional[dict]:
     """
-    AI 評分因系統錯誤失敗時退回 1 次額度（KNOWN_GAPS #18，migrations/011）。
+    AI 評分因系統錯誤失敗時退回 1 次額度（KNOWN_GAPS #18，migrations/011、013）。
 
-    只有 permission 模式會退；跨日、已是 0 次時資料庫不退，回傳 None。
+    只有有扣次數的模式會退；跨日、已是 0 次時資料庫不退，回傳 None。
     這是在 SSE 串流中途呼叫的補救動作，失敗只記 log、不往外拋，
     以免蓋掉原本要回給學生的錯誤訊息（例如還沒跑 migration 011）。
     成功回傳 {"used": 退回後今天已用次數, "quota": 每日上限}。
     """
-    if access.mode != "permission":
+    rpc = _quota_rpc(access, "refund")
+    if rpc is None:
         return None
+    name, params = rpc
     try:
-        res = db.rpc(
-            "refund_tool_quota",
-            {"p_permission_id": access.permission_id, "p_today": (today or today_taipei()).isoformat()},
-        ).execute()
+        res = db.rpc(name, {**params, "p_today": (today or today_taipei()).isoformat()}).execute()
     except Exception as e:  # noqa: BLE001 - 補救動作失敗不影響主流程
-        logger.warning(f"退回額度失敗（permission {access.permission_id}）：{e}")
+        logger.warning(f"退回額度失敗（{name} {params}）：{e}")
         return None
     row = (res.data or [None])[0]
     if row is None:

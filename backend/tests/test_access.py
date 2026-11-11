@@ -334,3 +334,131 @@ class TestQuotaStatus:
     def test_missing_daily_quota_uses_default_ten(self):
         status = quota_status(permission_access(daily_quota=None), TODAY)
         assert status["quota"] == 10
+
+
+# ──────────────────────────────────────────
+# 課程模式：邀請碼的可用日期與每日次數（migrations/013）
+# ──────────────────────────────────────────
+
+def course_member(plan="free", daily_quota=10, access_until="2026-12-31", **overrides) -> dict:
+    """學生用某組邀請碼加入的 course_members 一列（含邀請碼設定）"""
+    row = {
+        "id": "member-1", "course_id": "course-1", "used_today": 0, "used_date": None,
+        "courses": {"is_archived": False},
+        "course_invite_codes": {"plan": plan, "daily_quota": daily_quota, "access_until": access_until},
+    }
+    row.update(overrides)
+    return row
+
+
+def course_db(*members, permissions=None, rpc_result=None) -> FakeDB:
+    return FakeDB(
+        rpc_result=rpc_result,
+        learning_modules=PUBLISHED,
+        course_modules=[{"course_id": "course-1"}],
+        course_members=list(members),
+        tool_permissions=permissions or [],
+    )
+
+
+class TestCourseInviteCodeAccess:
+
+    def test_free_plan_member_is_charged_per_member(self):
+        member = course_member()
+        access = check_step_access(course_db(member), STUDENT, STEP, TODAY)
+
+        assert access == StepAccess(mode="course", member_id="member-1")
+        assert access.member is member
+
+    def test_member_without_invite_code_stays_unlimited(self):
+        """舊資料或後台直接加入：沒有邀請碼，和以前一樣不限次數"""
+        member = course_member(course_invite_codes=None)
+        assert check_step_access(course_db(member), STUDENT, STEP, TODAY) == StepAccess(mode="course")
+
+    def test_membership_query_names_invite_code_foreign_key(self):
+        db = course_db(course_member())
+        check_step_access(db, STUDENT, STEP, TODAY)
+        # FakeQuery 不記 select，直接檢查欄位常數；不指定外鍵 Supabase 會回 PGRST201
+        from core.access import MEMBERSHIP_FIELDS
+        assert "course_invite_codes!course_members_invite_code_id_fkey(" in MEMBERSHIP_FIELDS
+
+    def test_access_until_today_is_still_valid(self):
+        access = check_step_access(course_db(course_member(access_until="2026-10-21")), STUDENT, STEP, TODAY)
+        assert access.mode == "course"
+
+    def test_past_access_until_is_denied_with_its_own_error(self):
+        with pytest.raises(HTTPException) as exc:
+            check_step_access(course_db(course_member(access_until="2026-10-20")), STUDENT, STEP, TODAY)
+        assert_denied(exc, 403, "ACCESS_EXPIRED")
+
+    def test_self_key_plan_requires_api_key(self):
+        """第二階段（自備金鑰）上線前，自備金鑰方案一律擋下並提示填金鑰"""
+        with pytest.raises(HTTPException) as exc:
+            check_step_access(course_db(course_member(plan="self_key", daily_quota=None)), STUDENT, STEP, TODAY)
+        assert_denied(exc, 403, "API_KEY_REQUIRED")
+
+    def test_unlimited_membership_wins_over_free_one(self):
+        """同一個模組從兩門課被指派：不限次數的那門優先"""
+        free = course_member(id="member-free")
+        unlimited = course_member(id="member-old", course_invite_codes=None)
+        assert check_step_access(course_db(free, unlimited), STUDENT, STEP, TODAY) == StepAccess(mode="course")
+
+    def test_valid_membership_wins_over_expired_one(self):
+        expired = course_member(id="member-expired", access_until="2026-01-31")
+        valid = course_member(id="member-valid")
+        access = check_step_access(course_db(expired, valid), STUDENT, STEP, TODAY)
+        assert access.member_id == "member-valid"
+
+    def test_expired_course_falls_back_to_valid_permission(self):
+        """課程期限過了，但自主模式另外有核准：改用核准那筆"""
+        db = course_db(
+            course_member(access_until="2026-10-20"),
+            permissions=[{"id": "perm-1", "tool_id": "tool-1", "start_date": None, "expire_date": None}],
+        )
+        assert check_step_access(db, STUDENT, STEP, TODAY).mode == "permission"
+
+    def test_archived_course_with_code_does_not_count(self):
+        with pytest.raises(HTTPException) as exc:
+            check_step_access(course_db(course_member(courses={"is_archived": True})), STUDENT, STEP, TODAY)
+        assert_denied(exc, 403, "NOT_ASSIGNED")
+
+
+class TestCourseQuota:
+
+    def access(self, **member) -> StepAccess:
+        row = course_member(**member)
+        return StepAccess(mode="course", member_id="member-1", member=row)
+
+    def test_consume_uses_course_quota_function(self):
+        db = FakeDB(rpc_result=[{"allowed": True, "used": 3, "quota": 10}])
+        assert consume_quota(db, self.access(), TODAY) == {"used": 3, "quota": 10}
+        assert db.rpc_calls == [("consume_course_quota", {"p_member_id": "member-1", "p_today": "2026-10-21"})]
+
+    def test_course_quota_exhausted_returns_429(self):
+        db = FakeDB(rpc_result=[{"allowed": False, "used": 10, "quota": 10}])
+        with pytest.raises(HTTPException) as exc:
+            consume_quota(db, self.access(), TODAY)
+        assert_denied(exc, 429, "QUOTA_EXCEEDED")
+
+    def test_unlimited_course_member_is_not_charged(self):
+        db = FakeDB()
+        assert consume_quota(db, StepAccess(mode="course"), TODAY) is None
+        assert db.rpc_calls == []
+
+    def test_refund_uses_course_quota_function(self):
+        db = FakeDB(rpc_result=[{"used": 2, "quota": 10}])
+        assert refund_quota(db, self.access(), TODAY) == {"used": 2, "quota": 10}
+        assert db.rpc_calls == [("refund_course_quota", {"p_member_id": "member-1", "p_today": "2026-10-21"})]
+
+    def test_status_reads_quota_and_access_until_from_invite_code(self):
+        status = quota_status(self.access(daily_quota=5, used_today=2, used_date="2026-10-21",
+                                          access_until="2026-12-31"), TODAY)
+        assert status == {"mode": "course", "used": 2, "quota": 5, "remaining": 3, "expire_date": "2026-12-31"}
+
+    def test_status_new_day_resets_used(self):
+        status = quota_status(self.access(used_today=9, used_date="2026-10-20"), TODAY)
+        assert status["remaining"] == 10
+
+    def test_status_for_unlimited_course_member_is_null(self):
+        status = quota_status(StepAccess(mode="course"), TODAY)
+        assert status["quota"] is None and status["remaining"] is None

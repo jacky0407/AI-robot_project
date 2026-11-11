@@ -19,6 +19,11 @@ type MyCourse = {
   is_archived: boolean;
   status: MemberStatus;
   joined_at: string | null;
+  // 加入時用的邀請碼（backend/api/courses.py）；沒有邀請碼的舊資料這幾個是 null，不限期、不限次數
+  plan: "free" | "self_key" | null;
+  daily_quota: number | null;
+  access_until: string | null;
+  access_expired: boolean;
 };
 
 const STATUS_LABEL: Record<MemberStatus, { text: string; color: string; bg: string }> = {
@@ -186,9 +191,13 @@ export default function StudentCoursesPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "16px" }}>
             {visible.map((c) => {
               const label = STATUS_LABEL[c.status];
-              const canEnter = c.status === "active" && !c.is_archived;
+              const canEnter = c.status === "active" && !c.is_archived && !c.access_expired;
               const hint =
-                c.is_archived ? "課程已封存" : c.status === "pending" ? "等老師核准後就能進入" : c.status === "rejected" ? "可按「＋」重新輸入邀請碼申請" : "";
+                c.is_archived ? "課程已封存"
+                : c.status === "pending" ? "等老師核准後就能進入"
+                : c.status === "rejected" ? "可按「＋」重新輸入邀請碼申請"
+                : c.access_expired ? "可用日期已過，請向老師索取新的邀請碼"
+                : "";
               return (
                 <button
                   key={c.course_id}
@@ -214,6 +223,16 @@ export default function StudentCoursesPage() {
                       <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: label.color, backgroundColor: label.bg }}>{label.text}</span>
                       {c.is_archived && (
                         <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: "#94a3b8", backgroundColor: "rgba(255,255,255,0.08)" }}>已封存</span>
+                      )}
+                      {c.access_until && (
+                        <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: c.access_expired ? "#f87171" : "#94a3b8", backgroundColor: "rgba(255,255,255,0.08)" }}>
+                          {c.access_expired ? "已過可用日期" : `可用到 ${c.access_until}`}
+                        </span>
+                      )}
+                      {c.plan && (
+                        <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: "#94a3b8", backgroundColor: "rgba(255,255,255,0.08)" }}>
+                          {c.plan === "free" ? `每天 ${c.daily_quota} 次` : "需自備金鑰"}
+                        </span>
                       )}
                     </div>
                     <div style={{ fontWeight: "bold", fontSize: "16px", color: "#f8fafc", lineHeight: 1.4 }}>{c.course_name || "（未命名課程）"}</div>
