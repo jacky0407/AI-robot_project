@@ -1,15 +1,23 @@
-fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.7.0
-pydantic-settings>=2.3.0
-python-dotenv>=1.0.0
-supabase>=2.5.0
-google-genai>=1.65.0
-langchain>=0.2.0
-langchain-google-genai>=2.0.0
-sse-starlette>=2.1.0
-httpx>=0.27.0
+# Pinned to the versions the test suite passes with (Python 3.12).
+# Unpinned (>=) versions let Render install a newer release on every build,
+# which can break the backend without any code change.
+# To upgrade: change the version here, run "py -m pytest tests/ -v", then open a PR.
+# Keep this file ASCII-only: pip on Traditional Chinese Windows (cp950) fails on Chinese text.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+supabase==2.31.0
+google-genai==2.22.0
+langchain==1.3.18
+langchain-google-genai==4.4.0
+# imported directly in core/ai/agents/*, so pin it instead of relying on langchain-google-genai
+langchain-core==1.6.1
+sse-starlette==3.4.10
+httpx==0.28.1
 
 # Tests: run "py -m pytest tests/ -v" before every PR (see AGENTS.md)
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
