@@ -195,13 +195,14 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ---
 
-## 9. 🟡 Supabase RLS：已啟用，政策未完整存進 schema.sql
+## 9. ✅ Supabase RLS：已啟用，政策已寫回 schema.sql
 
 - ✅ 所有資料表已開啟 RLS；政策在 migration 005（指派制：學生只看得到被指派的模組、步驟、機器人與自己的作答；
-  教師新增 `ai_tools`）與 006（`profiles` 只能讀自己）
+  教師新增 `ai_tools`）、006（`profiles` 只能讀自己）、010（停用的步驟）、012（台灣時間）、013（邀請碼可用日期）
 - ✅ 前端直連只剩讀取與教師新增機器人，評分、複核、刪除都走後端 API
-- 🟡 `schema.sql` 本身沒有 `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY`：只跑 `schema.sql` 的新資料庫
-  **必須再跑 005、006**，否則前端讀不到資料（全部被 RLS 擋下）
+- ✅ `schema.sql` 第 8 節是上述 migrations 的最終版本：18 張表全部 `ENABLE ROW LEVEL SECURITY`，判斷函式與政策
+  和最新的 migration 逐字相同。只跑 `schema.sql` 的新資料庫也有完整規則（資料表權限仍要跑 002）
+- 🟡 權限規則現在有兩份（migration 與 schema.sql 第 8 節），之後改規則要兩邊一起改
 - 🟡 後端用 service_role 不受 RLS 限制，權限完全靠 API 層的 token 檢查（見 #8）
 
 ---
