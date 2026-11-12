@@ -190,7 +190,7 @@ class TestOverview:
         ]
         module = overview(make_db(attempts)).json()["data"]["modules"][0]
         summary = module["steps"][0]["summary"]
-        assert summary == {"started": 2, "passed": 1, "needs_review": 0, "avg_latest_ai_score": 75.0}
+        assert summary == {"started": 2, "passed": 1, "needs_review": 0, "avg_score": 75.0, "avg_latest_ai_score": 75.0}
         assert module["steps"][1]["summary"]["avg_latest_ai_score"] is None
 
     def test_module_filter_must_be_assigned_to_course(self):
@@ -316,6 +316,29 @@ class TestSummarizeCell:
     def test_escalated_attempt_needs_review_without_evaluation(self):
         a = attempt(AMY, S1, 1, tutor_action="escalate")
         assert review_reasons(a, STEP_1) == ["escalated"]
+
+    def test_passed_and_needs_review_are_separate(self):
+        """排練回饋：老師已評 80 分通過、之後又有作答等老師 → 仍是「已通過」，另外標待複核"""
+        review = {"final_score": 80, "is_published": True}
+        cell = summarize_cell([
+            attempt(AMY, S2, 1, score=25, review=review, at="2026-11-01"),
+            attempt(AMY, S2, 2, score=30, tutor_action="escalate", at="2026-11-02"),
+        ], STEP_2)
+        assert cell["progress"] == "passed" and cell["needs_review_count"] == 1
+        assert (cell["score"], cell["score_source"]) == (80, "teacher")
+        assert cell["status"] == "needs_review"  # 舊欄位不變，給舊前端
+
+    def test_score_falls_back_to_ai(self):
+        cell = summarize_cell([attempt(AMY, S1, 1, score=25)], STEP_1)
+        assert (cell["progress"], cell["score"], cell["score_source"]) == ("not_passed", 25, "ai")
+        assert summarize_cell([attempt(AMY, S1, 1, tutor_action="give_hint")], STEP_1)["score_source"] is None
+
+    def test_step_average_prefers_teacher_score(self):
+        review = {"final_score": 80, "is_published": True}
+        cells = [summarize_cell([attempt(AMY, S1, 1, score=20, review=review)], STEP_1),
+                 summarize_cell([attempt(BEN, S1, 1, score=40)], STEP_1)]
+        summary = summarize_step(STEP_1, cells)
+        assert summary["avg_score"] == 60.0 and summary["avg_latest_ai_score"] == 30.0
 
     def test_empty_cell(self):
         assert summarize_cell([], STEP_1)["status"] == "not_started"

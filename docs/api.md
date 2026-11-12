@@ -1322,6 +1322,10 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 }
 ```
 
+格子的兩件事分開看（2026-11-12 起，畫面用這組）：`progress` = `not_started`／`not_passed`／`passed`（已發布教師判定優先）；
+`needs_review_count` = 幾筆作答待複核；`score`／`score_source` = 有已發布的教師分數用老師的（`teacher`），否則 AI 最新分數（`ai`）。
+步驟摘要多了 `avg_score`（老師分數優先的平均）。以下 `status` 是舊欄位，保留給舊前端：
+
 格子 `status`：`not_started`（沒作答）、`needs_review`（有作答等老師：`escalated`／`low_confidence`／`step_requires_review`，且尚無教師判定）、
 `passed`（已發布的教師判定優先於 AI，規則同步驟解鎖）、`in_progress`（有作答、未通過）。
 

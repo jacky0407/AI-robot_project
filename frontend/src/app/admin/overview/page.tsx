@@ -11,11 +11,16 @@ import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch } from "@/utils/api";
 import AdminNav from "../AdminNav";
 
-type CellStatus = "not_started" | "in_progress" | "passed" | "needs_review";
+type CellStatus = "not_started" | "in_progress" | "passed" | "needs_review"; // 舊欄位，畫面改用 progress
+// 「通過了沒」與「有沒有作答等老師」分開顯示（2026-11-12 排練回饋）
+type Progress = "not_started" | "not_passed" | "passed";
 type ReviewReason = "escalated" | "low_confidence" | "step_requires_review";
 
 type Cell = {
   status: CellStatus;
+  progress: Progress;
+  score: number | null; // 有已發布的教師分數用老師的，否則用 AI 最新分數
+  score_source: "teacher" | "ai" | null;
   attempt_count: number;
   evaluated_count: number;
   latest_ai_score: number | null;
@@ -36,7 +41,7 @@ type Step = {
   is_required: boolean;
   pass_score: number;
   require_teacher_review: boolean;
-  summary: { started: number; passed: number; needs_review: number; avg_latest_ai_score: number | null };
+  summary: { started: number; passed: number; needs_review: number; avg_score: number | null; avg_latest_ai_score: number | null };
 };
 
 type StudentRow = {
@@ -68,12 +73,12 @@ type AttemptDetail = {
 };
 type StepDetail = { student: { full_name: string; email: string }; step: { step_title: string; pass_score: number }; attempts: AttemptDetail[] };
 
-const STATUS_STYLE: Record<CellStatus, { text: string; color: string; bg: string }> = {
+const PROGRESS_STYLE: Record<Progress, { text: string; color: string; bg: string }> = {
   not_started: { text: "未開始", color: "#64748b", bg: "rgba(255,255,255,0.03)" },
-  in_progress: { text: "進行中", color: "#93c5fd", bg: "rgba(59,130,246,0.12)" },
-  needs_review: { text: "等老師", color: "#fbbf24", bg: "rgba(245,158,11,0.16)" },
+  not_passed: { text: "未通過", color: "#93c5fd", bg: "rgba(59,130,246,0.12)" },
   passed: { text: "已通過", color: "#4ade80", bg: "rgba(34,197,94,0.14)" },
 };
+const REVIEW_COLOR = "#fbbf24";
 
 const REASON_TEXT: Record<ReviewReason, string> = {
   escalated: "AI 建議找老師",
@@ -189,7 +194,7 @@ export default function AdminOverviewPage() {
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 4px 0" }}>監控總覽</h1>
             <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
-              一列一位學生、一欄一個步驟。「等老師」的學生排在最上面；點一格看那位學生在那一步的每次作答。
+              一列一位學生、一欄一個步驟。有作答待複核的學生排在最上面；點一格看那位學生在那一步的每次作答。
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
@@ -249,13 +254,17 @@ export default function AdminOverviewPage() {
 function Legend() {
   return (
     <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", fontSize: "12px", color: "#94a3b8" }}>
-      {(Object.keys(STATUS_STYLE) as CellStatus[]).map((s) => (
+      {(Object.keys(PROGRESS_STYLE) as Progress[]).map((s) => (
         <span key={s} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "12px", height: "12px", borderRadius: "3px", backgroundColor: STATUS_STYLE[s].bg, border: `1px solid ${STATUS_STYLE[s].color}` }} />
-          {STATUS_STYLE[s].text}
+          <span style={{ width: "12px", height: "12px", borderRadius: "3px", backgroundColor: PROGRESS_STYLE[s].bg, border: `1px solid ${PROGRESS_STYLE[s].color}` }} />
+          {PROGRESS_STYLE[s].text}
         </span>
       ))}
-      <span>・格子內：AI 最新分數（師＝已發布的教師分數）・次數・提示數</span>
+      <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        <span style={{ width: "12px", height: "12px", borderRadius: "3px", border: `2px solid ${REVIEW_COLOR}` }} />
+        黃框＝有作答待複核
+      </span>
+      <span>・分數：有老師分數就以老師為準，否則是 AI 最新一次的分數</span>
     </div>
   );
 }
@@ -326,8 +335,8 @@ function ModuleTable({ module, onSelect }: { module: ModuleOverview; onSelect: (
                   <td key={s.step_id} style={{ ...td, fontSize: "11px", color: "#94a3b8", padding: "8px 10px", lineHeight: 1.6 }}>
                     開始 {s.summary.started}・通過 {s.summary.passed}
                     <br />
-                    {s.summary.needs_review > 0 && <span style={{ color: "#fbbf24" }}>等老師 {s.summary.needs_review}・</span>}
-                    平均 {s.summary.avg_latest_ai_score ?? "—"}
+                    {s.summary.needs_review > 0 && <span style={{ color: REVIEW_COLOR }}>待複核 {s.summary.needs_review} 人・</span>}
+                    平均 {s.summary.avg_score != null ? `${s.summary.avg_score} 分` : "—"}
                   </td>
                 ))}
               </tr>
@@ -341,19 +350,23 @@ function ModuleTable({ module, onSelect }: { module: ModuleOverview; onSelect: (
 
 function CellButton({ cell, onClick }: { cell: Cell | undefined; onClick: () => void }) {
   if (!cell) return null;
-  const style = STATUS_STYLE[cell.status];
+  // 舊後端沒有 progress 時，從 passed／attempt_count 推出來
+  const progress: Progress = cell.progress ?? (cell.attempt_count === 0 ? "not_started" : cell.passed ? "passed" : "not_passed");
+  const style = PROGRESS_STYLE[progress];
   const started = cell.attempt_count > 0;
+  const waiting = cell.needs_review_count > 0;
+  const score = cell.score ?? cell.teacher_score ?? cell.latest_ai_score;
+  const source = cell.score_source ?? (cell.teacher_score !== null ? "teacher" : cell.latest_ai_score !== null ? "ai" : null);
   return (
     <button
       onClick={onClick}
       disabled={!started}
-      title={cell.review_reasons.map((r) => REASON_TEXT[r]).join("、") || style.text}
       style={{
         width: "100%",
         minHeight: "52px",
         padding: "6px 8px",
         borderRadius: "8px",
-        border: `1px solid ${started ? style.color : "rgba(255,255,255,0.08)"}`,
+        border: waiting ? `2px solid ${REVIEW_COLOR}` : `1px solid ${started ? style.color : "rgba(255,255,255,0.08)"}`,
         backgroundColor: style.bg,
         color: "#f8fafc",
         textAlign: "left",
@@ -361,13 +374,23 @@ function CellButton({ cell, onClick }: { cell: Cell | undefined; onClick: () => 
         fontSize: "12px",
       }}
     >
-      <div style={{ color: style.color, fontWeight: "bold" }}>{style.text}</div>
-      {started && (
-        <div style={{ marginTop: "2px", color: "#cbd5e1" }}>
-          {cell.teacher_score !== null ? `師 ${cell.teacher_score}` : cell.latest_ai_score ?? "未評分"}
-          <span style={{ color: "#64748b" }}>
-            ・{cell.attempt_count} 次・提示 {cell.hints_used}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "6px", alignItems: "baseline" }}>
+        <span style={{ color: style.color, fontWeight: "bold" }}>{style.text}</span>
+        {started && (
+          <span style={{ color: source === "teacher" ? "#86efac" : "#cbd5e1", whiteSpace: "nowrap" }}>
+            {source === "teacher" ? `老師 ${score}` : source === "ai" ? `AI ${score}` : "未評分"}
           </span>
+        )}
+      </div>
+      {started && (
+        <div style={{ marginTop: "2px", color: "#64748b" }}>
+          作答 {cell.attempt_count} 次・提示 {cell.hints_used}
+        </div>
+      )}
+      {waiting && (
+        <div style={{ marginTop: "4px", color: REVIEW_COLOR, fontWeight: "bold" }}>
+          {cell.needs_review_count} 筆待複核
+          <span style={{ fontWeight: "normal" }}>：{cell.review_reasons.map((r) => REASON_TEXT[r]).join("、")}</span>
         </div>
       )}
     </button>
@@ -447,7 +470,7 @@ function DetailDrawer({ student, step, onClose }: { student: StudentRow; step: S
                 </p>
               )}
               {a.review_reasons.length > 0 && (
-                <p style={{ fontSize: "12px", color: "#fbbf24", margin: "4px 0 0" }}>等老師：{a.review_reasons.map((r) => REASON_TEXT[r]).join("、")}</p>
+                <p style={{ fontSize: "12px", color: "#fbbf24", margin: "4px 0 0" }}>待複核：{a.review_reasons.map((r) => REASON_TEXT[r]).join("、")}</p>
               )}
 
               <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6, maxHeight: "120px", overflow: "hidden" }}>

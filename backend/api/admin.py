@@ -10,11 +10,13 @@
   前端每次打開練習頁都會產生新的 session_id（KNOWN_GAPS #3，刻意設計），
   同一位學生在同一步的作答會散在好幾個 Session，依 Session 列出教授反而看不出進度。
 
-狀態（每一格）：
-  not_started   還沒作答
-  needs_review  有作答在等老師（被轉介、AI 信心不足，或這一步是教師強制審核點），且還沒有教師判定
-  passed        通過（已發布的教師判定優先於 AI，規則同 core/step_unlock.attempt_passed）
-  in_progress   有作答但還沒通過
+每一格的兩件事分開看（2026-11-12 排練回饋：混成一個狀態時「已通過」會被「等老師」蓋掉）：
+  progress            not_started（沒作答）／not_passed（有作答、沒通過）／passed（通過；已發布的教師判定優先，
+                      規則同 core/step_unlock.attempt_passed）
+  needs_review_count  有幾筆作答在等老師（被轉介、AI 信心不足，或這一步是教師強制審核點），且還沒有教師判定
+  score／score_source 有已發布的教師分數就用老師的，否則用 AI 最新分數
+
+舊欄位 status（not_started / in_progress / needs_review / passed）保留給舊前端，新畫面請用上面三個。
 
 權限：限教師端（owner / assistant）。只讀，不寫任何資料。
 """
@@ -104,7 +106,8 @@ def summarize_cell(attempts: list[dict], step: dict) -> dict:
     """一位學生在一個步驟的狀況。attempts = 這位學生在這一步的所有作答（順序不拘）。"""
     if not attempts:
         return {
-            "status": "not_started", "attempt_count": 0, "evaluated_count": 0,
+            "status": "not_started", "progress": "not_started", "score": None, "score_source": None,
+            "attempt_count": 0, "evaluated_count": 0,
             "latest_ai_score": None, "best_ai_score": None, "teacher_score": None,
             "passed": False, "hints_used": 0, "needs_review_count": 0,
             "review_reasons": [], "last_activity_at": None,
@@ -143,6 +146,9 @@ def summarize_cell(attempts: list[dict], step: dict) -> dict:
 
     return {
         "status": cell_status,
+        "progress": "passed" if passed else "not_passed",
+        "score": teacher_score if teacher_score is not None else (scores[-1] if scores else None),
+        "score_source": "teacher" if teacher_score is not None else ("ai" if scores else None),
         "attempt_count": len(ordered),
         "evaluated_count": len(scores),
         "latest_ai_score": scores[-1] if scores else None,
@@ -159,10 +165,13 @@ def summarize_cell(attempts: list[dict], step: dict) -> dict:
 def summarize_step(step: dict, cells: list[dict]) -> dict:
     """一個步驟在全班的摘要。cells = 每位學生在這一步的格子。"""
     latest = [c["latest_ai_score"] for c in cells if c["latest_ai_score"] is not None]
+    effective = [c["score"] for c in cells if c.get("score") is not None]
     return {
         "started": sum(1 for c in cells if c["attempt_count"]),
         "passed": sum(1 for c in cells if c["passed"]),
-        "needs_review": sum(1 for c in cells if c["status"] == "needs_review"),
+        "needs_review": sum(1 for c in cells if c["needs_review_count"]),
+        # 平均分數：有老師分數的學生用老師分數，其他用 AI 最新分數
+        "avg_score": round(sum(effective) / len(effective), 1) if effective else None,
         "avg_latest_ai_score": round(sum(latest) / len(latest), 1) if latest else None,
     }
 
