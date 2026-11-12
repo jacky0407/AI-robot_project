@@ -210,13 +210,38 @@ class TestModules:
     def test_empty_patch_is_rejected(self):
         assert call("PATCH", f"/{MOD}", make_db(), json={}).json()["detail"]["code"] == "NO_CHANGES"
 
-    def test_module_with_attempts_cannot_be_deleted(self):
+    def test_module_with_attempts_is_moved_to_deleted_and_attempts_kept(self):
+        """#49 第 2 項：有作答也能刪，但只是移到已刪除，研究資料保留"""
+        db = make_db(attempts=[attempt_on(S2)], published=True,
+                     assignments=[{"course_id": "c1", "module_id": MOD}])
+        res = call("DELETE", f"/{MOD}", db)
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["soft_deleted"] is True and "1 筆學生作答保留" in body["message"]
+        row = db.rows("learning_modules")[0]
+        assert row["deleted_at"] and row["is_published"] is False
+        assert db.rows("course_modules") == []
+        assert len(db.rows("step_attempts")) == 1
+
+    def test_deleted_module_disappears_from_teacher_views(self):
         db = make_db(attempts=[attempt_on(S2)])
+        call("DELETE", f"/{MOD}", db)
+
+        assert call("GET", "", db).json()["data"] == []
+        assert call("GET", f"/{MOD}", db).status_code == 404
+        assert call("DELETE", f"/{MOD}", db).status_code == 404
+
+    def test_soft_delete_before_migration_016_keeps_old_refusal(self):
+        db = make_db(attempts=[attempt_on(S2)])
+        db.errors[("learning_modules", "update")] = APIError(
+            {"code": "42703", "message": 'column "deleted_at" does not exist'}
+        )
         res = call("DELETE", f"/{MOD}", db)
 
         assert res.status_code == 409
-        assert res.json()["detail"]["code"] == "MODULE_HAS_ATTEMPTS"
-        assert len(db.rows("learning_modules")) == 1
+        assert "016" in res.json()["detail"]["message"]
+        assert db.rows("learning_modules")[0].get("deleted_at") is None
 
     def test_delete_module_without_attempts_reports_unassigned_courses(self):
         db = make_db(assignments=[{"course_id": "c1", "module_id": MOD}, {"course_id": "c2", "module_id": MOD}])

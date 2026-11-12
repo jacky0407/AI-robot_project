@@ -82,6 +82,23 @@ class TestAssignModule:
         assert res.status_code == 201
         assert "尚未發布" in res.json()["message"]
 
+    def test_deleted_module_cannot_be_assigned(self, as_user):
+        """移到已刪除的模組（migration 016）當作不存在"""
+        as_user(TEACHER)
+        db = fake_db([COURSE], [{**MODULE, "deleted_at": "2026-11-12T10:00:00Z"}])
+        res = call("POST", BASE, db, json={"module_id": MODULE_ID})
+
+        assert res.status_code == 404
+        db.table.return_value.insert.assert_not_called()
+
+    def test_assign_works_before_migration_016(self, as_user):
+        as_user(TEACHER)
+        db = fake_db([COURSE], Exception('column learning_modules.deleted_at does not exist'),
+                     [MODULE], [{"module_id": MODULE_ID}])
+        res = call("POST", BASE, db, json={"module_id": MODULE_ID})
+
+        assert res.status_code == 201
+
     def test_missing_course_is_404(self, as_user):
         as_user(TEACHER)
         res = call("POST", BASE, fake_db([]), json={"module_id": MODULE_ID})

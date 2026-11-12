@@ -701,7 +701,7 @@
 | --- | --- |
 | 刪除已有作答的步驟 | 409 `STEP_HAS_ATTEMPTS`，請改用停用：學生看不到、不能作答，作答完整保留 |
 | 已有作答的步驟換機器人 | 409 `STEP_HAS_ATTEMPTS`，請停用這一步再新增一個 |
-| 刪除已有作答的模組 | 409 `MODULE_HAS_ATTEMPTS`，請改成取消發布 |
+| 刪除已有作答的模組 | 200，`soft_deleted: true`：移到已刪除（`deleted_at`、取消發布、取消所有課程指派），作答保留；教師與學生畫面都不再顯示。還沒跑 migration 016 時仍回 409 `MODULE_HAS_ATTEMPTS` |
 
 **其他檢查**：
 

@@ -131,7 +131,8 @@ CREATE TABLE IF NOT EXISTS public.learning_modules (
     description TEXT,
     domain TEXT NOT NULL,
     is_published BOOLEAN DEFAULT false,
-    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    deleted_at TIMESTAMPTZ                 -- 有值 = 已刪除（作答保留），migration 016
 );
 
 -- 模組步驟編排 (定義 1~9 步驟、前置解鎖與資料傳遞)

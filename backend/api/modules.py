@@ -8,7 +8,8 @@
 保護研究資料：
   - step_attempts.step_id 是 ON DELETE CASCADE，刪步驟會連學生作答一起刪掉，
     所以已有作答的步驟不能刪，只能停用（is_active = false，migration 010）；
-    已有作答的模組也不能刪
+    已有作答的模組改成「移到已刪除」（deleted_at，migration 016）：取消發布、取消所有課程指派，
+    教師與學生畫面都看不到，作答紀錄完整保留
   - 已有作答的步驟不能換機器人（不同機器人的作答混在同一步，研究資料就分不開了）
 
 發布檢查：模組至少要有一個啟用中的步驟，且這些步驟的機器人都已發布，
@@ -18,6 +19,7 @@
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -119,11 +121,22 @@ def _execute(query):
         raise
 
 
+def _select_modules(db, apply=lambda q: q):
+    """讀模組並排除已刪除的；還沒跑 migration 016（沒有 deleted_at）時視為都沒刪除"""
+    try:
+        rows = apply(db.table("learning_modules").select(MODULE_FIELDS + ", deleted_at")).execute().data or []
+    except APIError as e:
+        if e.code != UNDEFINED_COLUMN:
+            raise
+        rows = apply(db.table("learning_modules").select(MODULE_FIELDS)).execute().data or []
+    return [{k: v for k, v in r.items() if k != "deleted_at"} for r in rows if not r.get("deleted_at")]
+
+
 def _get_module_or_404(db, module_id: str) -> dict:
-    res = db.table("learning_modules").select(MODULE_FIELDS).eq("id", module_id).limit(1).execute()
-    if not res.data:
+    rows = _select_modules(db, lambda q: q.eq("id", module_id).limit(1))
+    if not rows:
         raise _error(status.HTTP_404_NOT_FOUND, "MODULE_NOT_FOUND", "找不到這個模組")
-    return res.data[0]
+    return rows[0]
 
 
 def _load_steps(db, module_id: str) -> list[dict]:
@@ -224,7 +237,7 @@ def _compact_order(db, module_id: str) -> None:
 async def list_modules(user: CurrentUser = Depends(require_staff)):
     """所有模組（含未發布），附啟用中與全部步驟數"""
     db = get_supabase()
-    modules = db.table("learning_modules").select(MODULE_FIELDS).order("created_at").execute().data or []
+    modules = _select_modules(db, lambda q: q.order("created_at"))
     steps = _execute(db.table("module_steps").select("module_id, is_active")).data or []
 
     result = []
@@ -282,23 +295,43 @@ async def update_module(module_id: UUID, body: UpdateModuleRequest, user: Curren
 
 @router.delete("/{module_id}")
 async def delete_module(module_id: UUID, user: CurrentUser = Depends(require_staff)):
-    """刪除模組；已有學生作答就不能刪（請改成取消發布）"""
+    """
+    刪除模組。
+      - 沒有學生作答：直接刪除（課程指派一起取消）
+      - 已有作答：移到已刪除（deleted_at、取消發布、取消所有課程指派），作答紀錄保留供研究使用
+    """
     _require_owner(user)
     db = get_supabase()
     module_id = str(module_id)
     _get_module_or_404(db, module_id)
 
-    if _attempt_counts(db, module_id=module_id):
+    assigned = db.table("course_modules").select("course_id").eq("module_id", module_id).execute().data or []
+    unassigned = f"，並取消 {len(assigned)} 門課程的指派" if assigned else ""
+    attempts = sum(_attempt_counts(db, module_id=module_id).values())
+
+    if not attempts:
+        db.table("learning_modules").delete().eq("id", module_id).execute()
+        return {"success": True, "soft_deleted": False, "message": "已刪除模組" + unassigned}
+
+    try:
+        db.table("learning_modules").update({
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "is_published": False,
+        }).eq("id", module_id).execute()
+    except APIError as e:
+        if e.code != UNDEFINED_COLUMN:
+            raise
         raise _error(
             status.HTTP_409_CONFLICT,
             "MODULE_HAS_ATTEMPTS",
-            "這個模組已有學生作答，刪除會連作答紀錄一起刪掉；請改成取消發布",
+            "這個模組已有學生作答；要刪除請先在 Supabase 執行 supabase/migrations/016_module_soft_delete.sql",
         )
-
-    assigned = db.table("course_modules").select("course_id").eq("module_id", module_id).execute().data or []
-    db.table("learning_modules").delete().eq("id", module_id).execute()
-    message = "已刪除模組" + (f"，並取消 {len(assigned)} 門課程的指派" if assigned else "")
-    return {"success": True, "message": message}
+    db.table("course_modules").delete().eq("module_id", module_id).execute()
+    return {
+        "success": True,
+        "soft_deleted": True,
+        "message": f"已刪除模組{unassigned}；{attempts} 筆學生作答保留供研究使用，學生與教師畫面都不再顯示",
+    }
 
 
 # ──────────────────────────────────────────

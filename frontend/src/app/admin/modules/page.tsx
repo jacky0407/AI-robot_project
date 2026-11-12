@@ -173,7 +173,14 @@ export default function AdminModulesPage() {
     );
 
   const handleDeleteModule = async () => {
-    if (!detail || !window.confirm(`確定要刪除模組「${detail.title}」嗎？指派給課程的紀錄也會一起取消。`)) return;
+    if (!detail) return;
+    // 已有作答：後端會「移到已刪除」（migration 016），作答保留；沒有作答才真的刪除
+    const attempts = detail.steps.reduce((sum, s) => sum + (s.attempt_count ?? 0), 0);
+    const warning =
+      attempts > 0
+        ? `這個模組已有 ${attempts} 筆學生作答。刪除後學生與教師畫面都看不到這個模組，指派給課程的紀錄會取消；作答紀錄會保留供研究使用。`
+        : "指派給課程的紀錄也會一起取消。";
+    if (!window.confirm(`確定要刪除模組「${detail.title}」嗎？\n\n${warning}`)) return;
     const ok = await run(
       () => apiFetch<{ message: string }>(`/api/modules/${detail.id}`, { method: "DELETE" }),
       "已刪除模組"

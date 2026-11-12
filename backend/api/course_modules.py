@@ -84,6 +84,24 @@ async def list_course_modules(course_id: UUID, user: CurrentUser = Depends(get_c
     return {"data": modules}
 
 
+def _load_module(supabase, module_id: str):
+    """要指派的模組；已刪除（deleted_at，migration 016）的當作不存在"""
+    query = lambda cols: (  # noqa: E731
+        supabase.table("learning_modules").select(cols).eq("id", module_id).limit(1).execute()
+    )
+    try:
+        res = query("title, description, domain, is_published, deleted_at")
+    except Exception as e:  # noqa: BLE001 - 還沒跑 016：沒有 deleted_at
+        if "deleted_at" not in str(e):
+            raise
+        return query("title, description, domain, is_published")
+    if res.data and res.data[0].get("deleted_at"):
+        res.data = []
+    elif res.data:
+        res.data = [{k: v for k, v in res.data[0].items() if k != "deleted_at"}]
+    return res
+
+
 @router.post("/{course_id}/modules", status_code=status.HTTP_201_CREATED)
 async def assign_module(course_id: UUID, body: AssignModuleRequest, user: CurrentUser = Depends(require_staff)):
     """把模組指派給課程"""
@@ -91,13 +109,7 @@ async def assign_module(course_id: UUID, body: AssignModuleRequest, user: Curren
     course_id, module_id = str(course_id), str(body.module_id)
 
     _get_course_or_404(supabase, course_id)
-    module = (
-        supabase.table("learning_modules")
-        .select("title, description, domain, is_published")
-        .eq("id", module_id)
-        .limit(1)
-        .execute()
-    )
+    module = _load_module(supabase, module_id)
     if not module.data:
         raise _error(status.HTTP_404_NOT_FOUND, "MODULE_NOT_FOUND", "找不到這個模組")
 
