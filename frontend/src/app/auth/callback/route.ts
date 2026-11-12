@@ -22,8 +22,12 @@ export async function GET(request: Request) {
     // 把 Google / 驗證信給的 code 換成 session
     const { error } = await supabase.auth.exchangeCodeForSession(code)
 
-    // 重設密碼：不管有沒有完成註冊，都直接去設定新密碼
-    if (!error && next === '/reset-password') {
+    // 重設密碼：不管有沒有完成註冊，都直接去設定新密碼。
+    // 換不到 session（多半是在別的瀏覽器開信，或寄了第二封信讓舊連結的 PKCE verifier 失效）
+    // 也去重設密碼頁：它會顯示「連結已失效」並提供重寄，比登入頁的「登入驗證失敗」清楚。
+    // 信件範本改用 /auth/confirm（token_hash）後就不會走到這裡，這段是給舊範本的保險
+    if (next === '/reset-password') {
+      if (error) console.error('[auth/callback] 重設密碼連結換 session 失敗:', error.message)
       return NextResponse.redirect(`${origin}${next}`)
     }
 
