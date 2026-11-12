@@ -1236,6 +1236,7 @@ class TestBotMemory:
 
         assert res.json()["data"] == {
             "enabled": False, "attempts": [], "recurring_errors": [], "prior_steps": [],
+            "profile_highlights": [], "profile_version": None,
         }
         assert fake_db.find("step_attempts", "select") == []
 

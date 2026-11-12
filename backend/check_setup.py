@@ -27,17 +27,19 @@ EXPECTED_TABLES = [
     "forms", "form_responses", "research_consents",
     "course_modules",     # migration 005 才有（新建資料庫跑 schema.sql 就會有）
     "practice_sessions",  # migration 009 才有
+    "learner_profiles",   # migration 015 才有（schema.sql 尚未同步）
 ]
 
 # 只靠 migration 建立的資料表 → 缺少時要跑哪一支
 TABLE_MIGRATIONS = {
     "course_modules": "005_rls_policies.sql",
     "practice_sessions": "009_practice_sessions.sql",
+    "learner_profiles": "015_learner_profiles.sql",
 }
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
 EXPECTED_COLUMNS = {
-    "ai_evaluations": ["confidence", "needs_teacher_review"],
+    "ai_evaluations": ["confidence", "needs_teacher_review", "memory_snapshot"],  # memory_snapshot：migration 015
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009

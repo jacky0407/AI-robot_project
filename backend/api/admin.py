@@ -5,6 +5,8 @@
       一門課「所有學生 × 所有步驟」的作答狀況總表，外加每一步與每位學生的摘要
   GET /api/admin/students/{user_id}/steps/{step_id}
       點進表格的一格：這位學生在這一步的每一次作答（AI 分數、提示數、教師判定）
+  GET /api/admin/students/{user_id}/profile?module_id=…
+      點學生名字：這位學生在這個模組的學習者側寫（熟練度、常犯／已改善錯誤、教師叮嚀）
 
 為什麼是「學生 × 步驟」而不是 api.md 原本的「依 Session 列出」：
   前端每次打開練習頁都會產生新的 session_id（KNOWN_GAPS #3，刻意設計），
@@ -26,6 +28,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from core.auth import STAFF_ROLES, CurrentUser, require_staff
+from core.learner_profile import ATTEMPT_SELECT as PROFILE_ATTEMPT_SELECT
+from core.learner_profile import build_profile, load_latest_profile
 from core.step_unlock import DEFAULT_PASS_SCORE, attempt_passed
 from database.client import get_supabase
 
@@ -365,5 +369,44 @@ async def get_student_step(user_id: UUID, step_id: UUID, user: CurrentUser = Dep
             },
             "summary": summarize_cell(attempts, step),
             "attempts": items,
+        }
+    }
+
+
+@router.get("/students/{user_id}/profile")
+async def get_student_profile(
+    user_id: UUID,
+    module_id: UUID = Query(..., description="模組 ID"),
+    user: CurrentUser = Depends(require_staff),
+):
+    """
+    學生狀態概述（數字版，不呼叫 AI）。
+
+    每次都從作答紀錄即時重算，所以 migration 015 之前的歷史作答也看得到；
+    saved_version 是資料庫裡最新保存的側寫版本（AI 助教讀的是那一份），沒有則為 None。
+    """
+    db = get_supabase()
+    user_id, module_id = str(user_id), str(module_id)
+
+    profile_res = db.table("profiles").select("id, full_name, email").eq("id", user_id).execute()
+    if not profile_res.data:
+        raise _error(status.HTTP_404_NOT_FOUND, "STUDENT_NOT_FOUND", "找不到這位學生")
+
+    module_res = db.table("learning_modules").select("id, title").eq("id", module_id).execute()
+    if not module_res.data:
+        raise _error(status.HTTP_404_NOT_FOUND, "MODULE_NOT_FOUND", "找不到這個模組")
+
+    attempts = (
+        db.table("step_attempts").select(PROFILE_ATTEMPT_SELECT)
+        .eq("user_id", user_id).eq("module_id", module_id).execute()
+    ).data or []
+    latest = load_latest_profile(db, user_id, module_id)
+
+    return {
+        "data": {
+            "student": profile_res.data[0],
+            "module": module_res.data[0],
+            "profile": build_profile(attempts),
+            "saved_version": (latest or {}).get("version"),
         }
     }
