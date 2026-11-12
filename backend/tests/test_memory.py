@@ -250,6 +250,32 @@ class TestPriorSteps:
             (2, "第二步唯一一次", False),
         ]
 
+    def test_teacher_pass_counts_as_passed(self):
+        """老師把 AI 判不過的作答改判通過（已發布、分數達門檻）→ 記憶裡也要是「已通過」，規則同步驟解鎖"""
+        row = prior(1, 1, "revision_required", "老師改判通過")
+        row["module_steps"]["pass_score"] = 70
+        row["teacher_reviews"] = [{"final_score": 80, "is_published": True}]
+        memory = load_bot_memory(FakeDB(module_rows=[row]), USER_ID, step_row(step_order=2))
+
+        assert memory.prior_steps[0].passed is True
+
+    def test_teacher_fail_and_unpublished_review(self):
+        failed = prior(1, 2, "passed", "AI 判過但老師改判不過")
+        failed["teacher_reviews"] = [{"final_score": 40, "is_published": True}]
+        draft = prior(2, 1, "revision_required", "老師還沒發布")
+        draft["teacher_reviews"] = [{"final_score": 90, "is_published": False}]
+        memory = load_bot_memory(FakeDB(module_rows=[failed, draft]), USER_ID, step_row(step_order=3))
+
+        assert [(p.step_order, p.passed) for p in memory.prior_steps] == [(1, False), (2, False)]
+
+    def test_teacher_passed_version_is_preferred(self):
+        newer = prior(1, 3, "revision_required", "最新但沒過")
+        teacher_ok = prior(1, 2, "revision_required", "老師改判通過的版本")
+        teacher_ok["teacher_reviews"] = [{"final_score": 75, "is_published": True}]
+        memory = load_bot_memory(FakeDB(module_rows=[newer, teacher_ok]), USER_ID, step_row(step_order=2))
+
+        assert memory.prior_steps[0].content == "老師改判通過的版本"
+
     def test_first_step_does_not_query_prior_steps(self):
         db = FakeDB()
         load_bot_memory(db, USER_ID, step_row(step_order=1))

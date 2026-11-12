@@ -31,6 +31,8 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field
 
+from core.step_unlock import DEFAULT_PASS_SCORE, attempt_passed
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ATTEMPTS = 3
@@ -54,9 +56,12 @@ ATTEMPT_SELECT = (
 )
 
 # 前面步驟的成果：同模組每一步的作答與步驟順序
+# 「是否通過」與步驟解鎖用同一套規則（core/step_unlock.attempt_passed）：
+# 已發布的教師分數優先於 AI，所以要一起讀 teacher_reviews 與門檻 pass_score
 PRIOR_STEP_SELECT = (
     "step_id, attempt_number, status, user_input_content, "
-    "module_steps(step_order, step_title)"
+    "module_steps(step_order, step_title, pass_score), "
+    "teacher_reviews(final_score, is_published)"
 )
 
 
@@ -325,16 +330,25 @@ def _load_prior_steps(db, user_id: str, module_id: str | None, step_order: int) 
             step_order=step["step_order"],
             step_title=step.get("step_title") or "",
             content=_truncate(row.get("user_input_content"), PRIOR_STEP_CHARS),
-            passed=row.get("status") == "passed",
+            passed=_row_passed(row),
         ))
     prior.sort(key=lambda p: p.step_order)
     return prior
 
 
+def _row_passed(row: dict) -> bool:
+    """
+    這次作答是否通過，規則同步驟解鎖：已發布且有給分的教師判定優先，否則看 AI 的 status。
+    （2026-11-12：原本只看 status，老師改判通過的關卡在記憶裡仍顯示「未通過」）
+    """
+    step = _first(row.get("module_steps")) or {}
+    return attempt_passed(row, step.get("pass_score") or DEFAULT_PASS_SCORE)
+
+
 def _prefer(candidate: dict, current: dict) -> bool:
     """candidate 是否比 current 更適合當這一步的代表作答"""
-    cand_passed = candidate.get("status") == "passed"
-    curr_passed = current.get("status") == "passed"
+    cand_passed = _row_passed(candidate)
+    curr_passed = _row_passed(current)
     if cand_passed != curr_passed:
         return cand_passed
     return (candidate.get("attempt_number") or 0) > (current.get("attempt_number") or 0)
