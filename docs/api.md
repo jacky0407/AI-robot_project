@@ -319,27 +319,48 @@
 
 ## 三、課程管理 (Courses)
 
-### 第一版已實作（做法 A：一門課一組邀請碼）
+### 已實作：一門課多組邀請碼（migration 013）
 
 實作在 `backend/api/courses.py`。所有端點都要帶 `Authorization: Bearer <Supabase access token>`
 （`frontend/src/utils/api.ts` 的 `apiFetch` 會自動帶），未登入回 `401`，學生呼叫教師端點回 `403`。
-錯誤格式為 FastAPI 的 `{"detail": {"code": "...", "message": "..."}}`。
+錯誤格式為 FastAPI 的 `{"detail": {"code": "...", "message": "..."}}`。網址裡的 id 都要是 UUID，否則 422。
 
 成員狀態：`pending`（待審核）、`active`（已加入）、`rejected`（申請被拒）、`removed`（被移出）。
 
+**邀請碼規則**（「邀請碼與自備金鑰設計提案」第一階段）：
+- 建立課程**不會**產生邀請碼，老師另外產生；一門課可以有多組
+- 每組設定 `access_until`（可用日期，台灣時間當天仍可用）與 `plan`：
+  `free`（平台金鑰，每天 `daily_quota` 次，沒填預設 10）或 `self_key`（學生自備金鑰，不限次數）
+- 邀請碼不會自動失效；老師可以停用（`is_active: false`）。方案不能改，要換請產生新的碼
+- 老師改了碼的可用日期或次數，已用這組碼加入的學生跟著變
+- `self_key`：自備金鑰（第二階段 `/api/me/api-key`）上線前，用這種碼加入的學生作答會得到 403 `API_KEY_REQUIRED`
+
+邀請碼欄位：`{id, code, plan, daily_quota, access_until, is_active, expired, created_at, member_count}`
+（`expired` = 可用日期已過；`member_count` = 用這組碼加入且 active 的人數）。
+
 | 權限 | 方法與路徑 | Request | 成功回應 `data` |
 |------|-----------|---------|----------------|
-| 教師 | `POST /api/courses` | `{title, description?, require_approval?}` | 課程（含 `invite_code`），201 |
-| 教師 | `GET /api/courses?include_archived=false` | — | 課程陣列，每筆多 `active_count`、`pending_count` |
+| 教師 | `POST /api/courses` | `{title, description?, require_approval?}` | 課程（**不含邀請碼**），201 |
+| 教師 | `GET /api/courses?include_archived=false` | — | 課程陣列，每筆多 `active_count`、`pending_count`、`invite_codes`（新的在前） |
 | 教師 | `PATCH /api/courses/:course_id` | `{title?, description?, require_approval?, is_archived?}` | 更新後的課程 |
-| 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at}]` |
+| 教師 | `POST /api/courses/:course_id/invite-codes` | `{plan?, access_until, daily_quota?}` | 邀請碼，201 |
+| 教師 | `GET /api/courses/:course_id/invite-codes` | — | 邀請碼陣列（新的在前） |
+| 教師 | `PATCH /api/courses/:course_id/invite-codes/:code_id` | `{is_active?, access_until?, daily_quota?}` | 更新後的邀請碼 |
+| 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at, invite_code, plan, access_until}]` |
 | 教師 | `PATCH /api/courses/:course_id/members/:user_id` | `{action: "approve" \| "reject" \| "remove"}` | 更新後的成員 |
-| 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at}` |
-| 登入者 | `GET /api/courses/mine` | — | `[{course_id, course_name, description, is_archived, status, joined_at}]` |
+| 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at, plan, daily_quota, access_until, needs_api_key}` |
+| 登入者 | `GET /api/courses/mine` | — | `[{course_id, course_name, description, is_archived, status, joined_at, plan, daily_quota, access_until, access_expired, needs_api_key}]` |
+
+`GET /api/courses/mine` 裡沒有掛邀請碼的成員（013 之前的舊資料已自動掛上；後台直接加入的才會沒有）
+`plan`、`daily_quota`、`access_until` 都是 `null`，代表不限期、不限次數。
+
+產生／修改邀請碼的錯誤代碼：`INVALID_ACCESS_UNTIL`（400，早於今天）、`QUOTA_NOT_APPLICABLE`（400，自備金鑰不能設次數）、
+`COURSE_ARCHIVED`（403）、`COURSE_NOT_FOUND` / `INVITE_CODE_NOT_FOUND`（404）。
 
 `POST /api/courses/join` 的錯誤代碼：`INVALID_FORMAT`（400）、`INVALID_INVITE_CODE`（404）、
-`COURSE_ARCHIVED`（403）、`ALREADY_JOINED` / `ALREADY_PENDING`（409）。
-被拒絕或移出的人可以重新輸入邀請碼，一律回到 `pending`。
+`CODE_DISABLED`（403，已停用）、`CODE_EXPIRED`（403，可用日期已過）、`COURSE_ARCHIVED`（403）、
+`ALREADY_JOINED` / `ALREADY_PENDING`（409）。
+被拒絕或移出的人可以重新輸入邀請碼，一律回到 `pending`，並改掛在這次輸入的碼下。
 
 審核動作只允許：`approve`（pending / rejected / removed → active）、`reject`（pending → rejected）、
 `remove`（active / pending → removed），其他組合回 409 `INVALID_STATUS_TRANSITION`。
@@ -362,7 +383,7 @@
 - 錯誤代碼：`COURSE_NOT_FOUND` / `MODULE_NOT_FOUND` / `ASSIGNMENT_NOT_FOUND`（404）、`ALREADY_ASSIGNED`（409）
 - 取消指派不會刪除學生的作答紀錄
 
-以下為做法 B 的原始規劃，尚未實作；改成 B 時 `POST /api/courses/join` 的網址與欄位維持不變。
+以下為最早的做法 B 規劃（含名額、Token 額度），**已被上面的多組邀請碼取代**，只留作參考。
 
 ### `POST /api/courses`
 **權限**：HOST
@@ -871,10 +892,10 @@
 | 檢查 | 不通過時 |
 | --- | --- |
 | 個資偵測 | 400 `PII_DETECTED` |
-| 指派：課程指派（active 成員、課程未封存）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；核准已過期為 403 `PERMISSION_EXPIRED` |
+| 指派：課程指派（active 成員、課程未封存、邀請碼可用日期未過）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；課程可用日期已過為 403 `ACCESS_EXPIRED`；自備金鑰方案為 403 `API_KEY_REQUIRED`；核准已過期為 403 `PERMISSION_EXPIRED` |
 | 解鎖：步驟啟用中，且前面的必修步驟都已通過（教師已發布的判定分數優先於 AI 結果；規則見 `core/step_unlock.py`） | 403 `STEP_DISABLED`；前面還有必修步驟沒通過為 403 `STEP_LOCKED`（訊息會寫出是哪一步） |
 | 練習 Session：`session_id` 必須是 UUID；第一次出現就建立並屬於登入者，之後只有本人能用（migration 009；還沒跑時不檢查、作答照常） | 400 `INVALID_SESSION_ID`；別人的 Session 為 403 `SESSION_FORBIDDEN` |
-| 每日額度（只限逐位核准的自主模式；送出就扣 1，只拿到提示也算，AI 失敗不退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
+| 每日額度（逐位核准的自主模式，以及課程的免費邀請碼；送出就扣 1，只拿到提示也算，AI 評分因系統錯誤失敗會退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
 
 教師端（owner / assistant）不做指派、解鎖與額度檢查。
 
@@ -957,15 +978,18 @@ data: {"message": "你已嘗試 4 次，建議與老師討論後再繼續練習�
 }
 ```
 
-**Response 200（課程模式 / 教師端，不限次數）：**
+**Response 200（教師端，或沒有掛邀請碼的課程成員，不限次數）：**
 ```json
 {
   "data": { "mode": "course", "used": null, "quota": null, "remaining": null, "expire_date": null }
 }
 ```
-`mode` 為 `course`（課程指派）、`permission`（逐位核准）或 `staff`（教師端）。`expire_date` 為 `null` 代表不限期。
+`mode` 為 `course`（課程指派）、`permission`（逐位核准）或 `staff`（教師端）。
+課程的免費邀請碼和逐位核准一樣有 `used` / `quota` / `remaining`，`expire_date` 是邀請碼的可用日期。
+判斷「不限次數」請看 `quota` 是否為 `null`，不要只看 `mode`。`expire_date` 為 `null` 代表不限期。
 
-**錯誤**：與送出作答相同 — 401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `PERMISSION_EXPIRED`；步驟不存在 404。
+**錯誤**：與送出作答相同 — 401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `ACCESS_EXPIRED`、403 `API_KEY_REQUIRED`、
+403 `PERMISSION_EXPIRED`；步驟不存在 404。
 `remaining` 為 0 時送出會得到 429 `QUOTA_EXCEEDED`，前端可先停用送出按鈕。
 
 ---

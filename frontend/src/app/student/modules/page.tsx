@@ -994,7 +994,8 @@ function StudentWorkspace() {
   );
 }
 
-// 送出按鈕旁的剩餘次數：課程模式不限次數；自主模式顯示今天剩幾次與使用期限
+// 送出按鈕旁的剩餘次數：有次數上限時（自主模式、課程的免費邀請碼）顯示今天剩幾次與使用期限，
+// 沒有上限時（教師、沒有邀請碼的課程成員）顯示不限次數
 function QuotaBadge({ state }: { state: QuotaState }) {
   const base: React.CSSProperties = { fontSize: "12px", lineHeight: 1.5 };
   if (!state) return <span style={{ ...base, color: "#64748b" }}>送出後將由 AI 規準引擎串流評估</span>;
@@ -1002,14 +1003,15 @@ function QuotaBadge({ state }: { state: QuotaState }) {
 
   const q = state.quota;
   if (q.mode === "staff") return <span style={{ ...base, color: "#64748b" }}>教師帳號：不限次數</span>;
-  if (q.mode === "course") return <span style={{ ...base, color: "#64748b" }}>正式課程：不限練習次數</span>;
+  if (q.quota === null) return <span style={{ ...base, color: "#64748b" }}>正式課程：不限練習次數</span>;
 
   const color = q.remaining === 0 ? "#f87171" : (q.remaining ?? 0) <= 2 ? "#fbbf24" : "#86efac";
   return (
     <span style={{ ...base, color }}>
       今天還可以作答 <b>{q.remaining}</b> / {q.quota} 次
       <span style={{ color: "#64748b" }}>
-        {q.expire_date ? `・可使用到 ${q.expire_date}` : "・不限期"}・自主練習，AI 回饋僅供參考
+        {q.expire_date ? `・可使用到 ${q.expire_date}` : "・不限期"}
+        {q.mode === "permission" ? "・自主練習，AI 回饋僅供參考" : ""}
       </span>
     </span>
   );

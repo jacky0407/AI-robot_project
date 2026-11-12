@@ -1,7 +1,8 @@
 "use client";
 
-// 教師端：課程管理（建立課程、邀請碼、審核加入申請、移出成員、封存）
-// 後端：/api/courses、/api/courses/{id}、/api/courses/{id}/members（backend/api/courses.py）
+// 教師端：課程管理（建立課程、產生與管理邀請碼、審核加入申請、移出成員、封存）
+// 後端：/api/courses、/api/courses/{id}、/api/courses/{id}/invite-codes、/api/courses/{id}/members（backend/api/courses.py）
+// 邀請碼：一門課可以有多組，各自設定可用日期與方案（免費每日次數／自備金鑰），建立課程時不會自動產生
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -9,16 +10,28 @@ import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch } from "@/utils/api";
 import AdminNav from "../AdminNav";
 
+type InvitePlan = "free" | "self_key";
+type InviteCode = {
+  id: string;
+  code: string;
+  plan: InvitePlan;
+  daily_quota: number | null;
+  access_until: string;
+  is_active: boolean;
+  expired: boolean;
+  member_count: number;
+};
+
 type Course = {
   id: string;
   title: string;
   description: string | null;
-  invite_code: string;
   require_approval: boolean;
   is_archived: boolean;
   created_at: string;
   active_count: number;
   pending_count: number;
+  invite_codes: InviteCode[];
 };
 
 type MemberStatus = "pending" | "active" | "rejected" | "removed";
@@ -28,7 +41,16 @@ type Member = {
   email: string | null;
   status: MemberStatus;
   joined_at: string | null;
+  invite_code: string | null;
 };
+
+type CodeForm = { courseId: string; plan: InvitePlan; access_until: string; daily_quota: string };
+
+const planLabel = (c: Pick<InviteCode, "plan" | "daily_quota">) =>
+  c.plan === "free" ? `免費・每天 ${c.daily_quota} 次` : "自備金鑰・不限次數";
+
+// 本機（台灣）的今天，YYYY-MM-DD；可用日期不能早於今天
+const todayLocal = () => new Date().toLocaleDateString("sv-SE");
 type MemberAction = "approve" | "reject" | "remove";
 
 type AssignedModule = { module_id: string; title: string | null; is_published: boolean };
@@ -61,6 +83,11 @@ export default function AdminCoursesPage() {
   const [form, setForm] = useState({ title: "", description: "", require_approval: false });
   const [creating, setCreating] = useState(false);
   const [createMsg, setCreateMsg] = useState("");
+
+  // 邀請碼
+  const [codeForm, setCodeForm] = useState<CodeForm | null>(null);
+  const [busyCode, setBusyCode] = useState<string | null>(null);
+  const [codeMsg, setCodeMsg] = useState<{ courseId: string; text: string } | null>(null);
 
   // 成員
   const [openCourse, setOpenCourse] = useState<string | null>(null);
@@ -142,9 +169,11 @@ export default function AdminCoursesPage() {
           require_approval: form.require_approval,
         }),
       });
-      setCreateMsg(`${res.message}，邀請碼：${res.data.invite_code}`);
+      setCreateMsg(res.message);
       setForm({ title: "", description: "", require_approval: false });
       await loadCourses();
+      // 新課程沒有邀請碼，直接打開它的「產生邀請碼」表單
+      openCodeForm(res.data.id);
     } catch (err) {
       setCreateMsg(`建立失敗：${errorText(err, "請稍後再試")}`);
     } finally {
@@ -163,6 +192,68 @@ export default function AdminCoursesPage() {
     } finally {
       setBusyCourse(null);
     }
+  };
+
+  const openCodeForm = (courseId: string) => {
+    setCodeMsg(null);
+    setCodeForm({ courseId, plan: "free", access_until: "", daily_quota: "10" });
+  };
+
+  const handleCreateCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!codeForm) return;
+    setBusyCode(codeForm.courseId);
+    try {
+      const res = await apiFetch<{ data: InviteCode; message: string }>(`/api/courses/${codeForm.courseId}/invite-codes`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan: codeForm.plan,
+          access_until: codeForm.access_until,
+          daily_quota: codeForm.plan === "free" ? Number(codeForm.daily_quota) : null,
+        }),
+      });
+      setCodeMsg({ courseId: codeForm.courseId, text: `${res.message}：${res.data.code}` });
+      setCodeForm(null);
+      await loadCourses();
+    } catch (err) {
+      setCodeMsg({ courseId: codeForm.courseId, text: `產生失敗：${errorText(err, "請稍後再試")}` });
+    } finally {
+      setBusyCode(null);
+    }
+  };
+
+  // 停用／啟用、改可用日期或每日次數；已用這組碼加入的學生跟著變
+  const updateCode = async (
+    courseId: string,
+    code: InviteCode,
+    changes: Partial<Pick<InviteCode, "is_active" | "access_until" | "daily_quota">>
+  ) => {
+    setBusyCode(code.id);
+    setCodeMsg(null);
+    try {
+      await apiFetch(`/api/courses/${courseId}/invite-codes/${code.id}`, { method: "PATCH", body: JSON.stringify(changes) });
+      await loadCourses();
+    } catch (err) {
+      setCodeMsg({ courseId, text: `更新失敗：${errorText(err, "請稍後再試")}` });
+    } finally {
+      setBusyCode(null);
+    }
+  };
+
+  const changeAccessUntil = (courseId: string, code: InviteCode) => {
+    const value = prompt(`「${code.code}」的新可用日期（YYYY-MM-DD）\n用這組碼加入的 ${code.member_count} 位學生會一起改。`, code.access_until);
+    if (value && value.trim() !== code.access_until) updateCode(courseId, code, { access_until: value.trim() });
+  };
+
+  const changeDailyQuota = (courseId: string, code: InviteCode) => {
+    const value = prompt(`「${code.code}」的每日作答次數（1–1000）\n用這組碼加入的 ${code.member_count} 位學生會一起改。`, String(code.daily_quota ?? 10));
+    if (!value) return;
+    const quota = Number(value);
+    if (!Number.isInteger(quota) || quota < 1 || quota > 1000) {
+      alert("每日次數要是 1 到 1000 的整數");
+      return;
+    }
+    if (quota !== code.daily_quota) updateCode(courseId, code, { daily_quota: quota });
   };
 
   const copyCode = async (code: string) => {
@@ -299,14 +390,7 @@ export default function AdminCoursesPage() {
                       )}
                     </div>
                     {c.description && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#94a3b8" }}>{c.description}</p>}
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px", fontSize: "12px", color: "#cbd5e1", flexWrap: "wrap" }}>
-                      邀請碼
-                      <code style={{ fontSize: "14px", fontWeight: "bold", letterSpacing: "2px", padding: "2px 8px", borderRadius: "4px", backgroundColor: "rgba(56,189,248,0.15)", color: "#7dd3fc" }}>{c.invite_code}</code>
-                      <button onClick={() => copyCode(c.invite_code)} style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px" }}>
-                        {copied === c.invite_code ? "已複製" : "複製"}
-                      </button>
-                      <span style={{ marginLeft: "8px" }}>已加入 {c.active_count} 人</span>
-                    </div>
+                    <div style={{ marginTop: "8px", fontSize: "12px", color: "#cbd5e1" }}>已加入 {c.active_count} 人</div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-end", flexShrink: 0 }}>
                     <label style={{ fontSize: "12px", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
@@ -331,6 +415,108 @@ export default function AdminCoursesPage() {
                       </button>
                     </div>
                   </div>
+                </div>
+
+                {/* 邀請碼：一門課可以有多組，各自的可用日期與方案 */}
+                <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {c.invite_codes.length === 0 && (
+                    <p style={{ margin: 0, fontSize: "12px", color: "#fbbf24" }}>還沒有邀請碼，學生無法加入這門課。</p>
+                  )}
+                  {c.invite_codes.map((code) => {
+                    const dimmed = !code.is_active || code.expired;
+                    return (
+                      <div key={code.id} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", fontSize: "12px", padding: "6px 8px", borderRadius: "6px", backgroundColor: "rgba(255,255,255,0.03)", opacity: dimmed ? 0.6 : 1 }}>
+                        <code style={{ fontSize: "14px", fontWeight: "bold", letterSpacing: "2px", padding: "2px 8px", borderRadius: "4px", backgroundColor: "rgba(56,189,248,0.15)", color: "#7dd3fc", textDecoration: code.is_active ? "none" : "line-through" }}>
+                          {code.code}
+                        </code>
+                        {code.is_active && (
+                          <button onClick={() => copyCode(code.code)} style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px" }}>
+                            {copied === code.code ? "已複製" : "複製"}
+                          </button>
+                        )}
+                        <span style={{ color: "#cbd5e1" }}>{planLabel(code)}</span>
+                        <span style={{ color: code.expired ? "#f87171" : "#94a3b8" }}>
+                          {code.expired ? `已過可用日期（${code.access_until}）` : `可用到 ${code.access_until}`}
+                        </span>
+                        <span style={{ color: "#94a3b8" }}>{code.member_count} 人</span>
+                        {!code.is_active && <span style={{ color: "#f87171" }}>已停用</span>}
+                        <span style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
+                          <button disabled={busyCode === code.id} onClick={() => changeAccessUntil(c.id, code)} style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px" }}>
+                            改日期
+                          </button>
+                          {code.plan === "free" && (
+                            <button disabled={busyCode === code.id} onClick={() => changeDailyQuota(c.id, code)} style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px" }}>
+                              改次數
+                            </button>
+                          )}
+                          <button
+                            disabled={busyCode === code.id}
+                            onClick={() => updateCode(c.id, code, { is_active: !code.is_active })}
+                            style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px", color: code.is_active ? "#f87171" : "#4ade80" }}
+                          >
+                            {code.is_active ? "停用" : "啟用"}
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                  {codeForm?.courseId === c.id ? (
+                    <form onSubmit={handleCreateCode} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", fontSize: "12px", padding: "8px", borderRadius: "6px", border: "1px dashed rgba(56,189,248,0.4)" }}>
+                      <select
+                        value={codeForm.plan}
+                        onChange={(e) => setCodeForm({ ...codeForm, plan: e.target.value as InvitePlan })}
+                        style={{ ...input, width: "auto", backgroundColor: "#0f172a" }}
+                      >
+                        <option value="free">免費（平台金鑰）</option>
+                        <option value="self_key">自備金鑰（學生自己的 Gemini）</option>
+                      </select>
+                      {codeForm.plan === "free" && (
+                        <label style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                          每天
+                          <input
+                            type="number"
+                            required
+                            min={1}
+                            max={1000}
+                            value={codeForm.daily_quota}
+                            onChange={(e) => setCodeForm({ ...codeForm, daily_quota: e.target.value })}
+                            style={{ ...input, width: "70px" }}
+                          />
+                          次
+                        </label>
+                      )}
+                      <label style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        可用到
+                        <input
+                          type="date"
+                          required
+                          min={todayLocal()}
+                          value={codeForm.access_until}
+                          onChange={(e) => setCodeForm({ ...codeForm, access_until: e.target.value })}
+                          style={{ ...input, width: "auto" }}
+                        />
+                      </label>
+                      <button type="submit" disabled={busyCode === c.id} style={{ ...smallBtn, backgroundColor: "#0284c7", color: "#fff", border: "none" }}>
+                        產生
+                      </button>
+                      <button type="button" onClick={() => setCodeForm(null)} style={smallBtn}>
+                        取消
+                      </button>
+                      {codeForm.plan === "self_key" && (
+                        <span style={{ width: "100%", color: "#fbbf24" }}>自備金鑰功能尚未開放，用這組碼加入的學生要等金鑰設定上線後才能作答。</span>
+                      )}
+                    </form>
+                  ) : (
+                    !c.is_archived && (
+                      <button onClick={() => openCodeForm(c.id)} style={{ ...smallBtn, alignSelf: "flex-start", color: "#38bdf8", borderColor: "rgba(56,189,248,0.4)" }}>
+                        ＋ 產生邀請碼
+                      </button>
+                    )
+                  )}
+                  {codeMsg?.courseId === c.id && (
+                    <p style={{ margin: 0, fontSize: "12px", color: /失敗/.test(codeMsg.text) ? "#fca5a5" : "#86efac" }}>{codeMsg.text}</p>
+                  )}
                 </div>
 
                 {openCourse === c.id && (
@@ -411,6 +597,9 @@ export default function AdminCoursesPage() {
                                   {m.full_name || "（未填姓名）"}
                                   <span style={{ fontSize: "12px", color: "#94a3b8", marginLeft: "8px" }}>{m.email}</span>
                                   <span style={{ fontSize: "11px", color: "#64748b", marginLeft: "8px" }}>{MEMBER_STATUS_LABEL[m.status]}</span>
+                                  {m.invite_code && (
+                                    <span style={{ fontSize: "11px", color: "#64748b", marginLeft: "8px" }}>邀請碼 {m.invite_code}</span>
+                                  )}
                                 </span>
                                 <span style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
                                   {m.status !== "active" && (
@@ -469,7 +658,7 @@ export default function AdminCoursesPage() {
             disabled={creating || !form.title.trim()}
             style={{ padding: "8px 0", backgroundColor: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: "pointer", opacity: creating || !form.title.trim() ? 0.5 : 1 }}
           >
-            {creating ? "建立中…" : "+ 建立課程並產生邀請碼"}
+            {creating ? "建立中…" : "+ 建立課程（之後再產生邀請碼）"}
           </button>
           {createMsg && <p style={{ margin: 0, fontSize: "12px", color: createMsg.startsWith("建立失敗") ? "#fca5a5" : "#86efac" }}>{createMsg}</p>}
         </form>
