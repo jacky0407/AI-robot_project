@@ -34,6 +34,10 @@ const SCALE_OPTIONS = [
 
 const fieldClass = 'w-full rounded border border-gray-300 p-1.5 text-xs focus:outline-none'
 
+// 與 backend/core/ai/memory.py 的 DEFAULT_MAX_ATTEMPTS、MAX_ATTEMPTS_LIMIT 一致
+const MEMORY_DEFAULT_ATTEMPTS = 3
+const MEMORY_MAX_ATTEMPTS = 10
+
 // useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
 export default function NewToolPage() {
   return (
@@ -74,6 +78,12 @@ function NewToolForm() {
   const [personalize, setPersonalize] = useState(true)
 
   const [errors, setErrors] = useState<ErrorItem[]>([])
+
+  // 機器人記憶（backend/core/ai/memory.py 的 MemoryConfig，存在 teaching_strategy.memory）
+  // 預設值與後端一致：開啟、記最近 3 次、讀前面步驟的成果
+  const [memoryEnabled, setMemoryEnabled] = useState(true)
+  const [memoryMaxAttempts, setMemoryMaxAttempts] = useState(MEMORY_DEFAULT_ATTEMPTS)
+  const [memoryIncludePrior, setMemoryIncludePrior] = useState(true)
 
   const updateHint = (index: number, patch: Partial<HintItem>) =>
     setHints(hints.map((h, i) => (i === index ? { ...h, ...patch } : h)))
@@ -117,18 +127,26 @@ function NewToolForm() {
       system_prompt: systemPrompt,
       rubric_criteria: rubrics,
       scale_type: scaleType,
-      teaching_strategy: hints.length
-        ? {
-            hints: hints.map((h, i) => ({
-              level: i + 1,
-              trigger: h.trigger,
-              content: h.content,
-              ...(h.is_example ? { is_example: true, warn_copy: true } : {}),
-            })),
-            max_auto_hints: maxAutoHints,
-            personalize,
-          }
-        : {},
+      teaching_strategy: {
+        ...(hints.length
+          ? {
+              hints: hints.map((h, i) => ({
+                level: i + 1,
+                trigger: h.trigger,
+                content: h.content,
+                ...(h.is_example ? { is_example: true, warn_copy: true } : {}),
+              })),
+              max_auto_hints: maxAutoHints,
+              personalize,
+            }
+          : {}),
+        memory: {
+          enabled: memoryEnabled,
+          // 後端也會夾在 0～10，這裡先夾，避免存進看不懂的值
+          max_attempts: Math.max(0, Math.min(MEMORY_MAX_ATTEMPTS, Math.round(memoryMaxAttempts) || 0)),
+          include_prior_steps: memoryIncludePrior,
+        },
+      },
       error_taxonomy: errors,
       status: 'published',
       version: 1,
@@ -436,6 +454,44 @@ function NewToolForm() {
                 </button>
               </div>
             ))}
+          </div>
+
+          <div className="space-y-3">
+            <h2 className="text-base font-semibold text-gray-800 border-l-4 border-blue-600 pl-2">
+              7. 機器人記憶
+            </h2>
+            <p className="text-xs text-gray-500">
+              讓機器人記得這位學生先前的作答與前面步驟的成果，用在整體回饋與提示。記憶不影響評分，也不會多用 AI 次數。
+            </p>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" checked={memoryEnabled} onChange={(e) => setMemoryEnabled(e.target.checked)} />
+              開啟記憶
+            </label>
+            <div className={`space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 ${memoryEnabled ? '' : 'opacity-50'}`}>
+              <label className="flex flex-wrap items-center gap-1">
+                記住這位學生在這一步最近
+                <input
+                  type="number"
+                  min={0}
+                  max={MEMORY_MAX_ATTEMPTS}
+                  disabled={!memoryEnabled}
+                  value={memoryMaxAttempts}
+                  onChange={(e) => setMemoryMaxAttempts(Number(e.target.value))}
+                  className="w-14 rounded border border-gray-300 p-1"
+                />
+                次作答（0～{MEMORY_MAX_ATTEMPTS}，0 表示不記本步驟歷程）
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  disabled={!memoryEnabled}
+                  checked={memoryIncludePrior}
+                  onChange={(e) => setMemoryIncludePrior(e.target.checked)}
+                />
+                參考學生在同一模組前面步驟的作答（通過的版本優先）
+              </label>
+              <p className="text-gray-500">次數越多，AI 看到的歷程越完整，但每次送出的提示詞也越長。建議 3 次。</p>
+            </div>
           </div>
 
           <div className="pt-4">

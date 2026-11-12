@@ -242,16 +242,22 @@ CREATE TABLE IF NOT EXISTS public.research_consents (
 -- ==============================================================================
 -- 7. 自動觸發器：註冊自動同步 profiles & 生成匿名研究編號
 -- ==============================================================================
+-- 新帳號一律是 student：raw_user_meta_data 是使用者註冊時自己送來的資料（anon key 公開），
+-- 不能拿來決定角色，否則任何人都能註冊成 owner。教師身分只能由後台或後端設定（migration 014）
 CREATE OR REPLACE FUNCTION public.handle_new_platform_user()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
 BEGIN
-    -- 1. 建立 profile
+    -- 1. 建立 profile：角色固定為 student，不讀 raw_user_meta_data 的 role
     INSERT INTO public.profiles (id, email, full_name, role)
     VALUES (
         NEW.id,
         NEW.email,
         COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
-        COALESCE(NEW.raw_user_meta_data->>'role', 'student')
+        'student'
     );
 
     -- 2. 自動預先配置一組隨機匿名研究編號
@@ -265,7 +271,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
