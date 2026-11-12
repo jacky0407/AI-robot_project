@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS public.ai_evaluations (
     needs_teacher_review BOOLEAN DEFAULT false, -- confidence 過低時為 true
     suggested_next_step TEXT,              -- 建議下一步
     ai_cost FLOAT DEFAULT 0.0,             -- 單次呼叫估算成本
+    memory_snapshot JSONB,                 -- 回饋當時參考的記憶（文字 + 摘要），migration 015
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
@@ -253,6 +254,21 @@ CREATE TABLE IF NOT EXISTS public.form_responses (
     responses JSONB NOT NULL,              -- 填答結果
     submitted_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
+
+-- 學習者側寫：每位學生 × 模組，每次更新新增一列（version + 1），不覆蓋（migration 015）
+-- 只放程式計算的數字與錯誤代碼，不放學生原文；只給 service_role 存取（見第 8 節）
+CREATE TABLE IF NOT EXISTS public.learner_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    module_id UUID NOT NULL REFERENCES public.learning_modules(id) ON DELETE CASCADE,
+    version INT NOT NULL,
+    profile JSONB NOT NULL,
+    source_attempt_id UUID REFERENCES public.step_attempts(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    UNIQUE (user_id, module_id, version)
+);
+CREATE INDEX IF NOT EXISTS learner_profiles_latest_idx
+    ON public.learner_profiles (user_id, module_id, version DESC);
 
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
@@ -340,6 +356,7 @@ ALTER TABLE public.prompt_logs         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.forms               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.form_responses      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.research_consents   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.learner_profiles    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

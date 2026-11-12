@@ -1341,6 +1341,18 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 
 錯誤：404 `STEP_NOT_FOUND`、404 `STUDENT_NOT_FOUND`。
 
+### ✅ `GET /api/admin/students/:user_id/profile?module_id=…`（已實作，2026-11）
+**權限**：HOST, ASSISTANT
+
+學生狀態概述（數字版，不呼叫 AI，只給教師）。每次從作答紀錄即時重算（`core/learner_profile.py` 的 `build_profile`），
+所以功能上線前的歷史作答也看得到。回傳 `student`、`module`、`profile`（`dimensions`、`errors`、`steps`、`teacher_notes`、
+`attempt_count`、`evaluated_count`）、`saved_version`（資料庫裡 AI 助教目前參考的側寫版本；沒有為 `null`）。
+
+錯誤：404 `STUDENT_NOT_FOUND`、404 `MODULE_NOT_FOUND`；非 UUID 422。
+
+另外 `GET /api/review/submissions/:id` 的 `ai_evaluation` 多了 `memory_snapshot`（`{text, summary}`，migration 015 之前的評分為 `null`）；
+`GET /api/practice/steps/:id/memory` 多了 `profile_highlights`、`profile_version`。
+
 ### ⏳ `GET /api/admin/conversations`（未實作，已由 `/api/admin/overview` 取代）
 **權限**：HOST, ASSISTANT
 
