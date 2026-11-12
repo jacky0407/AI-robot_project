@@ -236,7 +236,7 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 - 教師複核未發布（`is_published = false`）的意見不放進記憶，AI 不能比老師先說出判定
 - 記憶查詢失敗只記 log，評分照常進行（當作沒有記憶）
 
-教授可以在 `teaching_strategy.memory` 逐支機器人調整，沒填就用預設值：
+教授可以在 `teaching_strategy.memory` 逐支機器人調整（建立機器人頁面 `/admin/tools/new` 第 7 區「機器人記憶」），沒填就用預設值：
 
 ```json
 {

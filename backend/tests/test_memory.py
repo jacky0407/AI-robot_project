@@ -143,6 +143,28 @@ class TestParseMemoryConfig:
         assert parse_memory_config({"memory": {"max_attempts": 999}}).max_attempts == 10
         assert parse_memory_config({"memory": {"max_attempts": -2}}).max_attempts == 0
 
+    def test_builder_format_with_hints_is_read_by_both_parsers(self):
+        """建立機器人頁面（admin/tools/new）把提示與記憶寫在同一個 teaching_strategy"""
+        from core.ai.hint_engine import parse_teaching_strategy
+
+        strategy = {
+            "hints": [{"level": 1, "trigger": "score_below_threshold", "content": "先找出具體行為"}],
+            "max_auto_hints": 2,
+            "personalize": True,
+            "memory": {"enabled": True, "max_attempts": 5, "include_prior_steps": False},
+        }
+        assert parse_memory_config(strategy) == MemoryConfig(enabled=True, max_attempts=5, include_prior_steps=False)
+        plan = parse_teaching_strategy(strategy)
+        assert plan.total_levels == 1 and plan.max_auto_hints == 2
+
+    def test_builder_format_without_hints_keeps_default_hint_plan(self):
+        """沒填提示時頁面只寫 memory，提示仍走「AI 依最弱構面生成」的預設"""
+        from core.ai.hint_engine import parse_teaching_strategy
+
+        strategy = {"memory": {"enabled": False, "max_attempts": 3, "include_prior_steps": True}}
+        assert parse_memory_config(strategy).enabled is False
+        assert parse_teaching_strategy(strategy).total_levels == parse_teaching_strategy({}).total_levels
+
 
 # ──────────────────────────────────────────
 # 本步驟歷程
