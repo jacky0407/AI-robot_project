@@ -308,7 +308,7 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 - `api/auth.py`、`api/tools.py` — `main.py` 中以 TODO 註解預留，檔案不存在；`api/export.py` 尚未建立（`api/courses.py` 已完成）
 - 練習 Session 落庫（#3）
 - 表單與前後測（`forms` / `form_responses`）
-- 研究資料 CSV 匯出（`/api/export/*`）
+- ✅ 研究資料 CSV 匯出（`/api/export/research`、`/api/export/teaching`，migration 018）；研究同意書流程仍未實作，所以研究匯出目前沒有資料
 - 研究倫理同意書流程（`/api/consent`）
 - ✅ 教授監控總覽 API（`GET /api/admin/overview`、`GET /api/admin/students/{id}/steps/{id}`；前端 `/admin/overview` 簡易版）；`/api/admin/tools/{id}/analytics` 未實作
 - AI 成本記錄（`ai_evaluations.ai_cost` 恆為 0；`ai_tools.max_cost_limit` 無人檢查）

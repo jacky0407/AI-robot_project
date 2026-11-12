@@ -1,5 +1,6 @@
 "use client";
 
+import ExportPanel from "./ExportPanel";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -189,16 +190,8 @@ export default function AdminToolsPage() {
           </div>
 
           <div style={{ backgroundColor: "#1e293b", borderRadius: "12px", padding: "20px", border: "1px solid rgba(255,255,255,0.1)" }}>
-            <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 12px 0" }}>研究資料匯出 (DAT-001)</h3>
-            <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0" }}>
-              去識別化學習歷程 CSV 匯出。後端 <code>/api/export</code> 尚未實作。
-            </p>
-            <button
-              disabled
-              style={{ width: "100%", padding: "8px 0", border: "1px solid rgba(255,255,255,0.1)", backgroundColor: "rgba(255,255,255,0.04)", color: "#64748b", borderRadius: "6px", fontSize: "13px", cursor: "not-allowed" }}
-            >
-              匯出（尚未開放）
-            </button>
+            <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 12px 0" }}>資料匯出</h3>
+            <ExportPanel />
           </div>
         </div>
       </div>

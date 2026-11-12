@@ -254,6 +254,17 @@ CREATE TABLE IF NOT EXISTS public.form_responses (
     submitted_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- 資料匯出稽核紀錄（migration 018）：誰、何時、哪門課、什麼條件、幾筆；只給 service_role
+CREATE TABLE IF NOT EXISTS public.export_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    exported_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('teaching', 'research')),
+    course_id UUID REFERENCES public.courses(id) ON DELETE SET NULL,
+    params JSONB NOT NULL DEFAULT '{}'::jsonb,
+    row_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -340,6 +351,7 @@ ALTER TABLE public.prompt_logs         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.forms               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.form_responses      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.research_consents   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.export_logs         ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

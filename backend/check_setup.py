@@ -27,12 +27,14 @@ EXPECTED_TABLES = [
     "forms", "form_responses", "research_consents",
     "course_modules",     # migration 005 才有（新建資料庫跑 schema.sql 就會有）
     "practice_sessions",  # migration 009 才有
+    "export_logs",        # migration 018：資料匯出稽核紀錄
 ]
 
 # 只靠 migration 建立的資料表 → 缺少時要跑哪一支
 TABLE_MIGRATIONS = {
     "course_modules": "005_rls_policies.sql",
     "practice_sessions": "009_practice_sessions.sql",
+    "export_logs": "018_export_logs.sql",
 }
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）

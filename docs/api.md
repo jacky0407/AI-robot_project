@@ -1170,6 +1170,13 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 
 ## 七、資料匯出 (Export)
 
+> ✅ 2026-11 已實作（`backend/api/export.py`、migration 018）。與下方原始規格的差異：
+> - 權限：只限教授（owner），助教 403
+> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, format: "csv"}`；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
+> - 一列 = 一次作答：步驟、AI 總分與逐構面（`名稱:分/滿分;…`）、錯誤代碼、提示層級、教師判定；作答原文預設不匯出，研究用勾選時會遮罩個資
+> - CSV 為 UTF-8 含 BOM；回應標頭 `X-Export-Row-Count`；每次匯出寫入 `export_logs`
+> - 前端：`/admin/tools` 的「資料匯出」
+
 ### `POST /api/export/teaching`
 **權限**：HOST
 
