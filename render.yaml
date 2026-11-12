@@ -27,6 +27,9 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      # 學生自備 Gemini 金鑰的加密金鑰（Fernet）；不設定就不開放自備金鑰。換掉會讓已存的金鑰失效
+      - key: API_KEY_ENCRYPTION_KEY
+        sync: false
       # Vercel 網址與本機，用逗號分隔，例如 https://xxx.vercel.app,http://localhost:3000
       - key: FRONTEND_URL
         sync: false

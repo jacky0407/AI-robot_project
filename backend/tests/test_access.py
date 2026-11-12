@@ -391,8 +391,15 @@ class TestCourseInviteCodeAccess:
             check_step_access(course_db(course_member(access_until="2026-10-20")), STUDENT, STEP, TODAY)
         assert_denied(exc, 403, "ACCESS_EXPIRED")
 
+    def test_self_key_plan_with_saved_key_uses_own_key(self, monkeypatch):
+        """存好自備金鑰（/api/me/api-key）→ mode = self_key：不扣平台次數，評分用學生自己的金鑰"""
+        import core.access as access_module
+        monkeypatch.setattr(access_module, "has_key", lambda db, user_id: True)
+        access = check_step_access(course_db(course_member(plan="self_key", daily_quota=None)), STUDENT, STEP, TODAY)
+        assert access.mode == "self_key"
+
     def test_self_key_plan_requires_api_key(self):
-        """第二階段（自備金鑰）上線前，自備金鑰方案一律擋下並提示填金鑰"""
+        """自備金鑰方案、還沒存金鑰：擋下並提示填金鑰"""
         with pytest.raises(HTTPException) as exc:
             check_step_access(course_db(course_member(plan="self_key", daily_quota=None)), STUDENT, STEP, TODAY)
         assert_denied(exc, 403, "API_KEY_REQUIRED")

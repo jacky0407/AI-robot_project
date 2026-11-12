@@ -254,6 +254,16 @@ CREATE TABLE IF NOT EXISTS public.form_responses (
     submitted_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- 學生自備 Gemini 金鑰：後端以 API_KEY_ENCRYPTION_KEY（Fernet）加密後寫入，只給 service_role 存取（migration 017）
+CREATE TABLE IF NOT EXISTS public.user_api_keys (
+    user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+    encrypted_key TEXT NOT NULL,
+    key_hint TEXT NOT NULL,
+    verified_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -340,6 +350,7 @@ ALTER TABLE public.prompt_logs         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.forms               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.form_responses      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.research_consents   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_api_keys       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

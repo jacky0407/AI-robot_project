@@ -11,6 +11,8 @@ pydantic-settings==2.15.0
 python-dotenv==1.2.3
 supabase==2.31.0
 google-genai==2.22.0
+# encrypts students' own Gemini API keys (core/user_api_keys.py); already a transitive dependency
+cryptography==50.0.2
 langchain==1.3.18
 langchain-google-genai==4.4.0
 # imported directly in core/ai/agents/*, so pin it instead of relying on langchain-google-genai
