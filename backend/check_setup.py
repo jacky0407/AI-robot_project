@@ -29,6 +29,7 @@ EXPECTED_TABLES = [
     "practice_sessions",  # migration 009 才有
     "learner_profiles",   # migration 015 才有
     "user_api_keys",      # migration 017：學生自備 Gemini 金鑰（加密）
+    "export_logs",        # migration 018：資料匯出稽核紀錄
 ]
 
 # 只靠 migration 建立的資料表 → 缺少時要跑哪一支
@@ -37,6 +38,7 @@ TABLE_MIGRATIONS = {
     "practice_sessions": "009_practice_sessions.sql",
     "learner_profiles": "015_learner_profiles.sql",
     "user_api_keys": "017_user_api_keys.sql",
+    "export_logs": "018_export_logs.sql",
 }
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
