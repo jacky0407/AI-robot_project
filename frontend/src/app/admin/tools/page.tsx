@@ -114,7 +114,7 @@ export default function AdminToolsPage() {
         {/* 左：待複核清單（GET /api/review/pending） */}
         <div style={{ backgroundColor: "#1e293b", borderRadius: "12px", padding: "20px", border: "1px solid rgba(255,255,255,0.1)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-            <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>待複核學生初評清單 (需求書 ASM-002)</h3>
+            <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>待複核的作答</h3>
             <button onClick={() => setRefreshKey((k) => k + 1)} style={{ fontSize: "12px", color: "#38bdf8", background: "none", border: "none", cursor: "pointer" }}>
               重新整理
             </button>

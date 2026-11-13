@@ -101,7 +101,7 @@ type Quota = {
 // null = 尚未載入；{ blocked } = 沒被指派或期限已過（後端回 403），不能送出
 type QuotaState = { quota: Quota } | { blocked: string } | null;
 
-const LOCKED_LABEL = { text: "🔒 未解鎖", color: "#94a3b8", bg: "rgba(255,255,255,0.06)" };
+const LOCKED_LABEL = { text: "未解鎖", color: "#94a3b8", bg: "rgba(255,255,255,0.06)" };
 
 const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: string }> = {
   draft: { text: "草稿", color: "#94a3b8", bg: "rgba(255,255,255,0.08)" },
@@ -541,7 +541,7 @@ function StudentWorkspace() {
               學生實踐工作台・{currentMod?.title || "訓練模組"}
             </h1>
             <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
-              {courseName ? `課程：${courseName}・` : ""}循序闖關練習、即時 AI 評分與跨步驟邏輯一致性診斷
+              {courseName ? `課程：${courseName}・` : ""}依序完成每一關，送出後會得到逐項評分與回饋
             </p>
           </div>
         </div>
@@ -609,7 +609,7 @@ function StudentWorkspace() {
               </select>
             )}
             <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 4px 0", color: "#38bdf8" }}>
-              📋 模組關卡進度
+              模組關卡進度
             </h2>
             <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 14px 0" }}>
               點選步驟切換練習，完成後請進行跨步驟檢核
@@ -683,7 +683,7 @@ function StudentWorkspace() {
             }}
           >
             <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 6px 0", color: "#a5b4fc" }}>
-              🔍 跨步驟一致性檢核
+              跨步驟一致性檢核
             </h3>
             <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0", lineHeight: "1.5" }}>
               當完成多個步驟後，AI 將比對你的前事處遇、替代行為與學期目標是否存在矛盾。
@@ -743,7 +743,7 @@ function StudentWorkspace() {
             {/* 本關任務與教學案例（從資料庫讀，不再寫死） */}
             <div style={panel}>
               <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}>
-                📌 關卡 {selectedStep?.step_order}：{selectedStep?.step_title}
+                關卡 {selectedStep?.step_order}：{selectedStep?.step_title}
                 {selectedStep?.ai_tools?.title && <span>・AI 助教：{selectedStep.ai_tools.title}</span>}
               </div>
               {selectedStep?.ai_tools?.target_competency && (
@@ -766,7 +766,7 @@ function StudentWorkspace() {
               <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>你的作答</h3>
               {piiWarning && (
                 <div style={{ marginBottom: "10px", padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)" }}>
-                  ⚠️ {piiWarning}
+                  {piiWarning}
                 </div>
               )}
               <textarea
@@ -781,7 +781,7 @@ function StudentWorkspace() {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                 {lockReason ? (
-                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>🔒 {lockReason}</span>
+                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>{lockReason}</span>
                 ) : (
                   <QuotaBadge state={quotaState} />
                 )}
@@ -813,7 +813,7 @@ function StudentWorkspace() {
             {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用 */}
             <div style={panel}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>💡 分層提示</h3>
+                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
                 <button
                   onClick={handleRevealHint}
                   // 還沒送出過作答時提示無處記錄，先送出一次再索取
@@ -846,7 +846,7 @@ function StudentWorkspace() {
             {/* AI 評分回饋 */}
             <div style={{ ...panel, minHeight: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                📊 AI 評分回饋
+                評分與回饋
               </h3>
 
               {!run && !isSubmitting && (
@@ -854,7 +854,7 @@ function StudentWorkspace() {
               )}
 
               {run?.failure && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>⚠️ {run.failure}</div>
+                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{run.failure}</div>
               )}
 
               {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
@@ -932,7 +932,7 @@ function StudentWorkspace() {
             {history.length > 0 && (
               <div style={panel}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                  <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>📜 作答紀錄</h3>
+                  <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>作答紀錄</h3>
                   {history.length >= 2 && (
                     <button
                       onClick={() => setShowCompare(true)}
@@ -1002,8 +1002,8 @@ function StudentWorkspace() {
 // 沒有上限時（教師、沒有邀請碼的課程成員）顯示不限次數
 function QuotaBadge({ state }: { state: QuotaState }) {
   const base: React.CSSProperties = { fontSize: "12px", lineHeight: 1.5 };
-  if (!state) return <span style={{ ...base, color: "#64748b" }}>送出後將由 AI 規準引擎串流評估</span>;
-  if ("blocked" in state) return <span style={{ ...base, color: "#f87171" }}>⚠️ {state.blocked}</span>;
+  if (!state) return <span style={{ ...base, color: "#64748b" }}>送出後，AI 會依評分規準逐項評分</span>;
+  if ("blocked" in state) return <span style={{ ...base, color: "#f87171" }}>{state.blocked}</span>;
 
   const q = state.quota;
   if (q.mode === "staff") return <span style={{ ...base, color: "#64748b" }}>教師帳號：不限次數</span>;
