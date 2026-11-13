@@ -19,7 +19,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser, get_current_user
@@ -61,12 +61,17 @@ class CreateSessionRequest(BaseModel):
     course_id: str
 
 
+# 作答字數上限：每次送出都會整段交給 Gemini 評分，沒有上限時一次貼上整本書會白白燒掉額度
+MAX_ANSWER_CHARS = 8000
+
+
 class SubmitAnswerRequest(BaseModel):
     # 不收 user_id：作答者由 token 決定（舊前端仍會送，Pydantic 會直接忽略）
+    # module_id 只當參考：實際寫入的是步驟所屬的模組（見 submit_answer）
     module_id: str
     step_id: str
     case_id: str | None = None
-    content: str
+    content: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
     version_note: str = ""
     request_hint: bool = False   # 學生主動按「我需要提示」
 
@@ -159,6 +164,12 @@ async def submit_answer(
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
 
+        # 作答屬於哪個模組，以步驟本身為準，不採信前端傳來的 module_id
+        # （否則可以把作答記到別的模組下，弄亂進度、解鎖與研究資料）
+        module_id = step_res.data.get("module_id") or body.module_id
+        if module_id != body.module_id:
+            logger.warning(f"submit: 前端傳來的 module_id 與步驟不符（{body.module_id} ≠ {module_id}），改用步驟所屬模組")
+
         # 步驟三：沒被指派回 403；步驟停用或沒解鎖回 403；Session 屬於別人回 403；自主模式扣一次額度，用完回 429
         access = check_step_access(db, user, step_res.data)
         # 步驟停用或前面的必修步驟還沒通過 → 403（不建立 Session、不扣額度）
@@ -224,7 +235,7 @@ async def submit_answer(
         # ── 寫入學生作答記錄 ────────────────────────────────────────
         attempt_row = {
             "user_id": user.id,
-            "module_id": body.module_id,
+            "module_id": module_id,
             "step_id": body.step_id,
             "case_id": body.case_id,
             "attempt_number": next_attempt_number,
@@ -346,9 +357,10 @@ async def submit_answer(
 
     except HTTPException:
         raise
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # 內部錯誤細節（資料庫訊息、欄位名稱）只寫 log，不回給前端
+        logger.error(f"submit error:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail={"code": "INTERNAL_ERROR", "message": "送出失敗，請稍後再試"})
 
 
 

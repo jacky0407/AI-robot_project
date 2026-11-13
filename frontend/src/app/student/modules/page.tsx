@@ -8,6 +8,9 @@ import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 import BotMemoryPanel from "./BotMemoryPanel";
 
 // ─── 步驟與模組型別定義 ───
+
+// 與 backend/api/practice.py 的 MAX_ANSWER_CHARS 一致：超過會被後端拒絕（422）
+const MAX_ANSWER_CHARS = 8000;
 type Step = {
   id: string;
   module_id: string;
@@ -769,11 +772,12 @@ function StudentWorkspace() {
               <textarea
                 value={studentAnswer}
                 onChange={(e) => setStudentAnswer(e.target.value)}
+                maxLength={MAX_ANSWER_CHARS}
                 placeholder="請依案例情境完成本關卡的撰寫…"
                 style={{ width: "100%", height: "220px", boxSizing: "border-box", padding: "12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "14px", lineHeight: 1.6, resize: "vertical", outline: "none" }}
               />
               <div style={{ fontSize: "11px", color: "#64748b", margin: "6px 0 12px" }}>
-                字數：{studentAnswer.length}・請勿輸入真實姓名、電話、身分證字號等個資
+                字數：{studentAnswer.length} / {MAX_ANSWER_CHARS}・請勿輸入真實姓名、電話、身分證字號等個資
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                 {lockReason ? (
