@@ -19,7 +19,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser, get_current_user
@@ -28,6 +28,7 @@ from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
 from core.ai.error_detector import ErrorDetector
 from core.ai.hint_engine import HintEngine, parse_teaching_strategy, select_hint
 from core.ai.memory import load_bot_memory, parse_memory_config
+from core.learner_profile import refresh_learner_profile
 from core.practice_session import ensure_session, parse_session_id
 from core.ai.rubric_formatter import normalize_rubric
 from core.privacy import detect_pii
@@ -61,12 +62,17 @@ class CreateSessionRequest(BaseModel):
     course_id: str
 
 
+# 作答字數上限：每次送出都會整段交給 Gemini 評分，沒有上限時一次貼上整本書會白白燒掉額度
+MAX_ANSWER_CHARS = 8000
+
+
 class SubmitAnswerRequest(BaseModel):
     # 不收 user_id：作答者由 token 決定（舊前端仍會送，Pydantic 會直接忽略）
+    # module_id 只當參考：實際寫入的是步驟所屬的模組（見 submit_answer）
     module_id: str
     step_id: str
     case_id: str | None = None
-    content: str
+    content: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
     version_note: str = ""
     request_hint: bool = False   # 學生主動按「我需要提示」
 
@@ -159,6 +165,12 @@ async def submit_answer(
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
 
+        # 作答屬於哪個模組，以步驟本身為準，不採信前端傳來的 module_id
+        # （否則可以把作答記到別的模組下，弄亂進度、解鎖與研究資料）
+        module_id = step_res.data.get("module_id") or body.module_id
+        if module_id != body.module_id:
+            logger.warning(f"submit: 前端傳來的 module_id 與步驟不符（{body.module_id} ≠ {module_id}），改用步驟所屬模組")
+
         # 步驟三：沒被指派回 403；步驟停用或沒解鎖回 403；Session 屬於別人回 403；自主模式扣一次額度，用完回 429
         access = check_step_access(db, user, step_res.data)
         # 步驟停用或前面的必修步驟還沒通過 → 403（不建立 Session、不扣額度）
@@ -224,7 +236,7 @@ async def submit_answer(
         # ── 寫入學生作答記錄 ────────────────────────────────────────
         attempt_row = {
             "user_id": user.id,
-            "module_id": body.module_id,
+            "module_id": module_id,
             "step_id": body.step_id,
             "case_id": body.case_id,
             "attempt_number": next_attempt_number,
@@ -296,7 +308,7 @@ async def submit_answer(
 
                     confidence = final_data.get("confidence")
 
-                    db.table("ai_evaluations").insert({
+                    _insert_evaluation(db, {
                         "attempt_id": attempt_id,
                         "total_score": round(float(final_data.get("total_score", 0))),
                         "dimension_scores": dimension_scores,
@@ -308,11 +320,16 @@ async def submit_answer(
                             final_data.get("needs_teacher_review", False)
                         ),
                         "detected_errors": detected_errors,
-                    }).execute()
+                        # 這次回饋當時實際參考的記憶，供教師複核與研究重現（migration 015）
+                        "memory_snapshot": _memory_snapshot(memory),
+                    })
 
                     # 同步更新 step_attempts 狀態為 passed 或 revision_required
                     new_status = "passed" if final_data["passed"] else "revision_required"
                     db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+
+                    # 學習者側寫：評分寫入後重算一個新版本（失敗只記 log，不影響這次評分）
+                    refresh_learner_profile(db, user.id, body.module_id, attempt_id)
                 elif tutor_action in ("give_hint", "escalate"):
                     # 沒有評分（只給提示或建議找老師）→ 學生需要修改後再交，
                     # 不讓狀態永遠停在 submitted
@@ -346,9 +363,10 @@ async def submit_answer(
 
     except HTTPException:
         raise
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # 內部錯誤細節（資料庫訊息、欄位名稱）只寫 log，不回給前端
+        logger.error(f"submit error:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail={"code": "INTERNAL_ERROR", "message": "送出失敗，請稍後再試"})
 
 
 
@@ -676,6 +694,27 @@ async def check_module_coherence(module_id: str, user: CurrentUser = Depends(get
 def _has_failed_dimension(final_data: dict) -> bool:
     """EvaluatorAgent 在構面評分失敗時會標 failed=True 並給最低分"""
     return any(d.get("failed") for d in final_data.get("dimension_scores") or [])
+
+
+def _memory_snapshot(memory) -> dict | None:
+    """回饋當時放進 prompt 的記憶：文字原樣 + 摘要（不含前面步驟全文）"""
+    if memory is None:
+        return None
+    return {"text": memory.to_prompt_text(), "summary": memory.to_event_data()}
+
+
+def _insert_evaluation(db, row: dict) -> None:
+    """
+    寫入 ai_evaluations。還沒跑 migration 015（沒有 memory_snapshot 欄位）時，
+    拿掉快照再寫一次，評分結果照常保存。
+    """
+    try:
+        db.table("ai_evaluations").insert(row).execute()
+    except Exception as e:  # noqa: BLE001 - postgrest 例外型別依版本不同
+        if "memory_snapshot" not in str(e):
+            raise
+        logger.warning("ai_evaluations.memory_snapshot 不存在，請執行 supabase/migrations/015_learner_profiles.sql")
+        db.table("ai_evaluations").insert({k: v for k, v in row.items() if k != "memory_snapshot"}).execute()
 
 
 def _collect_evidence(dimension_scores: list[dict] | None) -> str:

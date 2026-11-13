@@ -346,6 +346,10 @@
 | 教師 | `POST /api/courses/:course_id/invite-codes` | `{plan?, access_until, daily_quota?}` | 邀請碼，201 |
 | 教師 | `GET /api/courses/:course_id/invite-codes` | — | 邀請碼陣列（新的在前） |
 | 教師 | `PATCH /api/courses/:course_id/invite-codes/:code_id` | `{is_active?, access_until?, daily_quota?}` | 更新後的邀請碼 |
+| 教師 | `DELETE /api/courses/:course_id/invite-codes/:code_id` | — | `{removed_members, message}`：刪除邀請碼，並把用它加入的學生（active／pending）移出課程（`removed`），作答紀錄保留 |
+
+**停用 vs 刪除**（開會紀錄 #49 第 3 項）：停用只停止新的人用這組碼加入，已加入的學生照常使用到可用日期；
+刪除會從介面移除並移出用它加入的學生。**過了可用日期的邀請碼視同刪除**：讀取邀請碼清單（教師）、讀取自己的課程（學生）時自動清除。
 | 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at, invite_code, plan, access_until}]` |
 | 教師 | `PATCH /api/courses/:course_id/members/:user_id` | `{action: "approve" \| "reject" \| "remove"}` | 更新後的成員 |
 | 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at, plan, daily_quota, access_until, needs_api_key}` |
@@ -1347,6 +1351,18 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 要送出教師判定，用 `submission_id` 走 `/api/review/submissions/:id`。
 
 錯誤：404 `STEP_NOT_FOUND`、404 `STUDENT_NOT_FOUND`。
+
+### ✅ `GET /api/admin/students/:user_id/profile?module_id=…`（已實作，2026-11）
+**權限**：HOST, ASSISTANT
+
+學生狀態概述（數字版，不呼叫 AI，只給教師）。每次從作答紀錄即時重算（`core/learner_profile.py` 的 `build_profile`），
+所以功能上線前的歷史作答也看得到。回傳 `student`、`module`、`profile`（`dimensions`、`errors`、`steps`、`teacher_notes`、
+`attempt_count`、`evaluated_count`）、`saved_version`（資料庫裡 AI 助教目前參考的側寫版本；沒有為 `null`）。
+
+錯誤：404 `STUDENT_NOT_FOUND`、404 `MODULE_NOT_FOUND`；非 UUID 422。
+
+另外 `GET /api/review/submissions/:id` 的 `ai_evaluation` 多了 `memory_snapshot`（`{text, summary}`，migration 015 之前的評分為 `null`）；
+`GET /api/practice/steps/:id/memory` 多了 `profile_highlights`、`profile_version`。
 
 ### ⏳ `GET /api/admin/conversations`（未實作，已由 `/api/admin/overview` 取代）
 **權限**：HOST, ASSISTANT

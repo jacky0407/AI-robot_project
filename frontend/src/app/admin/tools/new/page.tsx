@@ -169,7 +169,7 @@ function NewToolForm() {
         <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-gray-900">建立全新 AI 助教機器人</h1>
+              <h1 className="text-xl font-bold text-gray-900">建立機器人</h1>
               {courseId && (
                 <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
                   課程：{courseId}

@@ -129,7 +129,7 @@ export default function StudentExplorePage() {
         <StudentModeTabs />
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <Link href="/student/profile" style={{ fontSize: "12px", color: "#cbd5e1", textDecoration: "none" }}>
-            👤 個人資料
+            個人資料
           </Link>
           <button
             onClick={handleSignOut}

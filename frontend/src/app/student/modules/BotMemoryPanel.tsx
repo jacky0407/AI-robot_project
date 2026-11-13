@@ -72,7 +72,7 @@ export default function BotMemoryPanel({ stepId, refreshKey, panelStyle }: { ste
         aria-expanded={open}
         style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", padding: 0, background: "none", border: "none", color: "inherit", font: "inherit", cursor: "pointer" }}
       >
-        <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>🧠 AI 助教記得你</h3>
+        <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>AI 助教記得你</h3>
         <span style={{ fontSize: "12px", color: "#64748b" }}>{open ? "收合 ▴" : "展開 ▾"}</span>
       </button>
 
@@ -92,7 +92,7 @@ export default function BotMemoryPanel({ stepId, refreshKey, panelStyle }: { ste
               {/* 重複出現的錯誤：最值得注意，放最上面 */}
               {memory.recurring_errors.length > 0 && (
                 <div style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "bold", color: "#fbbf24", marginBottom: "4px" }}>⚠ 你最近常犯</div>
+                  <div style={{ fontSize: "12px", fontWeight: "bold", color: "#fbbf24", marginBottom: "4px" }}>你最近常犯</div>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     {memory.recurring_errors.map((e) => (
                       <span key={e} style={chip("#fde68a", "rgba(245,158,11,0.2)")}>

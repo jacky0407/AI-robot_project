@@ -71,6 +71,17 @@ type AttemptDetail = {
   hints: { hint_level: number }[];
   review_reasons: ReviewReason[];
 };
+// GET /api/admin/students/{user_id}/profile（backend/core/learner_profile.py 的 build_profile）
+type LearnerProfile = {
+  attempt_count: number;
+  evaluated_count: number;
+  dimensions: { name: string; mastery: number; latest: number; trend: "up" | "down" | "flat" | "new"; evaluations: number; step_orders: (number | null)[] }[];
+  errors: { code: string; label: string; count: number; step_orders: (number | null)[]; last_seen_at: string | null; active: boolean; improved_at: string | null }[];
+  steps: { step_id: string; step_order: number | null; step_title: string; attempts: number; evaluated: number; best_score: number | null; latest_score: number | null; passed: boolean }[];
+  teacher_notes: { step_order: number | null; final_score: number | null; feedback: string; reviewed_at: string | null }[];
+};
+type ProfileResponse = { student: { full_name: string; email: string }; module: { title: string }; profile: LearnerProfile; saved_version: number | null };
+
 type StepDetail = { student: { full_name: string; email: string }; step: { step_title: string; pass_score: number }; attempts: AttemptDetail[] };
 
 const PROGRESS_STYLE: Record<Progress, { text: string; color: string; bg: string }> = {
@@ -128,6 +139,7 @@ export default function AdminOverviewPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [selected, setSelected] = useState<{ student: StudentRow; step: Step } | null>(null);
+  const [profileOf, setProfileOf] = useState<{ student: StudentRow; module: ModuleOverview } | null>(null);
 
   useEffect(() => {
     apiFetch<{ data: Course[] }>("/api/courses").then(
@@ -242,11 +254,17 @@ export default function AdminOverviewPage() {
         )}
 
         {overview?.modules.map((m) => (
-          <ModuleTable key={m.module_id} module={m} onSelect={(student, step) => setSelected({ student, step })} />
+          <ModuleTable
+            key={m.module_id}
+            module={m}
+            onSelect={(student, step) => setSelected({ student, step })}
+            onSelectStudent={(student) => setProfileOf({ student, module: m })}
+          />
         ))}
       </main>
 
       {selected && <DetailDrawer student={selected.student} step={selected.step} onClose={() => setSelected(null)} />}
+      {profileOf && <ProfileDrawer student={profileOf.student} module={profileOf.module} onClose={() => setProfileOf(null)} />}
     </div>
   );
 }
@@ -269,7 +287,15 @@ function Legend() {
   );
 }
 
-function ModuleTable({ module, onSelect }: { module: ModuleOverview; onSelect: (s: StudentRow, step: Step) => void }) {
+function ModuleTable({
+  module,
+  onSelect,
+  onSelectStudent,
+}: {
+  module: ModuleOverview;
+  onSelect: (s: StudentRow, step: Step) => void;
+  onSelectStudent: (s: StudentRow) => void;
+}) {
   return (
     <section style={panel}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", flexWrap: "wrap" }}>
@@ -312,7 +338,13 @@ function ModuleTable({ module, onSelect }: { module: ModuleOverview; onSelect: (
               {module.students.map((st) => (
                 <tr key={st.user_id}>
                   <td style={{ ...td, position: "sticky", left: 0, backgroundColor: "#1e293b", padding: "8px 10px" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "bold" }}>{st.full_name || "（未填姓名）"}</div>
+                    <button
+                      onClick={() => onSelectStudent(st)}
+                      title="查看學生概述"
+                      style={{ padding: 0, border: "none", background: "none", color: "#86efac", fontSize: "13px", fontWeight: "bold", cursor: "pointer", textAlign: "left" }}
+                    >
+                      {st.full_name || "（未填姓名）"} ›
+                    </button>
                     <div style={{ fontSize: "11px", color: "#64748b" }}>{st.email}</div>
                     <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
                       必修 {st.required_passed}/{st.required_total}・最後 {shortTime(st.last_activity_at)}
@@ -485,6 +517,153 @@ function DetailDrawer({ student, step, onClose }: { student: StudentRow; step: S
             </div>
           ))}
         </div>
+      </aside>
+    </div>
+  );
+}
+
+const TREND_TEXT: Record<string, { text: string; color: string }> = {
+  up: { text: "▲ 進步", color: "#4ade80" },
+  down: { text: "▼ 退步", color: "#f87171" },
+  flat: { text: "— 持平", color: "#94a3b8" },
+  new: { text: "首次", color: "#94a3b8" },
+};
+
+function ProfileDrawer({ student, module, onClose }: { student: StudentRow; module: ModuleOverview; onClose: () => void }) {
+  const [data, setData] = useState<ProfileResponse | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ data: ProfileResponse }>(
+      `/api/admin/students/${encodeURIComponent(student.user_id)}/profile?module_id=${encodeURIComponent(module.module_id)}`
+    ).then(
+      (res) => active && setData(res.data),
+      (err) => active && setErrorMsg(errorText(err, "學生概述"))
+    );
+    return () => {
+      active = false;
+    };
+  }, [student.user_id, module.module_id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const p = data?.profile;
+  const activeErrors = p?.errors.filter((e) => e.active) ?? [];
+  const improved = p?.errors.filter((e) => !e.active) ?? [];
+  const section: React.CSSProperties = { marginTop: "16px" };
+  const h3: React.CSSProperties = { fontSize: "13px", fontWeight: "bold", margin: "0 0 8px 0", color: "#cbd5e1" };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "flex-end", zIndex: 50 }}>
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="profile-title"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: "min(560px, 100%)", height: "100%", overflowY: "auto", backgroundColor: "#0f172a", borderLeft: "1px solid rgba(255,255,255,0.1)", padding: "20px", boxSizing: "border-box" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+          <div>
+            <h2 id="profile-title" style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 4px 0" }}>
+              {student.full_name || student.email}・學生概述
+            </h2>
+            <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
+              {module.title}
+              {p && `・作答 ${p.attempt_count} 次（評分 ${p.evaluated_count} 次）`}
+            </p>
+          </div>
+          <button onClick={onClose} style={smallBtn} aria-label="關閉">
+            ✕
+          </button>
+        </div>
+
+        <p style={{ fontSize: "11px", color: "#64748b", margin: "8px 0 0" }}>
+          由作答紀錄即時計算，不使用 AI；只給教師看。熟練度是各構面得分率的加權平均，越新的作答權重越高。
+        </p>
+
+        {errorMsg && <p style={{ fontSize: "13px", color: "#fca5a5" }}>{errorMsg}</p>}
+        {!data && !errorMsg && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
+        {p && p.evaluated_count === 0 && <p style={{ fontSize: "13px", color: "#94a3b8", marginTop: "16px" }}>還沒有被評分過的作答。</p>}
+
+        {p && p.dimensions.length > 0 && (
+          <div style={section}>
+            <h3 style={h3}>各構面熟練度（弱 → 強）</h3>
+            {p.dimensions.map((d) => {
+              const pct = Math.round(d.mastery * 100);
+              const trend = TREND_TEXT[d.trend] ?? TREND_TEXT.flat;
+              return (
+                <div key={d.name} style={{ marginBottom: "8px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontSize: "12px" }}>
+                    <span>{d.name}</span>
+                    <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>
+                      {pct}%・<span style={{ color: trend.color }}>{trend.text}</span>
+                    </span>
+                  </div>
+                  <div style={{ height: "6px", borderRadius: "3px", backgroundColor: "rgba(255,255,255,0.08)", marginTop: "4px" }}>
+                    <div style={{ width: `${pct}%`, height: "100%", borderRadius: "3px", backgroundColor: pct < 60 ? "#f59e0b" : "#22c55e" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {p && (activeErrors.length > 0 || improved.length > 0) && (
+          <div style={section}>
+            <h3 style={h3}>常犯錯誤</h3>
+            {activeErrors.length === 0 && <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>目前沒有仍在犯的錯誤。</p>}
+            {activeErrors.map((e) => (
+              <p key={e.code} style={{ fontSize: "12px", margin: "0 0 4px 0", color: "#fbbf24" }}>
+                {e.label}・{e.count} 次
+                <span style={{ color: "#94a3b8" }}>
+                  （{e.step_orders.filter((o) => o != null).map((o) => `步驟 ${o}`).join("、")}・最後 {shortTime(e.last_seen_at)}）
+                </span>
+              </p>
+            ))}
+            {improved.length > 0 && (
+              <p style={{ fontSize: "12px", margin: "8px 0 0", color: "#4ade80" }}>
+                已改善：{improved.map((e) => `${e.label}（${shortTime(e.improved_at)}）`).join("、")}
+              </p>
+            )}
+          </div>
+        )}
+
+        {p && p.steps.length > 0 && (
+          <div style={section}>
+            <h3 style={h3}>各步驟</h3>
+            {p.steps.map((s) => (
+              <p key={s.step_id} style={{ fontSize: "12px", margin: "0 0 4px 0" }}>
+                {s.step_order}. {s.step_title}：{s.passed ? <span style={{ color: "#4ade80" }}>已通過</span> : "未通過"}
+                <span style={{ color: "#94a3b8" }}>
+                  ・{s.attempts} 次・最佳 {s.best_score ?? "—"}・最新 {s.latest_score ?? "—"}
+                </span>
+              </p>
+            ))}
+          </div>
+        )}
+
+        {p && p.teacher_notes.length > 0 && (
+          <div style={section}>
+            <h3 style={h3}>最近的教師意見（已發布）</h3>
+            {p.teacher_notes.map((n, i) => (
+              <p key={i} style={{ fontSize: "12px", margin: "0 0 6px 0", color: "#cbd5e1" }}>
+                步驟 {n.step_order ?? "—"}
+                {n.final_score !== null && `・${n.final_score} 分`}：{n.feedback || "（無文字）"}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {data && (
+          <p style={{ fontSize: "11px", color: "#64748b", marginTop: "16px" }}>
+            {data.saved_version ? `AI 助教目前參考的是第 ${data.saved_version} 版側寫。` : "尚未保存側寫：下一次評分後，AI 助教才會開始參考。"}
+          </p>
+        )}
       </aside>
     </div>
   );
