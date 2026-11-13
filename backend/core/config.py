@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # 太短會「已經在算了卻被切斷重來」，重試又多吃額度（KNOWN_GAPS #17）
     llm_timeout_seconds: float = 90.0
 
+    # 學生自備 Gemini 金鑰的加密金鑰（Fernet，base64 32 bytes）。沒設定時自備金鑰功能回 503。
+    # 產生：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # ⚠️ 換掉這把會讓已存的學生金鑰全部無法解開（學生要重新填）
+    api_key_encryption_key: str = ""
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

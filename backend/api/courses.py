@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 
 from core.access import today_taipei
 from core.auth import CurrentUser, get_current_user, require_staff
+from core.user_api_keys import has_key
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -252,8 +253,8 @@ async def join_course(body: JoinCourseRequest, user: CurrentUser = Depends(get_c
             "plan": invite["plan"],
             "daily_quota": invite.get("daily_quota"),
             "access_until": invite["access_until"],
-            # 第二階段（/api/me/api-key）上線前，自備金鑰方案的學生一律需要先填金鑰
-            "needs_api_key": invite["plan"] == "self_key",
+            # 自備金鑰方案：還沒在 /api/me/api-key 存金鑰就需要先填
+            "needs_api_key": invite["plan"] == "self_key" and not has_key(supabase, user.id),
         },
         "message": "已送出加入申請，請等待老師核准" if pending else "已成功加入課程",
     }
@@ -275,6 +276,14 @@ async def list_my_courses(user: CurrentUser = Depends(get_current_user)):
     )
     today = today_taipei()
     courses = []
+    # 只有遇到自備金鑰方案才查一次金鑰狀態
+    _has_key: list[bool] = []
+
+    def user_has_key() -> bool:
+        if not _has_key:
+            _has_key.append(has_key(supabase, user.id))
+        return _has_key[0]
+
     for row in res.data or []:
         course = row.get("courses") or {}
         invite = row.get("course_invite_codes") or {}
@@ -291,7 +300,7 @@ async def list_my_courses(user: CurrentUser = Depends(get_current_user)):
             "daily_quota": invite.get("daily_quota"),
             "access_until": invite.get("access_until"),
             "access_expired": _access_expired(invite.get("access_until"), today),
-            "needs_api_key": plan == "self_key",
+            "needs_api_key": plan == "self_key" and not user_has_key(),
         })
     return {"data": courses}
 

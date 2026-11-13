@@ -176,7 +176,7 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 | 層 | 平台 | 環境變數 |
 |----|------|---------|
 | 前端 | Vercel | `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`NEXT_PUBLIC_API_URL`（= Render 網址，結尾不加 `/`） |
-| 後端 | Render | `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`GEMINI_MODEL`、`ENVIRONMENT=production`、`FRONTEND_URL`、`LLM_TIMEOUT_SECONDS` |
+| 後端 | Render | `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`GEMINI_MODEL`、`ENVIRONMENT=production`、`FRONTEND_URL`、`LLM_TIMEOUT_SECONDS`、`API_KEY_ENCRYPTION_KEY`（學生自備金鑰的加密金鑰，產生方式見 `backend/.env.example`；換掉會讓已存的金鑰失效） |
 
 ### 順序
 

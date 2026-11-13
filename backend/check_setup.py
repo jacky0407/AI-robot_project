@@ -28,6 +28,7 @@ EXPECTED_TABLES = [
     "course_modules",     # migration 005 才有（新建資料庫跑 schema.sql 就會有）
     "practice_sessions",  # migration 009 才有
     "learner_profiles",   # migration 015 才有
+    "user_api_keys",      # migration 017：學生自備 Gemini 金鑰（加密）
     "export_logs",        # migration 018：資料匯出稽核紀錄
 ]
 
@@ -36,6 +37,7 @@ TABLE_MIGRATIONS = {
     "course_modules": "005_rls_policies.sql",
     "practice_sessions": "009_practice_sessions.sql",
     "learner_profiles": "015_learner_profiles.sql",
+    "user_api_keys": "017_user_api_keys.sql",
     "export_logs": "018_export_logs.sql",
 }
 
