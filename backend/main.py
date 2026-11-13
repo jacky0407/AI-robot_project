@@ -32,6 +32,7 @@ from api.tool_requests import router as tool_requests_router
 from api.course_modules import router as course_modules_router
 from api.modules import router as modules_router
 from api.admin import router as admin_router
+from api.me import router as me_router
 
 app.include_router(practice_router)
 # TODO: 等成員二實作後，在此加入其他 router
@@ -45,6 +46,7 @@ app.include_router(privacy_router)
 app.include_router(review_router)
 app.include_router(teacher.router)
 app.include_router(admin_router)
+app.include_router(me_router)
 
 
 @app.get("/")

@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from core.ai.llm_keys import use_api_key
+from core.user_api_keys import load_decrypted_key
 from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser, get_current_user
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
@@ -177,6 +179,8 @@ async def submit_answer(
         check_step_unlocked(db, user, step_res.data)
         linked_session_id = ensure_session(db, session_id, user.id)
         quota = consume_quota(db, access)
+        # 自備金鑰方案：這次評分改用學生自己的金鑰（不扣平台次數）
+        student_key = _student_api_key(db, user, access)
 
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
@@ -255,6 +259,12 @@ async def submit_answer(
 
         # ── 呼叫 TutorAgent 並以 SSE 串流回傳 ──────────────────────
         async def event_generator() -> AsyncGenerator[str, None]:
+            # use_api_key 只影響這次請求；None = 平台金鑰
+            with use_api_key(student_key):
+                async for event in _scoring_events():
+                    yield event
+
+        async def _scoring_events() -> AsyncGenerator[str, None]:
             try:
                 yield _sse_event("score_start", {
                     "session_id": session_id,
@@ -405,7 +415,7 @@ async def get_hint(
         raise HTTPException(status_code=404, detail="Step or AI Tool not found")
 
     # 沒被指派的學生不能看教授設定的提示；看提示不扣額度
-    check_step_access(db, user, step_res.data)
+    access = check_step_access(db, user, step_res.data)
 
     tool = step_res.data["ai_tools"]
     plan = parse_teaching_strategy(tool.get("teaching_strategy"))
@@ -468,15 +478,16 @@ async def get_hint(
         tool.get("scale_type"),
     )
 
-    hint = await hint_engine.next_hint(
-        teaching_strategy=tool.get("teaching_strategy"),
-        student_answer=(last_attempt or {}).get("user_input_content", ""),
-        dimension_scores=dimension_scores,
-        hints_used=hints_used,
-        requested_by_student=True,
-        rubric=rubric_dict,
-        memory_text=load_bot_memory(db, user.id, step_res.data).to_prompt_text(),
-    )
+    with use_api_key(_student_api_key(db, user, access)):
+        hint = await hint_engine.next_hint(
+            teaching_strategy=tool.get("teaching_strategy"),
+            student_answer=(last_attempt or {}).get("user_input_content", ""),
+            dimension_scores=dimension_scores,
+            hints_used=hints_used,
+            requested_by_student=True,
+            rubric=rubric_dict,
+            memory_text=load_bot_memory(db, user.id, step_res.data).to_prompt_text(),
+        )
 
     if hint is None:
         return {
@@ -715,6 +726,22 @@ def _insert_evaluation(db, row: dict) -> None:
             raise
         logger.warning("ai_evaluations.memory_snapshot 不存在，請執行 supabase/migrations/015_learner_profiles.sql")
         db.table("ai_evaluations").insert({k: v for k, v in row.items() if k != "memory_snapshot"}).execute()
+
+
+def _student_api_key(db, user, access) -> str | None:
+    """
+    自備金鑰方案（access.mode == "self_key"）回傳學生解密後的金鑰；其他模式回 None（用平台金鑰）。
+    有存金鑰但解不開（例如 API_KEY_ENCRYPTION_KEY 換過）→ 403，請學生重新填寫。
+    """
+    if access.mode != "self_key":
+        return None
+    key = load_decrypted_key(db, user.id)
+    if not key:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "API_KEY_REQUIRED", "message": "讀不到你的 Gemini 金鑰，請到個人資料頁重新填寫"},
+        )
+    return key
 
 
 def _collect_evidence(dimension_scores: list[dict] | None) -> str:

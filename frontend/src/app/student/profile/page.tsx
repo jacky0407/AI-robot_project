@@ -193,7 +193,7 @@ export default function StudentProfilePage() {
     setKeyMsg(null);
     try {
       await apiFetch("/api/me/api-key", { method: "PUT", body: JSON.stringify({ api_key: key }) });
-      setKeyMsg({ ok: true, text: "金鑰已驗證並儲存。之後作答會使用你自己的金鑰，不受平台每日次數限制。" });
+      setKeyMsg({ ok: true, text: "金鑰已驗證並儲存。用「自備金鑰」邀請碼加入的課程，作答會使用你自己的金鑰、不限次數。" });
       setShowKeyForm(false);
       await loadKey();
     } catch (err) {
@@ -205,7 +205,7 @@ export default function StudentProfilePage() {
   };
 
   const handleDeleteKey = async () => {
-    if (!confirm("確定要刪除你的金鑰嗎？刪除後作答會改用平台額度（若課程有提供）。")) return;
+    if (!confirm("確定要刪除你的金鑰嗎？刪除後，用「自備金鑰」邀請碼加入的課程將無法作答，直到重新填寫。")) return;
     setSavingKey(true);
     setKeyMsg(null);
     try {

@@ -36,6 +36,7 @@
     ]
 """
 
+from core.ai.llm_keys import build_llm, override_api_key
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -126,6 +127,10 @@ class ErrorDetector:
 
     @property
     def llm(self):
+        # 自備金鑰的學生：這次請求改用他自己的金鑰（core/ai/llm_keys.py），不動共用的 self._llm
+        key = override_api_key()
+        if key:
+            return build_llm(key, temperature=0.1)
         if self._llm is None:
             from langchain_google_genai import ChatGoogleGenerativeAI
             from core.config import get_settings

@@ -10,7 +10,8 @@
 課程指派另外看學生加入時用的邀請碼（migrations/013）：
     - 過了邀請碼的可用日期 access_until（台灣時間）→ 403 ACCESS_EXPIRED
     - 免費方案（plan = free）→ 每天 daily_quota 次，和自主模式一樣扣次數
-    - 自備金鑰方案（plan = self_key）→ 第二階段（/api/me/api-key）上線前一律 403 API_KEY_REQUIRED
+    - 自備金鑰方案（plan = self_key）→ 已在 /api/me/api-key 存好金鑰：mode = self_key，不限次數、
+      評分用學生自己的金鑰（api/practice.py）；還沒存金鑰 → 403 API_KEY_REQUIRED
     - 沒有掛邀請碼（舊資料或後台直接加入）→ 不限期、不限次數
     課程被擋時，若同時有自主模式的有效核准，改用核准那筆。
 
@@ -29,13 +30,14 @@ from typing import Literal, Optional
 from fastapi import HTTPException, status
 
 from core.auth import CurrentUser
+from core.user_api_keys import has_key
 
 logger = logging.getLogger(__name__)
 
 # 台灣沒有日光節約時間，用固定 +8（與 api/tool_requests.py 相同）
 TAIPEI = timezone(timedelta(hours=8))
 
-AccessMode = Literal["staff", "course", "permission"]
+AccessMode = Literal["staff", "course", "permission", "self_key"]
 
 PERMISSION_FIELDS = "id, tool_id, start_date, expire_date, daily_quota, used_today, used_date"
 
@@ -183,6 +185,8 @@ def check_step_access(db, user: CurrentUser, step: dict, today: Optional[date] =
     if permission:
         return StepAccess(mode="permission", permission_id=permission["id"], permission=permission)
     if membership.needs_api_key:
+        if has_key(db, user.id):
+            return StepAccess(mode="self_key")
         raise _error(
             status.HTTP_403_FORBIDDEN,
             "API_KEY_REQUIRED",

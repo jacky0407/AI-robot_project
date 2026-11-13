@@ -13,6 +13,7 @@
   - 未來可以替換單個步驟的工具，不影響整體架構
 """
 
+from core.ai.llm_keys import build_llm, override_api_key
 import json
 import logging
 from typing import AsyncGenerator
@@ -92,6 +93,10 @@ class EvaluatorAgent:
 
     @property
     def llm(self) -> ChatGoogleGenerativeAI:
+        # 自備金鑰的學生：這次請求改用他自己的金鑰（core/ai/llm_keys.py），不動共用的 self._llm
+        key = override_api_key()
+        if key:
+            return build_llm(key, temperature=0.2)
         if self._llm is None:
             settings = get_settings()
             if not settings.gemini_api_key:

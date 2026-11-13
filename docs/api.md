@@ -333,7 +333,15 @@
   `free`（平台金鑰，每天 `daily_quota` 次，沒填預設 10）或 `self_key`（學生自備金鑰，不限次數）
 - 邀請碼不會自動失效；老師可以停用（`is_active: false`）。方案不能改，要換請產生新的碼
 - 老師改了碼的可用日期或次數，已用這組碼加入的學生跟著變
-- `self_key`：自備金鑰（第二階段 `/api/me/api-key`）上線前，用這種碼加入的學生作答會得到 403 `API_KEY_REQUIRED`
+- `self_key`：學生要先在 `/api/me/api-key` 存好自己的 Gemini 金鑰；存好後作答用自己的金鑰、不限次數（額度 `mode: "self_key"`），
+  沒存會得到 403 `API_KEY_REQUIRED`
+
+#### ✅ 自備 Gemini 金鑰 `/api/me/api-key`（2026-11，migration 017）
+| 方法 | Request | 回應 `data` | 錯誤 |
+|------|---------|------------|------|
+| `GET` | — | `{has_key, key_hint, verified_at}`（永不回傳金鑰） | — |
+| `PUT` | `{api_key}` | 同上；先向 Google 驗證（列出模型，不花額度）再加密儲存，覆蓋舊的 | 400 `INVALID_API_KEY`、502 `KEY_VERIFY_FAILED`、503 `KEY_STORAGE_NOT_CONFIGURED`（後端沒設 `API_KEY_ENCRYPTION_KEY`） |
+| `DELETE` | — | `{has_key: false, …}` | — |
 
 邀請碼欄位：`{id, code, plan, daily_quota, access_until, is_active, expired, created_at, member_count}`
 （`expired` = 可用日期已過；`member_count` = 用這組碼加入且 active 的人數）。

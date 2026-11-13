@@ -92,7 +92,7 @@ function attemptScore(s: Submission): number | null {
 
 // GET /api/practice/steps/{step_id}/quota 的回應（backend/core/access.py 的 quota_status）
 type Quota = {
-  mode: "staff" | "course" | "permission";
+  mode: "staff" | "course" | "permission" | "self_key";
   used: number | null;
   quota: number | null;
   remaining: number | null;
@@ -1007,6 +1007,7 @@ function QuotaBadge({ state }: { state: QuotaState }) {
 
   const q = state.quota;
   if (q.mode === "staff") return <span style={{ ...base, color: "#64748b" }}>教師帳號：不限次數</span>;
+  if (q.mode === "self_key") return <span style={{ ...base, color: "#64748b" }}>使用你自己的 Gemini 金鑰：不限次數</span>;
   if (q.quota === null) return <span style={{ ...base, color: "#64748b" }}>正式課程：不限練習次數</span>;
 
   const color = q.remaining === 0 ? "#f87171" : (q.remaining ?? 0) <= 2 ? "#fbbf24" : "#86efac";
