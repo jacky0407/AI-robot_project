@@ -22,6 +22,7 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from core.auth import CurrentUser, require_staff
+from core.learner_profile import refresh_learner_profile
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,8 @@ async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(req
                 "confidence": evaluation.get("confidence") if evaluation else None,
                 "needs_teacher_review": bool(evaluation.get("needs_teacher_review")) if evaluation else False,
                 "detected_errors": evaluation.get("detected_errors") or [] if evaluation else [],
+                # 回饋當時 AI 參考的記憶（migration 015 之前的評分為 None）
+                "memory_snapshot": evaluation.get("memory_snapshot") if evaluation else None,
             },
             "teacher_reviews": reviews,
             "prompt_logs": prompt_res.data or [],
@@ -232,9 +235,10 @@ async def judge_submission(
 
     db = get_supabase()
 
-    attempt_res = db.table("step_attempts").select("id").eq("id", attempt_id).execute()
+    attempt_res = db.table("step_attempts").select("id, user_id, module_id").eq("id", attempt_id).execute()
     if not attempt_res.data:
         raise HTTPException(status_code=404, detail="Submission not found")
+    attempt = attempt_res.data[0]
 
     review_res = db.table("teacher_reviews").insert({
         "attempt_id": attempt_id,
@@ -253,6 +257,10 @@ async def judge_submission(
         db.table("step_attempts").update(
             {"status": "revision_required"}
         ).eq("id", attempt_id).execute()
+
+    # 已發布的教師分數會改變「是否通過」與教師叮嚀：重算學生的側寫（失敗只記 log）
+    if attempt.get("user_id") and attempt.get("module_id"):
+        refresh_learner_profile(db, attempt["user_id"], attempt["module_id"], attempt_id)
 
     return {"data": review_res.data[0]}
 

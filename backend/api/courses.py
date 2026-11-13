@@ -5,7 +5,10 @@
     - 建立課程時不產生邀請碼，老師另外產生，一門課可以有多組
     - 每組設定可用日期 access_until（用這組碼加入的學生可以用到這天，台灣時間當天仍可用）
       與方案 plan：free（平台金鑰，每天 daily_quota 次）或 self_key（學生自備金鑰，不限次數）
-    - 邀請碼不會自動失效；老師可以手動停用（is_active），停用後不能再用它加入
+    - 停用（is_active = false）：不能再用它加入，已加入的學生不受影響（用到可用日期為止）
+    - 刪除（DELETE …/invite-codes/{id}）：從介面移除，並把所有用這組碼加入的學生移出課程（status = removed）
+    - 過了可用日期的邀請碼視同刪除，讀取邀請碼清單、學生讀取自己的課程時自動清除（開會紀錄 #49 第 3 項）
+    - 被移出的學生作答紀錄完整保留；之後可以用新的邀請碼重新申請
     - 老師改了碼的可用日期或次數，已用這組碼加入的學生跟著變（成員只記錄 invite_code_id）
     額度與可用日期在送出作答時由 core/access.py 檢查。
 
@@ -20,6 +23,7 @@
    下面的 select 都用 `資料表!外鍵名稱(...)` 明確指定。
 """
 
+import logging
 import re
 import secrets
 from datetime import date
@@ -34,6 +38,8 @@ from core.access import today_taipei
 from core.auth import CurrentUser, get_current_user, require_staff
 from core.user_api_keys import has_key
 from database.client import get_supabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/courses", tags=["Courses"])
 
@@ -258,6 +264,8 @@ async def join_course(body: JoinCourseRequest, user: CurrentUser = Depends(get_c
 async def list_my_courses(user: CurrentUser = Depends(get_current_user)):
     """目前登入者加入（或申請中）的課程、狀態、方案與可用日期"""
     supabase = get_supabase()
+    # 過期的邀請碼視同刪除：先清掉，學生看到的就是「已移出」而不是一張不能點的卡片
+    purge_expired_invite_codes(supabase, today_taipei())
     res = (
         supabase.table("course_members")
         .select(f"status, joined_at, courses!course_members_course_id_fkey(id, title, description, is_archived), "
@@ -368,6 +376,45 @@ async def update_course(course_id: UUID, body: UpdateCourseRequest, user: Curren
 # 教師端：邀請碼
 # ──────────────────────────────────────────
 
+def delete_invite_code_and_members(supabase, code_id: str) -> int:
+    """
+    把用這組碼加入的學生移出課程（status = removed），再刪除邀請碼。回傳移出人數。
+
+    順序很重要：course_members.invite_code_id 是 ON DELETE SET NULL，
+    先刪碼的話就找不到哪些學生是用這組碼加入的。
+    作答紀錄不受影響（step_attempts 連的是使用者與模組，不是課程成員）。
+    """
+    removed = (
+        supabase.table("course_members")
+        .update({"status": "removed"})
+        .eq("invite_code_id", code_id)
+        .in_("status", ["active", "pending"])
+        .execute()
+    ).data or []
+    supabase.table("course_invite_codes").delete().eq("id", code_id).execute()
+    return len(removed)
+
+
+def purge_expired_invite_codes(supabase, today: date, course_id: Optional[str] = None) -> int:
+    """
+    刪除已過可用日期的邀請碼（含移出用它加入的學生）。回傳刪除的組數。
+
+    沒有排程器（Render 免費方案），所以在老師讀取邀請碼、學生讀取自己的課程時順便清除；
+    在清除之前，過期的碼本來就不能用（加入回 CODE_EXPIRED，作答回 ACCESS_EXPIRED）。
+    """
+    try:
+        query = supabase.table("course_invite_codes").select("id").lt("access_until", today.isoformat())
+        if course_id:
+            query = query.eq("course_id", course_id)
+        expired = query.execute().data or []
+        for row in expired:
+            delete_invite_code_and_members(supabase, row["id"])
+        return len(expired)
+    except Exception as e:  # noqa: BLE001 - 順便做的清除，失敗不能擋住原本的請求
+        logger.warning(f"清除過期邀請碼失敗：{e}")
+        return 0
+
+
 def _course_members_for_counts(supabase, course_id: str) -> list[dict]:
     res = (
         supabase.table("course_members")
@@ -423,6 +470,8 @@ async def list_invite_codes(course_id: UUID, user: CurrentUser = Depends(require
     supabase = get_supabase()
     course_id = str(course_id)
     _get_course_or_404(supabase, course_id)
+    today = today_taipei()
+    purge_expired_invite_codes(supabase, today, course_id)
 
     res = (
         supabase.table("course_invite_codes")
@@ -432,7 +481,6 @@ async def list_invite_codes(course_id: UUID, user: CurrentUser = Depends(require
         .execute()
     )
     members = _course_members_for_counts(supabase, course_id)
-    today = today_taipei()
     return {"data": [_code_output(row, members, today) for row in res.data or []]}
 
 
@@ -483,6 +531,31 @@ async def update_invite_code(
     )
     members = _course_members_for_counts(supabase, course_id)
     return {"data": _code_output(res.data[0], members, today), "message": "邀請碼已更新"}
+
+
+@router.delete("/{course_id}/invite-codes/{code_id}")
+async def delete_invite_code(course_id: UUID, code_id: UUID, user: CurrentUser = Depends(require_staff)):
+    """
+    刪除邀請碼：從介面移除，並把用這組碼加入的學生移出課程（作答紀錄保留）。
+    只想停止新的人加入、不影響已加入的學生，請用 PATCH 停用。
+    """
+    supabase = get_supabase()
+    course_id, code_id = str(course_id), str(code_id)
+    existing = (
+        supabase.table("course_invite_codes")
+        .select("id, code")
+        .eq("id", code_id)
+        .eq("course_id", course_id)
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        raise _error(status.HTTP_404_NOT_FOUND, "INVITE_CODE_NOT_FOUND", "這門課程沒有這組邀請碼")
+
+    removed = delete_invite_code_and_members(supabase, code_id)
+    code = existing.data[0]["code"]
+    message = f"已刪除邀請碼 {code}" + (f"，並將 {removed} 位用這組碼加入的學生移出課程" if removed else "")
+    return {"success": True, "removed_members": removed, "message": message}
 
 
 # ──────────────────────────────────────────

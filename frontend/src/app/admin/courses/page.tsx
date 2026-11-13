@@ -240,6 +240,23 @@ export default function AdminCoursesPage() {
     }
   };
 
+  // 刪除：從介面移除，並把用這組碼加入的學生移出課程（作答紀錄保留）；只想停止新的人加入請用「停用」
+  const deleteCode = async (courseId: string, code: InviteCode) => {
+    const who = code.member_count > 0 ? `用這組碼加入的 ${code.member_count} 位學生會被移出課程（作答紀錄保留）。` : "目前沒有學生用這組碼加入。";
+    if (!window.confirm(`確定要刪除邀請碼「${code.code}」嗎？\n\n${who}\n刪除後無法復原。只想停止新的人加入，請改用「停用」。`)) return;
+    setBusyCode(code.id);
+    setCodeMsg(null);
+    try {
+      const res = await apiFetch<{ message: string }>(`/api/courses/${courseId}/invite-codes/${code.id}`, { method: "DELETE" });
+      setCodeMsg({ courseId, text: res.message });
+      await loadCourses();
+    } catch (err) {
+      setCodeMsg({ courseId, text: `刪除失敗：${errorText(err, "請稍後再試")}` });
+    } finally {
+      setBusyCode(null);
+    }
+  };
+
   const changeAccessUntil = (courseId: string, code: InviteCode) => {
     const value = prompt(`「${code.code}」的新可用日期（YYYY-MM-DD）\n用這組碼加入的 ${code.member_count} 位學生會一起改。`, code.access_until);
     if (value && value.trim() !== code.access_until) updateCode(courseId, code, { access_until: value.trim() });
@@ -452,9 +469,18 @@ export default function AdminCoursesPage() {
                           <button
                             disabled={busyCode === code.id}
                             onClick={() => updateCode(c.id, code, { is_active: !code.is_active })}
-                            style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px", color: code.is_active ? "#f87171" : "#4ade80" }}
+                            title={code.is_active ? "停止用這組碼加入；已加入的學生不受影響" : "重新開放用這組碼加入"}
+                            style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px", color: code.is_active ? "#fbbf24" : "#4ade80" }}
                           >
                             {code.is_active ? "停用" : "啟用"}
+                          </button>
+                          <button
+                            disabled={busyCode === code.id}
+                            onClick={() => deleteCode(c.id, code)}
+                            title="刪除這組碼，並移出用它加入的學生"
+                            style={{ ...smallBtn, padding: "2px 8px", fontSize: "11px", color: "#f87171" }}
+                          >
+                            刪除
                           </button>
                         </span>
                       </div>

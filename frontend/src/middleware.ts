@@ -79,6 +79,11 @@ export async function middleware(request: NextRequest) {
       if (pathname.startsWith('/admin') && !isStaff) {
         return NextResponse.redirect(new URL('/student/courses', request.url))
       }
+
+      // 5. 教師不進學生練習頁填寫模組（開會紀錄 #49 第 2 項）：/student 一律導回後台的監控總覽
+      if (pathname.startsWith('/student') && isStaff) {
+        return NextResponse.redirect(new URL('/admin/overview', request.url))
+      }
     }
   }
 

@@ -236,6 +236,12 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 - 教師複核未發布（`is_published = false`）的意見不放進記憶，AI 不能比老師先說出判定
 - 記憶查詢失敗只記 log，評分照常進行（當作沒有記憶）
 
+**學習者側寫（2026-11，migration 015）**：每位學生 × 模組一份，由 `core/learner_profile.py` 在每次評分寫入、教師判定後從作答紀錄重算並新增一個版本（不呼叫 LLM、不存學生原文）。
+內容：各構面熟練度（得分率指數加權，α = 0.5）與趨勢、常犯錯誤（在會檢查它的步驟連續 3 次沒出現 → 已改善）、各步驟通過狀態、最近 3 則已發布教師意見。
+記憶段落多一節「這位學生在本模組的整體狀況」：仍常犯的錯誤（出現 2 次以上或出現在其他步驟——跨步驟帶入）、熟練度低於 60% 的兩個構面、已改善的錯誤。
+每次評分把當時的記憶存進 `ai_evaluations.memory_snapshot`（`text` + `summary`），複核頁可展開查看。
+教師端概述：`GET /api/admin/students/{user_id}/profile?module_id=…`（即時重算，只給教師）。
+
 教授可以在 `teaching_strategy.memory` 逐支機器人調整（建立機器人頁面 `/admin/tools/new` 第 7 區「機器人記憶」），沒填就用預設值：
 
 ```json
