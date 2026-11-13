@@ -1,6 +1,7 @@
 // /portal 列出的系統（兩系統共用登入整合方案 #1）。之後有新的系統（別組的專案）要加進來，只要在 SYSTEMS 加一筆。
 //
 // staffOnly：只有教師（owner／assistant）看得到
+// studentOnly：只有學生看得到（教師不進學生練習頁填寫模組，開會紀錄 #49 第 2 項）
 // enabled 回傳 false 時卡片會顯示「尚未開放」且不能點，用來處理還沒部署或沒設定網址的系統
 
 export type PortalUser = { isStaff: boolean };
@@ -13,6 +14,7 @@ export type PortalSystem = {
   accent: string; // 卡片主色
   href: string;
   staffOnly?: boolean;
+  studentOnly?: boolean;
   enabled?: () => boolean;
   disabledReason?: string;
   // 別組的系統（例如 /xr 轉址到 XR 前端）不是本站的 Next.js 頁面，要整頁載入，不能用 <Link> 換頁
@@ -27,6 +29,7 @@ export const SYSTEMS: PortalSystem[] = [
     icon: "📝",
     accent: "#2563eb",
     href: "/student/courses",
+    studentOnly: true,
   },
   {
     id: "xr",
@@ -52,5 +55,5 @@ export const SYSTEMS: PortalSystem[] = [
 ];
 
 export function systemsFor(user: PortalUser): PortalSystem[] {
-  return SYSTEMS.filter((s) => !s.staffOnly || user.isStaff);
+  return SYSTEMS.filter((s) => (user.isStaff ? !s.studentOnly : !s.staffOnly));
 }
