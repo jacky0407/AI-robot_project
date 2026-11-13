@@ -346,6 +346,10 @@
 | 教師 | `POST /api/courses/:course_id/invite-codes` | `{plan?, access_until, daily_quota?}` | 邀請碼，201 |
 | 教師 | `GET /api/courses/:course_id/invite-codes` | — | 邀請碼陣列（新的在前） |
 | 教師 | `PATCH /api/courses/:course_id/invite-codes/:code_id` | `{is_active?, access_until?, daily_quota?}` | 更新後的邀請碼 |
+| 教師 | `DELETE /api/courses/:course_id/invite-codes/:code_id` | — | `{removed_members, message}`：刪除邀請碼，並把用它加入的學生（active／pending）移出課程（`removed`），作答紀錄保留 |
+
+**停用 vs 刪除**（開會紀錄 #49 第 3 項）：停用只停止新的人用這組碼加入，已加入的學生照常使用到可用日期；
+刪除會從介面移除並移出用它加入的學生。**過了可用日期的邀請碼視同刪除**：讀取邀請碼清單（教師）、讀取自己的課程（學生）時自動清除。
 | 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at, invite_code, plan, access_until}]` |
 | 教師 | `PATCH /api/courses/:course_id/members/:user_id` | `{action: "approve" \| "reject" \| "remove"}` | 更新後的成員 |
 | 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at, plan, daily_quota, access_until, needs_api_key}` |

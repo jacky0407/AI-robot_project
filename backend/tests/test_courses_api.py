@@ -546,7 +546,7 @@ class TestMyCourses:
             "access_until": "2026-11-10", "access_expired": True, "needs_api_key": False,
         }]
         db.table.return_value.eq.assert_called_once_with("user_id", "student-1")
-        assert "course_invite_codes!course_members_invite_code_id_fkey(" in selected(db)[0]
+        assert any("course_invite_codes!course_members_invite_code_id_fkey(" in cols for cols in selected(db))
 
     def test_member_without_code_is_unlimited(self, as_user):
         """舊資料或後台直接加入：沒有邀請碼，不限期、不限次數"""
