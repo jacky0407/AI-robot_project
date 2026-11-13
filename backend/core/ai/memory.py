@@ -6,6 +6,8 @@
      已給過的提示，以及教師已發布的複核意見（以教師為準）
   2. 前面步驟的成果：同一模組中排在前面的步驟，學生最新的作答
      （有通過的版本優先），讓後面的機器人知道前面寫了什麼
+  3. 學習者側寫（core/learner_profile.py）：整個模組仍常犯的錯誤、較弱的構面、
+     已改善的錯誤——讓步驟 2 的錯誤習慣在步驟 5 也被記得
 
 記憶完全從既有資料表組出來（step_attempts、ai_evaluations、teacher_reviews、
 prompt_logs），不新增資料表；所有機器人共用同一套邏輯。
@@ -31,6 +33,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field
 
+from core.learner_profile import load_latest_profile, profile_prompt_lines
 from core.step_unlock import DEFAULT_PASS_SCORE, attempt_passed
 
 logger = logging.getLogger(__name__)
@@ -100,10 +103,13 @@ class BotMemory:
     prior_steps: list[PriorStepMemory] = field(default_factory=list)  # 依步驟順序
     # 最近 RECURRING_WINDOW 次作答各自的錯誤；None 表示沒另外讀，改用 attempts
     error_history: list[list[str]] | None = None
+    # 學習者側寫（core/learner_profile.py，整個模組）的重點；跨步驟的錯誤由這裡帶入
+    profile_lines: list[str] = field(default_factory=list)
+    profile_version: int | None = None
 
     @property
     def is_empty(self) -> bool:
-        return not self.attempts and not self.prior_steps
+        return not self.attempts and not self.prior_steps and not self.profile_lines
 
     def recurring_errors(self) -> list[str]:
         """在兩次以上作答都出現的錯誤，依出現次數排序"""
@@ -144,6 +150,12 @@ class BotMemory:
             if recurring:
                 lines.append("重複出現的錯誤：" + "、".join(recurring))
 
+        if self.profile_lines:
+            if lines:
+                lines.append("")
+            lines.append("【這位學生在本模組的整體狀況】")
+            lines.extend(f"- {line}" for line in self.profile_lines)
+
         if self.prior_steps:
             if lines:
                 lines.append("")
@@ -173,6 +185,8 @@ class BotMemory:
                 {"step_order": p.step_order, "step_title": p.step_title, "passed": p.passed}
                 for p in self.prior_steps
             ],
+            "profile_highlights": list(self.profile_lines),
+            "profile_version": self.profile_version,
         }
 
 
@@ -233,6 +247,15 @@ def load_bot_memory(db, user_id: str, step_row: dict) -> BotMemory:
             )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"讀取前面步驟成果失敗，改為無記憶：{e}")
+
+    # 學習者側寫：讀不到（沒跑 migration 015、還沒有側寫）就略過，其他記憶照常
+    latest = load_latest_profile(db, user_id, step_row.get("module_id"))
+    if latest:
+        step_order = step_row.get("step_order")
+        memory.profile_lines = profile_prompt_lines(
+            latest.get("profile"), step_order if isinstance(step_order, int) else None
+        )
+        memory.profile_version = latest.get("version")
 
     return memory
 

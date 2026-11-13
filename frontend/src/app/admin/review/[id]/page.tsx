@@ -28,6 +28,8 @@ type Submission = {
     confidence?: number | null;
     needs_teacher_review?: boolean;
     detected_errors?: DetectedError[];
+    // 回饋當時 AI 參考的記憶（backend/api/practice.py 的 _memory_snapshot；migration 015 之前為 null）
+    memory_snapshot?: { text: string } | null;
   };
   teacher_reviews: TeacherReview[];
   prompt_logs: PromptLog[];
@@ -198,6 +200,21 @@ export default function ReviewDetailPage() {
                   ))}
                 </div>
               )}
+              <details style={{ marginTop: "12px", fontSize: "12px", color: "#cbd5e1" }}>
+                <summary style={{ cursor: "pointer", fontWeight: "bold" }}>AI 當時參考的記憶</summary>
+                <p style={{ margin: "6px 0 0", color: "#94a3b8" }}>
+                  記憶只用在整體回饋與提示，不影響上面的構面分數。
+                </p>
+                {ev.memory_snapshot?.text ? (
+                  <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: "6px 0 0", padding: "8px", borderRadius: "6px", backgroundColor: "rgba(255,255,255,0.04)", lineHeight: 1.6 }}>
+                    {ev.memory_snapshot.text}
+                  </pre>
+                ) : (
+                  <p style={{ margin: "6px 0 0", color: "#94a3b8" }}>
+                    {ev.memory_snapshot ? "這次沒有可用的記憶（第一次作答，或老師關閉了這支機器人的記憶）。" : "這筆評分沒有保存記憶快照（功能上線前的評分）。"}
+                  </p>
+                )}
+              </details>
             </div>
 
             {data.teacher_reviews.length > 0 && (
