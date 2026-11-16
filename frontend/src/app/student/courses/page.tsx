@@ -173,7 +173,7 @@ export default function StudentCoursesPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "12px", marginBottom: "16px" }}>
           <div>
             <h1 style={{ fontSize: "20px", fontWeight: "bold", margin: "0 0 4px 0" }}>我的課程</h1>
-            <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>點選課程開始練習。正式課程不限練習次數，成績由老師最終判定。</p>
+            <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>點選課程查看簡介與關卡。正式課程不限練習次數，成績由老師最終判定。</p>
           </div>
           <button onClick={loadCourses} style={{ flexShrink: 0, fontSize: "12px", color: "#38bdf8", background: "none", border: "none", cursor: "pointer" }}>
             重新整理
@@ -203,8 +203,8 @@ export default function StudentCoursesPage() {
                   key={c.course_id}
                   type="button"
                   disabled={!canEnter}
-                  onClick={() => router.push(`/student/modules?course=${encodeURIComponent(c.course_id)}`)}
-                  title={canEnter ? "進入練習" : hint}
+                  onClick={() => router.push(`/student/courses/${encodeURIComponent(c.course_id)}`)}
+                  title={canEnter ? "查看課程與關卡" : hint}
                   className="course-card"
                   style={{
                     ...tile,
@@ -238,7 +238,7 @@ export default function StudentCoursesPage() {
                     <div style={{ fontWeight: "bold", fontSize: "16px", color: "#f8fafc", lineHeight: 1.4 }}>{c.course_name || "（未命名課程）"}</div>
                     {c.description && <p style={clamp2}>{c.description}</p>}
                   </div>
-                  <span style={{ fontSize: "12px", fontWeight: "bold", color: canEnter ? "#38bdf8" : "#64748b" }}>{canEnter ? "進入練習 →" : hint}</span>
+                  <span style={{ fontSize: "12px", fontWeight: "bold", color: canEnter ? "#38bdf8" : "#64748b" }}>{canEnter ? "進入課程 →" : hint}</span>
                 </button>
               );
             })}

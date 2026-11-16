@@ -134,6 +134,8 @@ function StudentWorkspace() {
   const [courseName, setCourseName] = useState("");
   // 從「我的課程」進來時帶 ?course=<id>，只顯示該課程指派的模組；沒帶則維持原本顯示全部可見模組
   const courseId = searchParams.get("course");
+  // 從課程簡介頁點選關卡時帶 ?step=<step_id>；只在進頁時讀一次（之後切換關卡用 replaceState 同步網址，不重新載入）
+  const [initialStepId] = useState(() => searchParams.get("step"));
 
   // 一致性檢核 (Coherence)
   const [checkingModule, setCheckingModule] = useState<string | null>(null);
@@ -165,6 +167,11 @@ function StudentWorkspace() {
   // 切換步驟或模組時清空這一步的作答狀態
   const selectStep = (step: Step | null) => {
     setSelectedStep(step);
+    // 網址跟著目前的關卡，重新整理或分享連結時會回到同一關
+    if (courseId && step) {
+      const q = new URLSearchParams({ course: courseId, step: step.id });
+      window.history.replaceState(null, "", `?${q.toString()}`);
+    }
     setStudentAnswer("");
     setRun(null);
     setPiiWarning("");
@@ -210,6 +217,12 @@ function StudentWorkspace() {
         steps: [...((m.module_steps as Step[]) ?? [])].sort((a, b) => a.step_order - b.step_order),
       });
 
+      if (courseId && !initialStepId) {
+        // 沒指定關卡：先到課程簡介頁選關卡
+        router.replace(`/student/courses/${encodeURIComponent(courseId)}`);
+        return;
+      }
+
       if (courseId) {
         // 從課程進來：只顯示老師指派給這門課、且已發布的模組（GET /api/courses/{id}/modules）
         try {
@@ -228,12 +241,15 @@ function StudentWorkspace() {
             // 依老師指派的順序排列
             const byId = new Map((rows ?? []).map((r) => [r.id, toModule(r)]));
             const ordered = ids.map((id) => byId.get(id)).filter((m): m is Module => Boolean(m));
+            const target = ordered.find((m) => m.steps.some((st) => st.id === initialStepId));
             if (ordered.length === 0) {
               setErrorMsg("讀不到這門課程的模組內容，請確認模組已發布，或聯絡老師。");
+            } else if (!target) {
+              setErrorMsg("找不到這個關卡，可能已被老師移除。請回到課程簡介重新選擇。");
             } else {
               setModules(ordered);
-              setCurrentModuleId(ordered[0].id);
-              setSelectedStep(ordered[0].steps[0] || null);
+              setCurrentModuleId(target.id);
+              setSelectedStep(target.steps.find((st) => st.id === initialStepId) ?? null);
             }
           }
         } catch (err) {
@@ -270,7 +286,7 @@ function StudentWorkspace() {
     };
 
     load();
-  }, [supabase, router, courseId]);
+  }, [supabase, router, courseId, initialStepId]);
 
   // 教學案例
   // ⚠️ tool_cases 與步驟之間還沒有關聯欄位（schema 尚未定義），暫時取第一筆案例；送出時把 case_id 一起帶給後端
@@ -491,8 +507,8 @@ function StudentWorkspace() {
       : quotaState?.quota.remaining === 0
         ? "今天的作答次數已用完，明天（台灣時間 0 點）會恢復"
         : undefined;
-  // 從課程進來回課程頁；沒帶 course（自主探索的「開始練習」）回自主探索頁
-  const backHref = courseId ? "/student/courses" : "/student/explore";
+  // 從課程進來回課程簡介頁；沒帶 course（自主探索的「開始練習」）回自主探索頁
+  const backHref = courseId ? `/student/courses/${encodeURIComponent(courseId)}` : "/student/explore";
   // 停用的步驟不在進度清單裡；前面的必修步驟沒通過就鎖住
   const selectedProgress = selectedStep && unlock ? unlock[selectedStep.id] : undefined;
   const lockReason =
@@ -534,7 +550,7 @@ function StudentWorkspace() {
               fontSize: "13px",
             }}
           >
-            {courseId ? "← 返回課程選單" : "← 返回自主探索"}
+            {courseId ? "← 課程簡介與關卡" : "← 返回自主探索"}
           </button>
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: 0 }}>
@@ -571,7 +587,7 @@ function StudentWorkspace() {
               onClick={() => router.push(backHref)}
               style={{ marginTop: "16px", padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
             >
-              {courseId ? "回到我的課程" : "回到自主探索"}
+              {courseId ? "回到課程簡介" : "回到自主探索"}
             </button>
           )}
         </div>
