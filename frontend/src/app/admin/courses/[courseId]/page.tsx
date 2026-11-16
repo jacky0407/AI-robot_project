@@ -1,7 +1,9 @@
 "use client";
 
-// 教師端：單一課程管理。左邊是分頁列表（成員清單／邀請碼清單／指派模組清單），右邊是內容
-// 目前分頁記在網址 ?tab=members|invites|modules；建立課程後會帶 ?tab=invites&new=1 直接打開產生邀請碼
+// 教師端：單一課程管理。左邊是分頁列表，右邊是內容：
+//   學習監控（原「監控總覽」）、待複核（原「機器人與複核」的複核清單）、成員清單、邀請碼清單、
+//   模組管理（原「模組管理」＋指派模組）、資料匯出
+// 目前分頁記在網址 ?tab=；建立課程後會帶 ?tab=invites&new=1 直接打開產生邀請碼
 // 後端：GET /api/courses?include_archived=true（後端沒有單一課程的 GET，從列表找）、PATCH /api/courses/{id}
 
 import { Suspense, useCallback, useEffect, useState } from "react";
@@ -13,9 +15,12 @@ import { type AssignedModule, type Course, errorText, panel, pill, smallBtn } fr
 import MembersTab from "./MembersTab";
 import InviteCodesTab from "./InviteCodesTab";
 import ModulesTab from "./ModulesTab";
+import MonitorTab from "./MonitorTab";
+import ReviewTab from "./ReviewTab";
+import ExportTab from "./ExportTab";
 
-type Tab = "members" | "invites" | "modules";
-const TABS: Tab[] = ["members", "invites", "modules"];
+type Tab = "monitor" | "review" | "members" | "invites" | "modules" | "export";
+const TABS: Tab[] = ["monitor", "review", "members", "invites", "modules", "export"];
 const isTab = (v: string | null): v is Tab => TABS.includes(v as Tab);
 
 // useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
@@ -33,7 +38,7 @@ function CourseDetail() {
   const courseId = params.courseId;
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const tab: Tab = isTab(tabParam) ? tabParam : "members";
+  const tab: Tab = isTab(tabParam) ? tabParam : "monitor";
   // 只在進頁時讀一次：剛建立課程時自動打開產生邀請碼表單
   const [openCodeForm] = useState(() => searchParams.get("new") === "1");
 
@@ -41,6 +46,7 @@ function CourseDetail() {
   const [loadError, setLoadError] = useState("");
   const [assigned, setAssigned] = useState<AssignedModule[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reviewCount, setReviewCount] = useState<number | null>(null);
 
   const loadCourse = useCallback(
     () =>
@@ -71,6 +77,18 @@ function CourseDetail() {
     loadAssigned();
   }, [loadCourse, loadAssigned]);
 
+  // 待複核筆數（分頁上的標示）；打開「待複核」分頁時由分頁自己更新
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ data: unknown[] }>(`/api/review/pending?course_id=${encodeURIComponent(courseId)}`).then(
+      (res) => active && setReviewCount(res.data.length),
+      () => active && setReviewCount(null)
+    );
+    return () => {
+      active = false;
+    };
+  }, [courseId]);
+
   const switchTab = (t: Tab) => router.replace(`?tab=${t}`, { scroll: false });
 
   const updateCourse = async (changes: Partial<Pick<Course, "require_approval" | "is_archived">>) => {
@@ -87,17 +105,21 @@ function CourseDetail() {
     }
   };
 
-  const tabItems: { id: Tab; label: string; count?: number; alert?: boolean }[] = [
-    { id: "members", label: "成員清單", count: course?.active_count, alert: (course?.pending_count ?? 0) > 0 },
+  // badge：需要老師處理的事（待審核加入、待複核）用琥珀色標示
+  const tabItems: { id: Tab; label: string; count?: number; alert?: boolean; badge?: string }[] = [
+    { id: "monitor", label: "學習監控" },
+    { id: "review", label: "待複核", badge: reviewCount ? `${reviewCount}` : undefined },
+    { id: "members", label: "成員清單", count: course?.active_count, badge: course?.pending_count ? `${course.pending_count} 待審` : undefined },
     { id: "invites", label: "邀請碼清單", count: course?.invite_codes.length, alert: course ? course.invite_codes.length === 0 && !course.is_archived : false },
-    { id: "modules", label: "指派模組清單", count: assigned?.length, alert: assigned?.length === 0 },
+    { id: "modules", label: "模組管理", count: assigned?.length, alert: assigned?.length === 0 },
+    { id: "export", label: "資料匯出" },
   ];
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif", colorScheme: "dark" }}>
       <AdminHeader />
 
-      <main style={{ maxWidth: "1100px", margin: "24px auto", padding: "0 20px", display: "flex", flexDirection: "column", gap: "16px" }}>
+      <main style={{ maxWidth: "1280px", margin: "24px auto", padding: "0 20px", display: "flex", flexDirection: "column", gap: "16px" }}>
         <Link href="/admin/courses" style={{ alignSelf: "flex-start", fontSize: "13px", color: "#4ade80", textDecoration: "none" }}>
           ← 所有課程
         </Link>
@@ -165,12 +187,8 @@ function CourseDetail() {
                     >
                       <span>{t.label}</span>
                       <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        {t.id === "members" && (course.pending_count ?? 0) > 0 && (
-                          <span style={pill(active ? "#fff" : "#fbbf24", active ? "rgba(255,255,255,0.2)" : "rgba(245,158,11,0.15)")}>{course.pending_count} 待審</span>
-                        )}
-                        {t.count != null && (
-                          <span style={{ fontSize: "12px", color: active ? "#dcfce7" : t.alert && t.id !== "members" ? "#f87171" : "#94a3b8" }}>{t.count}</span>
-                        )}
+                        {t.badge && <span style={pill(active ? "#fff" : "#fbbf24", active ? "rgba(255,255,255,0.2)" : "rgba(245,158,11,0.15)")}>{t.badge}</span>}
+                        {t.count != null && <span style={{ fontSize: "12px", color: active ? "#dcfce7" : t.alert ? "#f87171" : "#94a3b8" }}>{t.count}</span>}
                       </span>
                     </button>
                   );
@@ -178,9 +196,12 @@ function CourseDetail() {
               </nav>
 
               <section role="tabpanel" style={{ ...panel, minWidth: 0 }}>
+                {tab === "monitor" && <MonitorTab courseId={course.id} onGoToTab={switchTab} />}
+                {tab === "review" && <ReviewTab courseId={course.id} onCount={setReviewCount} />}
                 {tab === "members" && <MembersTab courseId={course.id} onChanged={loadCourse} />}
                 {tab === "invites" && <InviteCodesTab course={course} openFormInitially={openCodeForm} onChanged={loadCourse} />}
                 {tab === "modules" && <ModulesTab courseId={course.id} assigned={assigned} reload={loadAssigned} />}
+                {tab === "export" && <ExportTab courseId={course.id} />}
               </section>
             </div>
           </>

@@ -6,12 +6,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const PAGES: { href: string; label: string; also?: string[] }[] = [
-  { href: "/admin/overview", label: "監控總覽" },
-  { href: "/admin/courses", label: "課程管理" },
-  { href: "/admin/modules", label: "模組管理" },
-  { href: "/admin/tool-requests", label: "機器人申請" },
-  // 複核詳情頁（/admin/review/[id]）是從這頁點進去的，也算在這一頁
-  { href: "/admin/tools", label: "機器人與複核", also: ["/admin/review"] },
+  // 學習監控、待複核、成員、邀請碼、模組管理、資料匯出都在課程裡；複核詳情頁（/admin/review/[id]）也算在課程管理
+  { href: "/admin/courses", label: "課程管理", also: ["/admin/review"] },
+  { href: "/admin/tools", label: "建立機器人" },
+  { href: "/admin/tool-requests", label: "自主探索申請" },
 ];
 
 export default function AdminNav() {

@@ -38,7 +38,7 @@ UNDEFINED_COLUMN = "42703"
 PENDING_SELECT = (
     "id, created_at, status, attempt_number, user_id, user_input_content, tutor_action, "
     "profiles(full_name, email), "
-    "module_steps(step_title, tool_id, require_teacher_review, ai_tools(title)), "
+    "module_steps(module_id, step_title, tool_id, require_teacher_review, ai_tools(title)), "
     "ai_evaluations(id, total_score, feedback_text, confidence, needs_teacher_review), "
     "teacher_reviews(id)"
 )
@@ -60,6 +60,9 @@ class JudgeRequest(BaseModel):
 @router.get("/pending")
 async def get_pending_reviews(
     tool_id: Optional[str] = Query(None, description="只看某一支機器人的作答"),
+    course_id: Optional[str] = Query(
+        None, description="只看這門課：指派給這門課的模組、且作答者是這門課 active 的成員"
+    ),
     needs_attention: Optional[bool] = Query(
         None, description="True 只回傳 AI 判定未通過（revision_required）的作答"
     ),
@@ -76,10 +79,21 @@ async def get_pending_reviews(
       low_confidence    AI 自評信心不足（ai_evaluations.needs_teacher_review）
       step_requires_review  教授把這個步驟設為教師強制審核點
 
-    註：schema 中 learning_modules 沒有關聯到 courses，
-    因此目前無法依課程篩選，只提供 tool_id 與 needs_attention。
+    篩選：tool_id、needs_attention、course_id。
+    course_id 透過 course_modules（migrations/005）找出這門課的模組，
+    再限定作答者是這門課 active 的成員（同一個模組可能被指派給多門課）。
     """
     db = get_supabase()
+
+    course_module_ids: Optional[set] = None
+    course_user_ids: Optional[set] = None
+    if course_id:
+        modules_res = db.table("course_modules").select("module_id").eq("course_id", course_id).execute()
+        members_res = (
+            db.table("course_members").select("user_id").eq("course_id", course_id).eq("status", "active").execute()
+        )
+        course_module_ids = {row.get("module_id") for row in modules_res.data or []}
+        course_user_ids = {row.get("user_id") for row in members_res.data or []}
 
     def query(columns: str):
         return db.table("step_attempts").select(columns).order("created_at", desc=True).execute()
@@ -119,6 +133,10 @@ async def get_pending_reviews(
             review_reasons.append("step_requires_review")
 
         if tool_id and step.get("tool_id") != tool_id:
+            continue
+        if course_module_ids is not None and (
+            step.get("module_id") not in course_module_ids or attempt.get("user_id") not in course_user_ids
+        ):
             continue
         if needs_attention and attempt.get("status") != "revision_required":
             continue

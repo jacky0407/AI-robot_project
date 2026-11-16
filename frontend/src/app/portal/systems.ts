@@ -46,7 +46,7 @@ export const SYSTEMS: PortalSystem[] = [
   {
     id: "admin",
     name: "管理後台",
-    description: "課程與邀請碼、模組指派、機器人申請審核、學生作答複核",
+    description: "課程管理（學習監控、作答複核、成員與邀請碼、模組）、建立機器人、自主探索申請審核",
     icon: "🧑‍🏫",
     accent: "#16a34a",
     href: "/admin/courses",

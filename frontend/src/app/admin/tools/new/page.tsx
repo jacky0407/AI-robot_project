@@ -179,7 +179,7 @@ function NewToolForm() {
             <p className="text-sm text-gray-500">自訂 AI 角色語氣、指引方針及客製化 Rubric 評分表</p>
           </div>
           <Link href={backUrl} className="text-sm text-gray-500 hover:text-gray-800">
-            ← 取消返回課程
+            {courseId ? '← 取消，返回課程管理' : '← 取消，返回機器人列表'}
           </Link>
         </div>
 
