@@ -1,6 +1,6 @@
 "use client";
 
-// 教師端：機器人申請審核（自主探索模式）
+// 教師端：自主探索申請（學生在自主探索模式申請使用某個機器人練習；原「機器人申請」頁）
 // 核准時設定到期日與每日次數；已核准的可以延長期限、改次數或撤銷；已過期的要設新到期日才能再核准
 // 後端：GET /api/tool-requests?status=、PATCH /api/tool-requests/{id}（backend/api/tool_requests.py）
 
@@ -165,8 +165,8 @@ export default function AdminToolRequestsPage() {
         <div style={panel}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
             <div>
-              <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 4px 0" }}>機器人使用申請（自主探索模式）</h1>
-              <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>核准時設定可使用到哪一天、每天可以作答幾次。正式課程的學生不需要申請。</p>
+              <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 4px 0" }}>自主探索申請</h1>
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>學生在「自主探索模式」想用某個機器人自行練習時會送出申請。核准時設定可以用到哪一天、每天可以作答幾次；正式課程的學生不需要申請。</p>
             </div>
             <div style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
               {FILTERS.map((f) => (
@@ -189,7 +189,7 @@ export default function AdminToolRequestsPage() {
             <p style={{ fontSize: "13px", color: "#86efac", margin: "0 0 12px 0", padding: "8px 12px", borderRadius: "8px", backgroundColor: "rgba(34,197,94,0.12)" }}>{notice}</p>
           )}
           {requests === null && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
-          {requests?.length === 0 && !errorMsg && <p style={{ fontSize: "13px", color: "#94a3b8" }}>目前沒有這個狀態的申請。</p>}
+          {requests?.length === 0 && !errorMsg && <p style={{ fontSize: "13px", color: "#94a3b8" }}>目前沒有這個狀態的自主探索申請。</p>}
 
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {requests?.map((r) => {
@@ -207,7 +207,7 @@ export default function AdminToolRequestsPage() {
                         <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: label.color, backgroundColor: label.bg }}>{label.text}</span>
                       </div>
                       <p style={{ margin: "6px 0 0", fontSize: "13px", color: "#cbd5e1" }}>
-                        申請使用：<b>{r.tool_title || "（已刪除的機器人）"}</b>
+                        想練習：<b>{r.tool_title || "（已刪除的機器人）"}</b>
                         <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>申請於 {r.created_at.slice(0, 10)}</span>
                       </p>
                       {(r.status === "approved" || r.status === "expired") && (

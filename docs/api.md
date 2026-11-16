@@ -1103,9 +1103,9 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 取得待複核清單（AI 已評分、尚未教師判定的作答）。
 
 **Query Parameters：**
-- `course_id`（選填）
+- `course_id`（選填）：只看這門課，模組要指派給這門課（`course_modules`）、作答者要是這門課 active 的成員
 - `tool_id`（選填）
-- `needs_attention`（選填）：`true` 只顯示 AI 信心值低或分數極端的項目
+- `needs_attention`（選填）：`true` 只顯示 AI 判定未通過（`revision_required`）的作答
 
 **Response 200：**
 ```json
