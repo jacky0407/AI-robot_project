@@ -90,6 +90,8 @@ function attemptScore(s: Submission): number | null {
   return ev?.total_score ?? null;
 }
 
+type NavItem = { moduleId: string; step: Step };
+
 // GET /api/practice/steps/{step_id}/quota 的回應（backend/core/access.py 的 quota_status）
 type Quota = {
   mode: "staff" | "course" | "permission" | "self_key";
@@ -100,8 +102,6 @@ type Quota = {
 };
 // null = 尚未載入；{ blocked } = 沒被指派或期限已過（後端回 403），不能送出
 type QuotaState = { quota: Quota } | { blocked: string } | null;
-
-const LOCKED_LABEL = { text: "未解鎖", color: "#94a3b8", bg: "rgba(255,255,255,0.06)" };
 
 const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: string }> = {
   draft: { text: "草稿", color: "#94a3b8", bg: "rgba(255,255,255,0.08)" },
@@ -524,6 +524,26 @@ function StudentWorkspace() {
   const currentMod = modules.find((m) => m.id === currentModuleId) || modules[0];
   const coherenceData = currentMod ? coherence[currentMod.id] : null;
 
+  // 「上一題／下一題」：依模組順序把關卡攤平（目前模組裡已停用的關卡不列入）
+  const flatSteps: NavItem[] = modules.flatMap((m) =>
+    m.steps
+      .filter((st) => m.id !== progressModuleId || !unlock || st.id in unlock)
+      .map((st) => ({ moduleId: m.id, step: st }))
+  );
+  const stepIdx = selectedStep ? flatSteps.findIndex((it) => it.step.id === selectedStep.id) : -1;
+  const stepPos = stepIdx + 1;
+  const prevItem = stepIdx > 0 ? flatSteps[stepIdx - 1] : null;
+  const nextItem = stepIdx >= 0 && stepIdx < flatSteps.length - 1 ? flatSteps[stepIdx + 1] : null;
+  // 只知道目前模組的解鎖狀態；跨到下一個模組時不擋（後端送出時仍會檢查）
+  const nextLock = nextItem && nextItem.moduleId === progressModuleId ? unlock?.[nextItem.step.id] : undefined;
+  const nextLockedReason = nextLock?.locked ? `先通過「${nextLock.locked_by}」才會解鎖下一題` : undefined;
+
+  const goToStep = (moduleId: string, step: Step) => {
+    setCurrentModuleId(moduleId);
+    selectStep(step);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif" }}>
       {/* 頂部導航 */}
@@ -593,169 +613,126 @@ function StudentWorkspace() {
         </div>
       )}
 
-      {/* 主體四欄佈局：關卡｜關卡內容與作答｜提示與 AI 回饋｜記憶與作答紀錄（欄寬與窄螢幕排法見下方 <style>） */}
+      {/* 主體三欄：提示與評分｜題目與作答｜記憶、作答紀錄與跨步驟檢核（欄寬與窄螢幕排法見下方 <style>） */}
       {!loading && modules.length > 0 && (
       <main className="ws-grid" style={{ padding: "20px 24px", display: "grid", gap: "20px", alignItems: "start" }}>
-        {/* ─── 靠左：關卡清單與跨步驟檢核 ─── */}
-        <aside className="ws-col ws-col1" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
-          <div
-            style={{
-              backgroundColor: "#1e293b",
-              borderRadius: "14px",
-              padding: "18px",
-              border: "1px solid rgba(255,255,255,0.1)",
-            }}
-          >
-            {modules.length > 1 && (
-              <select
-                value={currentMod?.id}
-                onChange={(e) => {
-                  const next = modules.find((m) => m.id === e.target.value);
-                  if (!next) return;
-                  setCurrentModuleId(next.id);
-                  selectStep(next.steps[0] || null);
-                }}
-                style={{ width: "100%", marginBottom: "14px", padding: "8px 10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "13px", colorScheme: "dark" }}
-              >
-                {modules.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.title}
-                  </option>
-                ))}
-              </select>
-            )}
-            <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: "0 0 4px 0", color: "#38bdf8" }}>
-              模組關卡進度
-            </h2>
-            <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 14px 0" }}>
-              點選步驟切換練習，完成後請進行跨步驟檢核
-            </p>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {currentMod?.steps
-                .filter((step) => !unlock || step.id in unlock)
-                .map((step) => {
-                const isCurrent = selectedStep?.id === step.id;
-                const status = statusByStep[step.id] || "draft";
-                const stepLock = unlock?.[step.id];
-                const badge = stepLock?.locked ? LOCKED_LABEL : STATUS_LABEL[status];
-
-                return (
-                  <div
-                    key={step.id}
-                    onClick={() => selectStep(step)}
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: "10px",
-                      border: `1.5px solid ${isCurrent ? "#38bdf8" : "rgba(255,255,255,0.08)"}`,
-                      backgroundColor: isCurrent ? "rgba(56, 189, 248, 0.12)" : "rgba(255,255,255,0.03)",
-                      cursor: "pointer",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                      <span style={{ fontSize: "12px", color: isCurrent ? "#38bdf8" : "#94a3b8", fontWeight: "bold" }}>
-                        關卡 {step.step_order}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          padding: "2px 8px",
-                          borderRadius: "9999px",
-                          color: badge.color,
-                          backgroundColor: badge.bg,
-                          fontWeight: "bold",
-                        }}
-                      >
-                        {badge.text}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: "13px", fontWeight: "bold", color: "#f8fafc" }}>
-                      {step.step_title}
-                    </div>
-                    {step.pass_score && (
-                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                        通過標準：{step.pass_score} 分
-                      </div>
-                    )}
-                    {stepLock?.locked && (
-                      <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
-                        先通過「{stepLock.locked_by}」才會解鎖
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* 跨步驟一致性檢核區塊 */}
-          <div
-            style={{
-              backgroundColor: "#1e293b",
-              borderRadius: "14px",
-              padding: "18px",
-              border: "1px solid rgba(255,255,255,0.1)",
-            }}
-          >
-            <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 6px 0", color: "#a5b4fc" }}>
-              跨步驟一致性檢核
-            </h3>
-            <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0", lineHeight: "1.5" }}>
-              當完成多個步驟後，AI 將比對你的前事處遇、替代行為與學期目標是否存在矛盾。
-            </p>
-            <button
-              onClick={() => currentMod && runCoherenceCheck(currentMod.id)}
-              disabled={checkingModule !== null}
-              style={{
-                width: "100%",
-                padding: "8px 0",
-                borderRadius: "8px",
-                border: "none",
-                backgroundColor: "#4338ca",
-                color: "#fff",
-                fontSize: "13px",
-                fontWeight: "bold",
-                cursor: checkingModule ? "not-allowed" : "pointer",
-                opacity: checkingModule ? 0.6 : 1,
-              }}
-            >
-              {checkingModule ? "跨步驟檢核中…" : "執行前後邏輯檢核"}
-            </button>
-
-            {typeof coherenceData === "string" && (
-              <p style={{ fontSize: "12px", color: "#cbd5e1", marginTop: "10px" }}>{coherenceData}</p>
-            )}
-
-            {coherenceData && typeof coherenceData === "object" && (
-              <div
-                style={{
-                  marginTop: "12px",
-                  padding: "12px",
-                  borderRadius: "8px",
-                  fontSize: "12px",
-                  lineHeight: 1.5,
-                  backgroundColor: coherenceData.overall_coherent ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
-                  border: `1px solid ${coherenceData.overall_coherent ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
-                }}
-              >
-                <div style={{ fontWeight: "bold", color: coherenceData.overall_coherent ? "#4ade80" : "#fca5a5" }}>
-                  {coherenceData.summary}
-                </div>
-                {coherenceData.issues.map((iss, i) => (
-                  <div key={i} style={{ marginTop: "8px", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "6px" }}>
-                    <strong>{iss.check_name}</strong>（建議修改關卡 {iss.go_to_step_order}）
-                    <div style={{ color: "#cbd5e1" }}>{iss.problem}</div>
-                    <div style={{ color: "#38bdf8", marginTop: "2px" }}>建議：{iss.suggestion}</div>
-                  </div>
-                ))}
+        {/* ─── 左邊：分層提示與評分回饋 ─── */}
+        <div className="ws-col ws-left" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
+            {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用 */}
+            <div style={panel}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
+                <button
+                  onClick={handleRevealHint}
+                  // 還沒送出過作答時提示無處記錄，先送出一次再索取
+                  disabled={isLoadingHint || !hintStatus?.next_level_available || history.length === 0}
+                  style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "8px", border: "1px solid #38bdf8", background: "none", color: "#38bdf8", fontSize: "12px", fontWeight: "bold", cursor: "pointer", opacity: isLoadingHint || !hintStatus?.next_level_available || history.length === 0 ? 0.4 : 1 }}
+                >
+                  {isLoadingHint ? "取得中…" : "我需要提示"}
+                </button>
               </div>
-            )}
-          </div>
-        </aside>
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0" }}>
+                {hintStatus
+                  ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
+                  : hintStatusError
+                    ? "讀不到提示狀態，請稍後重新整理頁面"
+                    : "讀取提示狀態中…"}
+                {history.length === 0 && "・先送出一次作答後才能索取提示"}
+              </p>
+              {hintMessage && <p style={{ fontSize: "12px", color: "#cbd5e1", margin: "8px 0 0" }}>{hintMessage}</p>}
+              {[...revealedHints, ...(run?.hint ? [run.hint] : [])].map((h, i) => (
+                <div key={`${h.level}-${i}`} style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)" }}>
+                  <div style={{ fontSize: "11px", fontWeight: "bold", color: "#a5b4fc" }}>
+                    第 {h.level} 層{h.source === "generated" ? "（AI 依評分結果生成）" : ""}
+                  </div>
+                  <p style={{ fontSize: "13px", color: "#e0e7ff", margin: "4px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{h.content}</p>
+                  {h.warning && <p style={{ fontSize: "11px", color: "#c7d2fe", margin: "4px 0 0" }}>{h.warning}</p>}
+                </div>
+              ))}
+            </div>
 
-        {/* ─── 中間偏左：關卡內容與作答 ─── */}
-        <div className="ws-col ws-col2" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
+            {/* AI 評分回饋 */}
+            <div style={{ ...panel, minHeight: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                評分與回饋
+              </h3>
+
+              {!run && !isSubmitting && (
+                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>尚未送出作答。完成撰寫後按「送出作答並評分」。</p>
+              )}
+
+              {run?.failure && (
+                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{run.failure}</div>
+              )}
+
+              {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
+              {run?.encouragement && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#86efac", backgroundColor: "rgba(34,197,94,0.12)" }}>{run.encouragement}</div>}
+              {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.12)" }}>{run.escalation}</div>}
+              {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "#a5b4fc" }}>AI 給了一則提示，請看上方「分層提示」。</p>}
+
+              {run?.score && (
+                <div
+                  style={{
+                    padding: "16px",
+                    borderRadius: "10px",
+                    backgroundColor: run.score.passed ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+                    border: `1px solid ${run.score.passed ? "rgba(34,197,94,0.4)" : "rgba(239,68,68,0.4)"}`,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "26px", fontWeight: "bold", color: run.score.passed ? "#4ade80" : "#f87171" }}>
+                      {Math.round(run.score.percentage ?? run.score.total_score)} 分
+                    </span>
+                    <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "#fff", backgroundColor: run.score.passed ? "#22c55e" : "#ef4444" }}>
+                      {run.score.passed ? "✓ 已達通過門檻" : "✕ 尚未達標，請依回饋修改"}
+                    </span>
+                  </div>
+                  {run.score.overall_feedback && (
+                    <p style={{ margin: "10px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{run.score.overall_feedback}</p>
+                  )}
+                  {run.score.needs_teacher_review && <p style={{ margin: "8px 0 0", fontSize: "12px", color: "#fbbf24" }}>這次 AI 評分較沒把握，老師會再複核。</p>}
+                </div>
+              )}
+
+              {run && run.dimensions.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {run.dimensions.map((d) => (
+                    <div key={d.dimension} style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)", fontSize: "13px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
+                        <span>{d.dimension}</span>
+                        <span style={{ color: "#38bdf8" }}>
+                          {d.score} / {d.max_score}
+                        </span>
+                      </div>
+                      {d.reason && <p style={{ margin: "4px 0 0", color: "#cbd5e1", lineHeight: 1.5 }}>{d.reason}</p>}
+                      {d.evidence && <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>引用：{d.evidence}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {isSubmitting && (
+                <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>
+                  AI 評分中{run?.totalDimensions ? `（${run.dimensions.length} / ${run.totalDimensions} 個構面）` : "…"}
+                </p>
+              )}
+
+              {run && run.errors.length > 0 && (
+                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.1)", border: "1px solid rgba(249,115,22,0.3)" }}>
+                  <div style={{ fontWeight: "bold", marginBottom: "4px" }}>需要留意的常見錯誤</div>
+                  {run.errors.map((err) => (
+                    <div key={err.code} style={{ marginTop: "6px" }}>
+                      <b>{err.label}</b>
+                      {err.explanation && <span style={{ color: "#fed7aa" }}>：{err.explanation}</span>}
+                      {err.evidence && <div style={{ fontSize: "12px", fontStyle: "italic", color: "#fdba74" }}>原文：{err.evidence}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+        </div>
+
+        {/* ─── 中間：題目與作答 ─── */}
+        <div className="ws-col ws-mid" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
             {/* 本關任務與教學案例（從資料庫讀，不再寫死） */}
             <div style={panel}>
               <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}>
@@ -822,125 +799,22 @@ function StudentWorkspace() {
                 </button>
               </div>
             </div>
+                    {/* 題目切換：取代原本左側的關卡清單 */}
+            <StepNav
+              position={stepPos}
+              total={flatSteps.length}
+              prev={prevItem}
+              next={nextItem}
+              nextLockedReason={nextLockedReason}
+              justPassed={Boolean(run?.score?.passed) || (selectedStep ? statusByStep[selectedStep.id] === "passed" : false)}
+              onGo={(item) => goToStep(item.moduleId, item.step)}
+              onOverview={() => router.push(backHref)}
+              overviewLabel={courseId ? "回到課程簡介" : "回到自主探索"}
+            />
         </div>
 
-        {/* ─── 中間偏右：分層提示與 AI 評分回饋 ─── */}
-        <div className="ws-col ws-col3" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
-            {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用 */}
-            <div style={panel}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
-                <button
-                  onClick={handleRevealHint}
-                  // 還沒送出過作答時提示無處記錄，先送出一次再索取
-                  disabled={isLoadingHint || !hintStatus?.next_level_available || history.length === 0}
-                  style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "8px", border: "1px solid #38bdf8", background: "none", color: "#38bdf8", fontSize: "12px", fontWeight: "bold", cursor: "pointer", opacity: isLoadingHint || !hintStatus?.next_level_available || history.length === 0 ? 0.4 : 1 }}
-                >
-                  {isLoadingHint ? "取得中…" : "我需要提示"}
-                </button>
-              </div>
-              <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0" }}>
-                {hintStatus
-                  ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
-                  : hintStatusError
-                    ? "讀不到提示狀態，請稍後重新整理頁面"
-                    : "讀取提示狀態中…"}
-                {history.length === 0 && "・先送出一次作答後才能索取提示"}
-              </p>
-              {hintMessage && <p style={{ fontSize: "12px", color: "#cbd5e1", margin: "8px 0 0" }}>{hintMessage}</p>}
-              {[...revealedHints, ...(run?.hint ? [run.hint] : [])].map((h, i) => (
-                <div key={`${h.level}-${i}`} style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "bold", color: "#a5b4fc" }}>
-                    第 {h.level} 層{h.source === "generated" ? "（AI 依評分結果生成）" : ""}
-                  </div>
-                  <p style={{ fontSize: "13px", color: "#e0e7ff", margin: "4px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{h.content}</p>
-                  {h.warning && <p style={{ fontSize: "11px", color: "#c7d2fe", margin: "4px 0 0" }}>{h.warning}</p>}
-                </div>
-              ))}
-            </div>
-
-            {/* AI 評分回饋 */}
-            <div style={{ ...panel, minHeight: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
-              <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                評分與回饋
-              </h3>
-
-              {!run && !isSubmitting && (
-                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>尚未送出作答。完成撰寫後按「送出作答並評分」。</p>
-              )}
-
-              {run?.failure && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{run.failure}</div>
-              )}
-
-              {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
-              {run?.encouragement && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#86efac", backgroundColor: "rgba(34,197,94,0.12)" }}>{run.encouragement}</div>}
-              {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.12)" }}>{run.escalation}</div>}
-              {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "#a5b4fc" }}>AI 給了一則提示，請看左側「分層提示」。</p>}
-
-              {run?.score && (
-                <div
-                  style={{
-                    padding: "16px",
-                    borderRadius: "10px",
-                    backgroundColor: run.score.passed ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
-                    border: `1px solid ${run.score.passed ? "rgba(34,197,94,0.4)" : "rgba(239,68,68,0.4)"}`,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: "26px", fontWeight: "bold", color: run.score.passed ? "#4ade80" : "#f87171" }}>
-                      {Math.round(run.score.percentage ?? run.score.total_score)} 分
-                    </span>
-                    <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "#fff", backgroundColor: run.score.passed ? "#22c55e" : "#ef4444" }}>
-                      {run.score.passed ? "✓ 已達通過門檻" : "✕ 尚未達標，請依回饋修改"}
-                    </span>
-                  </div>
-                  {run.score.overall_feedback && (
-                    <p style={{ margin: "10px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{run.score.overall_feedback}</p>
-                  )}
-                  {run.score.needs_teacher_review && <p style={{ margin: "8px 0 0", fontSize: "12px", color: "#fbbf24" }}>這次 AI 評分較沒把握，老師會再複核。</p>}
-                </div>
-              )}
-
-              {run && run.dimensions.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {run.dimensions.map((d) => (
-                    <div key={d.dimension} style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)", fontSize: "13px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
-                        <span>{d.dimension}</span>
-                        <span style={{ color: "#38bdf8" }}>
-                          {d.score} / {d.max_score}
-                        </span>
-                      </div>
-                      {d.reason && <p style={{ margin: "4px 0 0", color: "#cbd5e1", lineHeight: 1.5 }}>{d.reason}</p>}
-                      {d.evidence && <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>引用：{d.evidence}</p>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {isSubmitting && (
-                <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>
-                  AI 評分中{run?.totalDimensions ? `（${run.dimensions.length} / ${run.totalDimensions} 個構面）` : "…"}
-                </p>
-              )}
-
-              {run && run.errors.length > 0 && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.1)", border: "1px solid rgba(249,115,22,0.3)" }}>
-                  <div style={{ fontWeight: "bold", marginBottom: "4px" }}>需要留意的常見錯誤</div>
-                  {run.errors.map((err) => (
-                    <div key={err.code} style={{ marginTop: "6px" }}>
-                      <b>{err.label}</b>
-                      {err.explanation && <span style={{ color: "#fed7aa" }}>：{err.explanation}</span>}
-                      {err.evidence && <div style={{ fontSize: "12px", fontStyle: "italic", color: "#fdba74" }}>原文：{err.evidence}</div>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-        </div>
-
-        {/* ─── 靠右：AI 助教記得你與作答紀錄 ─── */}
-        <div className="ws-col ws-col4" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
+        {/* ─── 右邊：AI 助教記得你、作答紀錄、跨步驟檢核 ─── */}
+        <div className="ws-col ws-right" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
             {/* 機器人記憶：送出後（progressKey 變動）重新讀 */}
             {selectedStep && <BotMemoryPanel stepId={selectedStep.id} refreshKey={progressKey} panelStyle={panel} />}
 
@@ -989,23 +863,87 @@ function StudentWorkspace() {
                 </div>
               </div>
             )}
+                    {/* 跨步驟一致性檢核區塊 */}
+            <div
+              style={{
+                backgroundColor: "#1e293b",
+                borderRadius: "14px",
+                padding: "18px",
+                border: "1px solid rgba(255,255,255,0.1)",
+              }}
+            >
+              <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 6px 0", color: "#a5b4fc" }}>
+                跨步驟一致性檢核
+              </h3>
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0", lineHeight: "1.5" }}>
+                當完成多個步驟後，AI 將比對你的前事處遇、替代行為與學期目標是否存在矛盾。
+              </p>
+              <button
+                onClick={() => currentMod && runCoherenceCheck(currentMod.id)}
+                disabled={checkingModule !== null}
+                style={{
+                  width: "100%",
+                  padding: "8px 0",
+                  borderRadius: "8px",
+                  border: "none",
+                  backgroundColor: "#4338ca",
+                  color: "#fff",
+                  fontSize: "13px",
+                  fontWeight: "bold",
+                  cursor: checkingModule ? "not-allowed" : "pointer",
+                  opacity: checkingModule ? 0.6 : 1,
+                }}
+              >
+                {checkingModule ? "跨步驟檢核中…" : "執行前後邏輯檢核"}
+              </button>
+
+              {typeof coherenceData === "string" && (
+                <p style={{ fontSize: "12px", color: "#cbd5e1", marginTop: "10px" }}>{coherenceData}</p>
+              )}
+
+              {coherenceData && typeof coherenceData === "object" && (
+                <div
+                  style={{
+                    marginTop: "12px",
+                    padding: "12px",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    lineHeight: 1.5,
+                    backgroundColor: coherenceData.overall_coherent ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
+                    border: `1px solid ${coherenceData.overall_coherent ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+                  }}
+                >
+                  <div style={{ fontWeight: "bold", color: coherenceData.overall_coherent ? "#4ade80" : "#fca5a5" }}>
+                    {coherenceData.summary}
+                  </div>
+                  {coherenceData.issues.map((iss, i) => (
+                    <div key={i} style={{ marginTop: "8px", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "6px" }}>
+                      <strong>{iss.check_name}</strong>（建議修改關卡 {iss.go_to_step_order}）
+                      <div style={{ color: "#cbd5e1" }}>{iss.problem}</div>
+                      <div style={{ color: "#38bdf8", marginTop: "2px" }}>建議：{iss.suggestion}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
         </div>
 
       </main>
       )}
 
       <style>{`
-        /* 寬螢幕：四欄 */
-        .ws-grid { grid-template-columns: 250px minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 0.85fr); }
-        /* 筆電：三欄，記憶與作答紀錄移到中間兩欄下方 */
-        @media (max-width: 1360px) {
-          .ws-grid { grid-template-columns: 230px minmax(0, 1fr) minmax(0, 1fr); }
-          .ws-col4 { grid-column: 2 / span 2; display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+        /* 寬螢幕：三欄（左：提示與評分｜中：題目與作答｜右：記憶與紀錄） */
+        .ws-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 0.9fr); }
+        .ws-left { order: 1; } .ws-mid { order: 2; } .ws-right { order: 3; }
+        /* 筆電：題目與作答佔滿上方，提示評分與記憶紀錄並排在下方 */
+        @media (max-width: 1200px) {
+          .ws-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+          .ws-mid { order: 0; grid-column: 1 / span 2; }
         }
-        /* 手機：單欄由上往下 */
-        @media (max-width: 900px) {
+        /* 手機：單欄，題目與作答在最上面 */
+        @media (max-width: 760px) {
           .ws-grid { grid-template-columns: minmax(0, 1fr); }
-          .ws-col4 { grid-column: auto; grid-template-columns: minmax(0, 1fr); }
+          .ws-mid { grid-column: auto; }
         }
       `}</style>
 
@@ -1035,5 +973,75 @@ function QuotaBadge({ state }: { state: QuotaState }) {
         {q.mode === "permission" ? "・自主練習，AI 回饋僅供參考" : ""}
       </span>
     </span>
+  );
+}
+
+// 題目切換列：上一題／第幾題／下一題；最後一題時改成回到課程簡介
+function StepNav({
+  position,
+  total,
+  prev,
+  next,
+  nextLockedReason,
+  justPassed,
+  onGo,
+  onOverview,
+  overviewLabel,
+}: {
+  position: number;
+  total: number;
+  prev: NavItem | null;
+  next: NavItem | null;
+  nextLockedReason?: string;
+  justPassed: boolean;
+  onGo: (item: NavItem) => void;
+  onOverview: () => void;
+  overviewLabel: string;
+}) {
+  const btn: React.CSSProperties = {
+    padding: "10px 18px",
+    borderRadius: "8px",
+    fontSize: "13px",
+    fontWeight: "bold",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+  const nextDisabled = Boolean(nextLockedReason);
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+      <button
+        onClick={() => prev && onGo(prev)}
+        disabled={!prev}
+        style={{ ...btn, border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", visibility: prev ? "visible" : "hidden" }}
+      >
+        ← 上一題
+      </button>
+      <span style={{ fontSize: "12px", color: "#94a3b8" }}>
+        {position > 0 ? `第 ${position} / ${total} 題` : ""}
+      </span>
+      {next ? (
+        <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+          <button
+            onClick={() => onGo(next)}
+            disabled={nextDisabled}
+            title={nextLockedReason ?? next.step.step_title}
+            style={{
+              ...btn,
+              border: "none",
+              color: "#fff",
+              backgroundColor: nextDisabled ? "#475569" : justPassed ? "#16a34a" : "#2563eb",
+              cursor: nextDisabled ? "not-allowed" : "pointer",
+            }}
+          >
+            下一題 →
+          </button>
+          {nextLockedReason && <span style={{ fontSize: "11px", color: "#94a3b8" }}>{nextLockedReason}</span>}
+        </span>
+      ) : (
+        <button onClick={onOverview} style={{ ...btn, border: "none", color: "#fff", backgroundColor: justPassed ? "#16a34a" : "#2563eb" }}>
+          {overviewLabel}
+        </button>
+      )}
+    </div>
   );
 }
