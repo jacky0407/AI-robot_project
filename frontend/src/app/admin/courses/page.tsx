@@ -1,15 +1,14 @@
 "use client";
 
-// 教師端：課程選擇（卡片由左上往右排列，最後一張是「＋ 建立課程」），上方是機器人申請的入口
+// 教師端：課程選擇（卡片由左上往右排列，最後一張是「＋ 建立課程」）；機器人申請在上方導覽列
 // 點進課程後在 /admin/courses/[courseId] 管理成員、邀請碼、指派模組
-// 後端：GET /api/courses、POST /api/courses（backend/api/courses.py）、GET /api/tool-requests?status=pending
+// 後端：GET /api/courses、POST /api/courses（backend/api/courses.py）
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/utils/api";
 import AdminHeader from "./AdminHeader";
-import { type Course, errorText, input, panel, pill } from "./shared";
+import { type Course, errorText, input, pill } from "./shared";
 
 // 課程卡片（長方形），與「＋ 建立課程」共用尺寸
 const tile: React.CSSProperties = {
@@ -40,8 +39,6 @@ export default function AdminCoursesPage() {
   const [courses, setCourses] = useState<Course[] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
-  // 待審核的機器人申請數；null = 讀不到（不影響課程管理）
-  const [pendingRequests, setPendingRequests] = useState<number | null>(null);
 
   // 建立課程對話框
   const [showCreate, setShowCreate] = useState(false);
@@ -68,17 +65,6 @@ export default function AdminCoursesPage() {
   useEffect(() => {
     loadCourses();
   }, [loadCourses]);
-
-  useEffect(() => {
-    let active = true;
-    apiFetch<{ data: unknown[] }>("/api/tool-requests?status=pending").then(
-      (res) => active && setPendingRequests(res.data.length),
-      () => active && setPendingRequests(null)
-    );
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const openCreate = () => {
     setForm({ title: "", description: "", require_approval: false });
@@ -124,27 +110,6 @@ export default function AdminCoursesPage() {
       <AdminHeader />
 
       <main style={{ maxWidth: "1100px", margin: "24px auto", padding: "0 20px", display: "flex", flexDirection: "column", gap: "20px" }}>
-        {/* 機器人申請：學生在自主探索模式申請使用機器人，老師核准後才能練習 */}
-        <section style={{ ...panel, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", padding: "16px 20px" }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>機器人申請</h2>
-              {pendingRequests !== null && pendingRequests > 0 && (
-                <span style={pill("#fbbf24", "rgba(245,158,11,0.15)")}>{pendingRequests} 筆待審核</span>
-              )}
-            </div>
-            <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#94a3b8" }}>
-              {pendingRequests === 0 ? "目前沒有待審核的申請。" : "學生在自主探索模式申請使用機器人，核准並設定期限與次數後才能練習。"}
-            </p>
-          </div>
-          <Link
-            href="/admin/tool-requests"
-            style={{ flexShrink: 0, padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: "bold", textDecoration: "none", color: "#fff", backgroundColor: "#16a34a" }}
-          >
-            前往審核 →
-          </Link>
-        </section>
-
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "12px", marginBottom: "16px" }}>
             <div>
