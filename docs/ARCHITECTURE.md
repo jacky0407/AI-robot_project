@@ -1,6 +1,6 @@
 # 系統架構
 
-> 描述**現在程式碼實際的樣子**（2026-11-02 更新，基準 main `e465eb3`）。目標規格見 [api.md](./api.md)；兩者不一致時以程式碼為準，差異記在 [KNOWN_GAPS.md](./KNOWN_GAPS.md)。
+> 描述**現在程式碼實際的樣子**（2026-11-18 更新，基準 main `21e18a5`）。目標規格見 [api.md](./api.md)；兩者不一致時以程式碼為準，差異記在 [KNOWN_GAPS.md](./KNOWN_GAPS.md)。
 > AI 評分、分層提示、錯誤分類、機器人記憶的細節見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)，這裡不重複。
 
 ---
@@ -49,6 +49,8 @@ Summer_project/
 │   │   ├── course_modules.py   模組指派給課程
 │   │   ├── modules.py          模組與步驟管理（建立、排序、停用、發布）
 │   │   ├── tool_requests.py    學生申請機器人、教師核准（期限、每日次數）
+│   │   ├── me.py               學生自備 Gemini 金鑰（/api/me/api-key，加密儲存）
+│   │   ├── export.py           研究用／教學用 CSV 匯出
 │   │   └── privacy.py          個資偵測
 │   ├── core/
 │   │   ├── config.py           環境變數（get_settings）
@@ -66,9 +68,9 @@ Summer_project/
 │   ├── utils/supabase/         browser / server client
 │   └── app/                    頁面（見第 5 節）
 ├── supabase/
-│   ├── schema.sql              17 張表 + 觸發器（已同步 migrations）
+│   ├── schema.sql              21 張表 + 觸發器（已同步 migrations）
 │   ├── seed.sql                示範資料（只限本機）
-│   ├── migrations/             001–010，可重複執行
+│   ├── migrations/             001–018（016 未使用），可重複執行
 │   └── practice_repo.py        ⚠️ 已停用，沒有任何地方 import
 └── docs/
 ```
@@ -155,14 +157,16 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | `/forgot-password`、`/reset-password` | 忘記密碼、重設密碼 |
 | `/portal` | 系統選擇頁（本平台 / XR 系統） |
 | `/student/courses` | 我的課程、輸入邀請碼加入 |
+| `/student/courses/[courseId]` | 課程簡介與關卡列表（完成進度、解鎖狀態），點關卡進作答區 |
 | `/student/explore` | 自主探索：申請機器人、查看申請狀態 |
-| `/student/modules` | 學生工作台：依課程列出被指派的模組、作答（SSE 逐構面顯示）、分層提示、作答紀錄、今天剩幾次；沒解鎖的步驟顯示 🔒 並停用送出，停用的步驟不顯示 |
-| `/admin/tools` | 機器人清單 + 待複核清單 |
-| `/admin/tools/new` | 建立機器人（含分層提示與錯誤分類欄位），直接寫 Supabase |
-| `/admin/review/[id]` | 複核詳情：AI 初評、信心值、錯誤分類，送出教師判定 |
-| `/admin/courses` | 課程管理：成員審核、指派／取消指派模組 |
-| `/admin/modules` | 模組管理：建立模組、新增步驟、↑↓ 排序、停用／啟用、發布（只限教授操作） |
-| `/admin/tool-requests` | 審核學生的機器人申請 |
+| `/student/modules` | 作答區：`?course=&step=` 開指定關卡；左提示與評分、中題目與作答、右記憶與作答紀錄；上一題／下一題 |
+| `/admin/courses` | 課程管理：課程卡片、建立課程 |
+| `/admin/courses/[courseId]` | 單一課程，左側分頁：學習監控、待複核、成員清單、邀請碼清單、模組管理（指派、建立模組、編輯關卡）、資料匯出 |
+| `/admin/review/[id]` | 複核詳情：AI 初評、信心值、錯誤分類，送出教師判定；`?course=` 時判定完回該課的待複核 |
+| `/admin/tools` | 建立機器人：機器人卡片、刪除 |
+| `/admin/tools/new` | 建立機器人表單（含分層提示與錯誤分類欄位），直接寫 Supabase |
+| `/admin/tool-requests` | 自主探索申請：審核學生在自主探索模式使用機器人的申請 |
+| `/admin/overview`、`/admin/modules` | 舊網址，導到 `/admin/courses`（已併入課程分頁） |
 | `/xr` | 轉址到 XR 系統（`XR_FRONTEND_URL`），只對這個路徑加 CSP |
 
 `middleware.ts`（守 `/admin`、`/student`、`/onboarding`）：未登入 → `/`；還沒補資料 → `/onboarding`；
@@ -178,14 +182,15 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 
 ## 6. 資料庫
 
-17 張表，完整定義在 `supabase/schema.sql`（欄位都有註解）。這裡只列容易踩錯的地方。
+21 張表，完整定義在 `supabase/schema.sql`（欄位都有註解）。這裡只列容易踩錯的地方。
 
 | 分組 | 資料表 |
 |------|--------|
-| 帳號與課程 | `profiles`、`courses`、`course_members`、`tool_permissions`、`course_modules` |
+| 帳號與課程 | `profiles`、`courses`、`course_invite_codes`、`course_members`、`tool_permissions`、`course_modules` |
 | 機器人與案例 | `ai_tools`、`tool_cases` |
 | 模組 | `learning_modules`、`module_steps` |
-| 學習歷程 | `practice_sessions`、`step_attempts`、`ai_evaluations`、`teacher_reviews`、`prompt_logs` |
+| 學習歷程 | `practice_sessions`、`step_attempts`、`ai_evaluations`、`teacher_reviews`、`prompt_logs`、`learner_profiles` |
+| 金鑰與匯出 | `user_api_keys`、`export_logs` |
 | 表單與倫理 | `forms`、`form_responses`、`research_consents` |
 
 **容易踩錯的欄位：**
@@ -226,6 +231,13 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | 008 | 自主模式每日額度（`consume_tool_quota()`） |
 | 009 | 練習 Session：`practice_sessions`、`step_attempts.session_id` |
 | 010 | 模組管理：`module_steps.is_active`、學生看不到停用步驟（重建 005 的政策）、`reorder_module_steps()` |
+| 011 | 評分失敗退回每日額度 |
+| 012 | 使用期限改用台灣時間判斷 |
+| 013 | 一門課多組邀請碼（`course_invite_codes`） |
+| 014 | 註冊一律建立成學生 |
+| 015 | 學習者側寫 `learner_profiles`、`ai_evaluations.memory_snapshot` |
+| 017 | 學生自備金鑰 `user_api_keys`（016 未使用） |
+| 018 | 匯出紀錄 `export_logs` |
 
 **種子資料固定 UUID**：
 

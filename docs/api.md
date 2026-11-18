@@ -319,27 +319,60 @@
 
 ## 三、課程管理 (Courses)
 
-### 第一版已實作（做法 A：一門課一組邀請碼）
+### 已實作：一門課多組邀請碼（migration 013）
 
 實作在 `backend/api/courses.py`。所有端點都要帶 `Authorization: Bearer <Supabase access token>`
 （`frontend/src/utils/api.ts` 的 `apiFetch` 會自動帶），未登入回 `401`，學生呼叫教師端點回 `403`。
-錯誤格式為 FastAPI 的 `{"detail": {"code": "...", "message": "..."}}`。
+錯誤格式為 FastAPI 的 `{"detail": {"code": "...", "message": "..."}}`。網址裡的 id 都要是 UUID，否則 422。
 
 成員狀態：`pending`（待審核）、`active`（已加入）、`rejected`（申請被拒）、`removed`（被移出）。
 
+**邀請碼規則**（「邀請碼與自備金鑰設計提案」第一階段）：
+- 建立課程**不會**產生邀請碼，老師另外產生；一門課可以有多組
+- 每組設定 `access_until`（可用日期，台灣時間當天仍可用）與 `plan`：
+  `free`（平台金鑰，每天 `daily_quota` 次，沒填預設 10）或 `self_key`（學生自備金鑰，不限次數）
+- 邀請碼不會自動失效；老師可以停用（`is_active: false`）。方案不能改，要換請產生新的碼
+- 老師改了碼的可用日期或次數，已用這組碼加入的學生跟著變
+- `self_key`：學生要先在 `/api/me/api-key` 存好自己的 Gemini 金鑰；存好後作答用自己的金鑰、不限次數（額度 `mode: "self_key"`），
+  沒存會得到 403 `API_KEY_REQUIRED`
+
+#### ✅ 自備 Gemini 金鑰 `/api/me/api-key`（2026-11，migration 017）
+| 方法 | Request | 回應 `data` | 錯誤 |
+|------|---------|------------|------|
+| `GET` | — | `{has_key, key_hint, verified_at}`（永不回傳金鑰） | — |
+| `PUT` | `{api_key}` | 同上；先向 Google 驗證（列出模型，不花額度）再加密儲存，覆蓋舊的 | 400 `INVALID_API_KEY`、502 `KEY_VERIFY_FAILED`、503 `KEY_STORAGE_NOT_CONFIGURED`（後端沒設 `API_KEY_ENCRYPTION_KEY`） |
+| `DELETE` | — | `{has_key: false, …}` | — |
+
+邀請碼欄位：`{id, code, plan, daily_quota, access_until, is_active, expired, created_at, member_count}`
+（`expired` = 可用日期已過；`member_count` = 用這組碼加入且 active 的人數）。
+
 | 權限 | 方法與路徑 | Request | 成功回應 `data` |
 |------|-----------|---------|----------------|
-| 教師 | `POST /api/courses` | `{title, description?, require_approval?}` | 課程（含 `invite_code`），201 |
-| 教師 | `GET /api/courses?include_archived=false` | — | 課程陣列，每筆多 `active_count`、`pending_count` |
+| 教師 | `POST /api/courses` | `{title, description?, require_approval?}` | 課程（**不含邀請碼**），201 |
+| 教師 | `GET /api/courses?include_archived=false` | — | 課程陣列，每筆多 `active_count`、`pending_count`、`invite_codes`（新的在前） |
 | 教師 | `PATCH /api/courses/:course_id` | `{title?, description?, require_approval?, is_archived?}` | 更新後的課程 |
-| 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at}]` |
+| 教師 | `POST /api/courses/:course_id/invite-codes` | `{plan?, access_until, daily_quota?}` | 邀請碼，201 |
+| 教師 | `GET /api/courses/:course_id/invite-codes` | — | 邀請碼陣列（新的在前） |
+| 教師 | `PATCH /api/courses/:course_id/invite-codes/:code_id` | `{is_active?, access_until?, daily_quota?}` | 更新後的邀請碼 |
+| 教師 | `DELETE /api/courses/:course_id/invite-codes/:code_id` | — | `{removed_members, message}`：刪除邀請碼，並把用它加入的學生（active／pending）移出課程（`removed`），作答紀錄保留 |
+
+**停用 vs 刪除**（開會紀錄 #49 第 3 項）：停用只停止新的人用這組碼加入，已加入的學生照常使用到可用日期；
+刪除會從介面移除並移出用它加入的學生。**過了可用日期的邀請碼視同刪除**：讀取邀請碼清單（教師）、讀取自己的課程（學生）時自動清除。
+| 教師 | `GET /api/courses/:course_id/members?status=pending` | — | `[{user_id, full_name, email, status, joined_at, invite_code, plan, access_until}]` |
 | 教師 | `PATCH /api/courses/:course_id/members/:user_id` | `{action: "approve" \| "reject" \| "remove"}` | 更新後的成員 |
-| 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at}` |
-| 登入者 | `GET /api/courses/mine` | — | `[{course_id, course_name, description, is_archived, status, joined_at}]` |
+| 登入者 | `POST /api/courses/join` | `{invite_code}` | `{course_id, course_name, status, joined_at, plan, daily_quota, access_until, needs_api_key}` |
+| 登入者 | `GET /api/courses/mine` | — | `[{course_id, course_name, description, is_archived, status, joined_at, plan, daily_quota, access_until, access_expired, needs_api_key}]` |
+
+`GET /api/courses/mine` 裡沒有掛邀請碼的成員（013 之前的舊資料已自動掛上；後台直接加入的才會沒有）
+`plan`、`daily_quota`、`access_until` 都是 `null`，代表不限期、不限次數。
+
+產生／修改邀請碼的錯誤代碼：`INVALID_ACCESS_UNTIL`（400，早於今天）、`QUOTA_NOT_APPLICABLE`（400，自備金鑰不能設次數）、
+`COURSE_ARCHIVED`（403）、`COURSE_NOT_FOUND` / `INVITE_CODE_NOT_FOUND`（404）。
 
 `POST /api/courses/join` 的錯誤代碼：`INVALID_FORMAT`（400）、`INVALID_INVITE_CODE`（404）、
-`COURSE_ARCHIVED`（403）、`ALREADY_JOINED` / `ALREADY_PENDING`（409）。
-被拒絕或移出的人可以重新輸入邀請碼，一律回到 `pending`。
+`CODE_DISABLED`（403，已停用）、`CODE_EXPIRED`（403，可用日期已過）、`COURSE_ARCHIVED`（403）、
+`ALREADY_JOINED` / `ALREADY_PENDING`（409）。
+被拒絕或移出的人可以重新輸入邀請碼，一律回到 `pending`，並改掛在這次輸入的碼下。
 
 審核動作只允許：`approve`（pending / rejected / removed → active）、`reject`（pending → rejected）、
 `remove`（active / pending → removed），其他組合回 409 `INVALID_STATUS_TRANSITION`。
@@ -362,7 +395,7 @@
 - 錯誤代碼：`COURSE_NOT_FOUND` / `MODULE_NOT_FOUND` / `ASSIGNMENT_NOT_FOUND`（404）、`ALREADY_ASSIGNED`（409）
 - 取消指派不會刪除學生的作答紀錄
 
-以下為做法 B 的原始規劃，尚未實作；改成 B 時 `POST /api/courses/join` 的網址與欄位維持不變。
+以下為最早的做法 B 規劃（含名額、Token 額度），**已被上面的多組邀請碼取代**，只留作參考。
 
 ### `POST /api/courses`
 **權限**：HOST
@@ -871,10 +904,10 @@
 | 檢查 | 不通過時 |
 | --- | --- |
 | 個資偵測 | 400 `PII_DETECTED` |
-| 指派：課程指派（active 成員、課程未封存）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；核准已過期為 403 `PERMISSION_EXPIRED` |
+| 指派：課程指派（active 成員、課程未封存、邀請碼可用日期未過）或逐位核准（期限內），且模組已發布、機器人 published | 403 `NOT_ASSIGNED`；課程可用日期已過為 403 `ACCESS_EXPIRED`；自備金鑰方案為 403 `API_KEY_REQUIRED`；核准已過期為 403 `PERMISSION_EXPIRED` |
 | 解鎖：步驟啟用中，且前面的必修步驟都已通過（教師已發布的判定分數優先於 AI 結果；規則見 `core/step_unlock.py`） | 403 `STEP_DISABLED`；前面還有必修步驟沒通過為 403 `STEP_LOCKED`（訊息會寫出是哪一步） |
 | 練習 Session：`session_id` 必須是 UUID；第一次出現就建立並屬於登入者，之後只有本人能用（migration 009；還沒跑時不檢查、作答照常） | 400 `INVALID_SESSION_ID`；別人的 Session 為 403 `SESSION_FORBIDDEN` |
-| 每日額度（只限逐位核准的自主模式；送出就扣 1，只拿到提示也算，AI 失敗不退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
+| 每日額度（逐位核准的自主模式，以及課程的免費邀請碼；送出就扣 1，只拿到提示也算，AI 評分因系統錯誤失敗會退回；台灣時間 0 點歸零） | 429 `QUOTA_EXCEEDED` |
 
 教師端（owner / assistant）不做指派、解鎖與額度檢查。
 
@@ -957,15 +990,18 @@ data: {"message": "你已嘗試 4 次，建議與老師討論後再繼續練習�
 }
 ```
 
-**Response 200（課程模式 / 教師端，不限次數）：**
+**Response 200（教師端，或沒有掛邀請碼的課程成員，不限次數）：**
 ```json
 {
   "data": { "mode": "course", "used": null, "quota": null, "remaining": null, "expire_date": null }
 }
 ```
-`mode` 為 `course`（課程指派）、`permission`（逐位核准）或 `staff`（教師端）。`expire_date` 為 `null` 代表不限期。
+`mode` 為 `course`（課程指派）、`permission`（逐位核准）或 `staff`（教師端）。
+課程的免費邀請碼和逐位核准一樣有 `used` / `quota` / `remaining`，`expire_date` 是邀請碼的可用日期。
+判斷「不限次數」請看 `quota` 是否為 `null`，不要只看 `mode`。`expire_date` 為 `null` 代表不限期。
 
-**錯誤**：與送出作答相同 — 401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `PERMISSION_EXPIRED`；步驟不存在 404。
+**錯誤**：與送出作答相同 — 401 `UNAUTHORIZED`、403 `NOT_ASSIGNED`、403 `ACCESS_EXPIRED`、403 `API_KEY_REQUIRED`、
+403 `PERMISSION_EXPIRED`；步驟不存在 404。
 `remaining` 為 0 時送出會得到 429 `QUOTA_EXCEEDED`，前端可先停用送出按鈕。
 
 ---
@@ -1067,9 +1103,9 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 取得待複核清單（AI 已評分、尚未教師判定的作答）。
 
 **Query Parameters：**
-- `course_id`（選填）
+- `course_id`（選填）：只看這門課，模組要指派給這門課（`course_modules`）、作答者要是這門課 active 的成員
 - `tool_id`（選填）
-- `needs_attention`（選填）：`true` 只顯示 AI 信心值低或分數極端的項目
+- `needs_attention`（選填）：`true` 只顯示 AI 判定未通過（`revision_required`）的作答
 
 **Response 200：**
 ```json
@@ -1145,6 +1181,13 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 ---
 
 ## 七、資料匯出 (Export)
+
+> ✅ 2026-11 已實作（`backend/api/export.py`、migration 018）。與下方原始規格的差異：
+> - 權限：只限教授（owner），助教 403
+> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, format: "csv"}`；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
+> - 一列 = 一次作答：步驟、AI 總分與逐構面（`名稱:分/滿分;…`）、錯誤代碼、提示層級、教師判定；作答原文預設不匯出，研究用勾選時會遮罩個資
+> - CSV 為 UTF-8 含 BOM；回應標頭 `X-Export-Row-Count`；每次匯出寫入 `export_logs`
+> - 前端：`/admin/tools` 的「資料匯出」
 
 ### `POST /api/export/teaching`
 **權限**：HOST
@@ -1249,7 +1292,87 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 
 > 📌 **開會新增**：教授後台需能完整查看所有學生與各支機器人的對話紀錄、AI 評分結果與學習歷程，以支持教學決策。
 
-### `GET /api/admin/conversations`
+### ✅ `GET /api/admin/overview`（已實作，2026-11）
+**權限**：HOST, ASSISTANT（學生 403 `PERMISSION_DENIED`）
+
+一門課「所有學生 × 所有步驟」的作答狀況總表。**取代下方 `/conversations` 的列表**：前端每次開練習頁都會產生新的
+`session_id`，同一位學生在同一步的作答會散在好幾個 Session，依 Session 列出看不出進度，所以改以「學生 × 步驟」為單位。
+
+**Query**：`course_id`（必填，UUID）、`module_id`（選填，必須已指派給該課程，否則 404 `MODULE_NOT_IN_COURSE`）
+
+- 只列課程中 `active` 的學生，不含 owner／assistant；只列啟用中的步驟
+- 學生排序：有作答等老師看的在前，其次依最後作答時間新到舊
+
+**Response 200：**
+```json
+{
+  "data": {
+    "course": { "id": "uuid", "title": "學前 IEP 培訓", "is_archived": false },
+    "student_count": 2,
+    "modules": [
+      {
+        "module_id": "uuid", "title": "學前 IEP 逐步撰寫", "is_published": true,
+        "steps": [
+          {
+            "step_id": "uuid", "step_order": 1, "step_title": "步驟1 案例整理", "tool_title": "案例整理教練",
+            "is_required": true, "pass_score": 70, "require_teacher_review": false,
+            "summary": { "started": 2, "passed": 1, "needs_review": 0, "avg_latest_ai_score": 75.0 }
+          }
+        ],
+        "students": [
+          {
+            "user_id": "uuid", "full_name": "王小美", "email": "amy@example.com", "joined_at": "…",
+            "required_passed": 1, "required_total": 2, "needs_review_count": 1, "last_activity_at": "…",
+            "cells": {
+              "<step_id>": {
+                "status": "needs_review",
+                "attempt_count": 2, "evaluated_count": 2,
+                "latest_ai_score": 82, "best_ai_score": 82, "teacher_score": null,
+                "passed": true, "hints_used": 1,
+                "needs_review_count": 1, "review_reasons": ["low_confidence"],
+                "last_activity_at": "…"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+格子的兩件事分開看（2026-11-12 起，畫面用這組）：`progress` = `not_started`／`not_passed`／`passed`（已發布教師判定優先）；
+`needs_review_count` = 幾筆作答待複核；`score`／`score_source` = 有已發布的教師分數用老師的（`teacher`），否則 AI 最新分數（`ai`）。
+步驟摘要多了 `avg_score`（老師分數優先的平均）。以下 `status` 是舊欄位，保留給舊前端：
+
+格子 `status`：`not_started`（沒作答）、`needs_review`（有作答等老師：`escalated`／`low_confidence`／`step_requires_review`，且尚無教師判定）、
+`passed`（已發布的教師判定優先於 AI，規則同步驟解鎖）、`in_progress`（有作答、未通過）。
+
+錯誤：課程不存在 404 `COURSE_NOT_FOUND`；`course_id` 不是 UUID 422。
+
+### ✅ `GET /api/admin/students/:user_id/steps/:step_id`（已實作，2026-11）
+**權限**：HOST, ASSISTANT
+
+點進總覽的一格：這位學生在這一步的每一次作答，新到舊。每筆含 `submission_id`、`attempt_number`、`submitted_at`、`status`、
+`tutor_action`、`content`、`ai_evaluation`（`total_score`、`confidence`、`needs_teacher_review`、`feedback_text`、`dimension_scores`、`detected_errors`）、
+`teacher_review`、`hints`（`hint_level`、`hint_trigger`、`hint_source`、`created_at`）、`review_reasons`；另有 `summary`（同總覽的格子）。
+要送出教師判定，用 `submission_id` 走 `/api/review/submissions/:id`。
+
+錯誤：404 `STEP_NOT_FOUND`、404 `STUDENT_NOT_FOUND`。
+
+### ✅ `GET /api/admin/students/:user_id/profile?module_id=…`（已實作，2026-11）
+**權限**：HOST, ASSISTANT
+
+學生狀態概述（數字版，不呼叫 AI，只給教師）。每次從作答紀錄即時重算（`core/learner_profile.py` 的 `build_profile`），
+所以功能上線前的歷史作答也看得到。回傳 `student`、`module`、`profile`（`dimensions`、`errors`、`steps`、`teacher_notes`、
+`attempt_count`、`evaluated_count`）、`saved_version`（資料庫裡 AI 助教目前參考的側寫版本；沒有為 `null`）。
+
+錯誤：404 `STUDENT_NOT_FOUND`、404 `MODULE_NOT_FOUND`；非 UUID 422。
+
+另外 `GET /api/review/submissions/:id` 的 `ai_evaluation` 多了 `memory_snapshot`（`{text, summary}`，migration 015 之前的評分為 `null`）；
+`GET /api/practice/steps/:id/memory` 多了 `profile_highlights`、`profile_version`。
+
+### ⏳ `GET /api/admin/conversations`（未實作，已由 `/api/admin/overview` 取代）
 **權限**：HOST, ASSISTANT
 
 取得課程內所有學生與機器人的對答紀錄列表（支援多維度篩選）。

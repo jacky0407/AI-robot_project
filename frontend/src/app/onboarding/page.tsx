@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
+import { DEFAULT_AFTER_LOGIN, safeNext } from "@/utils/redirect";
 
 // 職業選項（value 會存進 profiles.profession，可自行增減）
 const PROFESSIONS = [
@@ -25,11 +26,21 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+// useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
 export default function OnboardingPage() {
+  return (
+    <Suspense fallback={null}>
+      <OnboardingForm />
+    </Suspense>
+  );
+}
+
+function OnboardingForm() {
   const router = useRouter();
+  // 填完後回到原本要去的頁面（例如從 XR 被導來），否則到系統選擇頁
+  const next = safeNext(useSearchParams().get("next"));
   const supabase = createClient();
 
-  const [userId, setUserId] = useState("");
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
   const [profession, setProfession] = useState("preschool_teacher");
@@ -51,7 +62,6 @@ export default function OnboardingPage() {
         return;
       }
 
-      setUserId(user.id);
       setEmail(user.email ?? "");
 
       const { data: profile } = await supabase
@@ -90,15 +100,7 @@ export default function OnboardingPage() {
       return;
     }
 
-    // 依身分導向
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", userId)
-      .single();
-
-    const isStaff = profile?.role === "owner" || profile?.role === "assistant";
-    router.push(isStaff ? "/admin/courses" : "/student/courses");
+    router.push(next ?? DEFAULT_AFTER_LOGIN);
     router.refresh();
   };
 

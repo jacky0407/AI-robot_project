@@ -17,11 +17,27 @@ class Settings(BaseSettings):
 
     # 環境
     environment: str = "development"
+    # 允許呼叫後端的前端網址（CORS）。多個網址用逗號分隔，例如：
+    #   FRONTEND_URL=https://xxx.vercel.app,http://localhost:3000
     frontend_url: str = "http://localhost:3000"
+
+    # 單次 LLM 呼叫的逾時秒數。Gemini 預設思考模式評一個構面常要 30～50 秒，
+    # 太短會「已經在算了卻被切斷重來」，重試又多吃額度（KNOWN_GAPS #17）
+    llm_timeout_seconds: float = 90.0
+
+    # 學生自備 Gemini 金鑰的加密金鑰（Fernet，base64 32 bytes）。沒設定時自備金鑰功能回 503。
+    # 產生：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # ⚠️ 換掉這把會讓已存的學生金鑰全部無法解開（學生要重新填）
+    api_key_encryption_key: str = ""
 
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """FRONTEND_URL 拆成清單；去掉空白與結尾的 /（瀏覽器送的 Origin 不含結尾 /）"""
+        return [u.strip().rstrip("/") for u in self.frontend_url.split(",") if u.strip()]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

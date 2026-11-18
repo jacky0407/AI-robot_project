@@ -195,13 +195,14 @@ pass_threshold = step_res.data.get("pass_score") or 75
 
 ---
 
-## 9. 🟡 Supabase RLS：已啟用，政策未完整存進 schema.sql
+## 9. ✅ Supabase RLS：已啟用，政策已寫回 schema.sql
 
 - ✅ 所有資料表已開啟 RLS；政策在 migration 005（指派制：學生只看得到被指派的模組、步驟、機器人與自己的作答；
-  教師新增 `ai_tools`）與 006（`profiles` 只能讀自己）
+  教師新增 `ai_tools`）、006（`profiles` 只能讀自己）、010（停用的步驟）、012（台灣時間）、013（邀請碼可用日期）
 - ✅ 前端直連只剩讀取與教師新增機器人，評分、複核、刪除都走後端 API
-- 🟡 `schema.sql` 本身沒有 `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY`：只跑 `schema.sql` 的新資料庫
-  **必須再跑 005、006**，否則前端讀不到資料（全部被 RLS 擋下）
+- ✅ `schema.sql` 第 8 節是上述 migrations 的最終版本：18 張表全部 `ENABLE ROW LEVEL SECURITY`，判斷函式與政策
+  和最新的 migration 逐字相同。只跑 `schema.sql` 的新資料庫也有完整規則（資料表權限仍要跑 002）
+- 🟡 權限規則現在有兩份（migration 與 schema.sql 第 8 節），之後改規則要兩邊一起改
 - 🟡 後端用 service_role 不受 RLS 限制，權限完全靠 API 層的 token 檢查（見 #8）
 
 ---
@@ -305,11 +306,11 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 
 **後端**
 
-- `api/auth.py`、`api/tools.py` — `main.py` 中以 TODO 註解預留，檔案不存在；`api/export.py` 尚未建立（`api/courses.py` 已完成）
+- `api/auth.py`、`api/tools.py` — `main.py` 中以 TODO 註解預留，檔案不存在（`api/courses.py`、`api/export.py` 已完成）
 - 表單與前後測（`forms` / `form_responses`）
-- 研究資料 CSV 匯出（`/api/export/*`）
+- ✅ 研究資料 CSV 匯出（`/api/export/research`、`/api/export/teaching`，migration 018）；研究同意書流程仍未實作，所以研究匯出目前沒有資料
 - 研究倫理同意書流程（`/api/consent`）
-- 教授後台監控 API（`/api/admin/conversations`、`/api/admin/tools/{id}/analytics`）
+- ✅ 教授監控總覽 API（`GET /api/admin/overview`、`GET /api/admin/students/{id}/steps/{id}`；前端 `/admin/overview` 簡易版）；`/api/admin/tools/{id}/analytics` 未實作
 - AI 成本記錄（`ai_evaluations.ai_cost` 恆為 0；`ai_tools.max_cost_limit` 無人檢查）
 - RAG／pgvector（schema 已啟用 extension，無任何向量欄位與檢索邏輯）
 
@@ -323,7 +324,7 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **安全與部署**
 
 - ✅ 後端 API 身分驗證（#8）、RLS 政策（#9，migration 005、006）
-- Vercel / Render 部署設定
+- ✅ Render 部署設定（根目錄 `render.yaml`，步驟見 SETUP.md 第 6 節）；Vercel 尚待建立專案
 
 ---
 
@@ -363,12 +364,19 @@ LLM 相關的設計與行為差異見 [LLM_SYSTEM.md](./LLM_SYSTEM.md)；逐筆�
 **待決定**（影響評分品質與成本，需要成員三與教授決定）：
 
 1. 上課前改用付費方案，或改用額度較高的模型（改 `.env` 的 `GEMINI_MODEL` 即可）
-2. 調高 `llm_utils.DEFAULT_TIMEOUT_SECONDS`（例如 90 秒），避免「已經在算了卻被切斷重來」反而多吃額度
+2. ✅ 逾時改由 `.env` 的 `LLM_TIMEOUT_SECONDS` 設定，預設 90 秒（原本寫死 30 秒），避免「已經在算了卻被切斷重來」反而多吃額度
 3. 評分 / 錯誤偵測改用較低的思考等級（`thinking_config={"thinking_level": "low"}`），延遲可降到 2 秒內，但評分品質尚未比較
 
 ---
 
-## 18. 🟡 自主模式的每日額度：AI 評分失敗不退回次數
+## 18. ✅ 已修正 — 自主模式的每日額度：AI 評分失敗不退回次數
+
+> ✅ 2026-11：新增 `refund_tool_quota()`（migration 011）與 `core/access.refund_quota()`。
+> 整次評分拋例外（逾時、429…），或有構面因 AI 呼叫失敗而給保底分數時，退回 1 次，並送出 SSE 事件 `quota_refunded`。
+> 只退同一天扣的次數；沒跑 migration 011 時退回失敗只記 log，不影響評分錯誤訊息。
+> 回歸測試：`test_practice_api.py::TestQuotaRefundOnAIFailure`、`test_access.py::TestRefundQuota`
+>
+> 以下為原始說明。
 
 `core/access.py` 在送出作答時就扣 1 次（只拿到提示、沒評分的那次也算），
 之後 Gemini 逾時或回 429 導致評分失敗，**次數不會退回**。

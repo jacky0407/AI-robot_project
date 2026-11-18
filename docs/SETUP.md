@@ -171,11 +171,78 @@ XR 若用 Unity WebGL 會被擋，需要在 `next.config.ts` 的 `script-src` �
 
 ---
 
-## 6. 部署（尚未設定）
+## 6. 部署
 
 | 層 | 平台 | 環境變數 |
 |----|------|---------|
-| 前端 | Vercel | `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`NEXT_PUBLIC_API_URL`（待建立） |
-| 後端 | Render | `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`GEMINI_MODEL`、`ENVIRONMENT=production`、`FRONTEND_URL` |
+| 前端 | Vercel | `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`NEXT_PUBLIC_API_URL`（= Render 網址，結尾不加 `/`） |
+| 後端 | Render | `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`GEMINI_MODEL`、`ENVIRONMENT=production`、`FRONTEND_URL`、`LLM_TIMEOUT_SECONDS`、`API_KEY_ENCRYPTION_KEY`（學生自備金鑰的加密金鑰，產生方式見 `backend/.env.example`；換掉會讓已存的金鑰失效） |
 
-部署前必須先完成：網址改環境變數、API 身分驗證、開啟 RLS（KNOWN_GAPS #8 #9 #11）。
+### 順序
+
+1. **Supabase**：照第 1 節跑 `schema.sql`，再依序跑 `supabase/migrations/` 裡的全部檔案（全新資料庫不用 001、003；全部可重複執行）。
+   資料庫函式（註冊、扣／退額度、步驟排序）只在 migration 裡，漏跑會在使用時才出錯。
+   Authentication → URL Configuration：Site URL 填 Vercel 網址，Redirect URLs 加 `https://<vercel 網址>/**`
+   （不加的話驗證信、重設密碼信會導回 localhost）
+2. **後端（Render）**：Dashboard → New → **Blueprint** → 選這個 repo，會讀根目錄的 `render.yaml`。
+   建立時填 4 個秘密：`SUPABASE_URL`、`SUPABASE_SERVICE_KEY`、`GEMINI_API_KEY`、`FRONTEND_URL`
+   （Vercel 網址還沒有時先填 `http://localhost:3000`，第 4 步再改）。
+   完成後打開 `https://<render 網址>/api/health` 應回 `{"status":"ok","environment":"production"}`
+3. **前端（Vercel）**：Import repo，Root Directory 選 `frontend`，填上表 3 個環境變數
+4. 回 Render 把 `FRONTEND_URL` 改成 `https://<vercel 網址>,http://localhost:3000`，按 Manual Deploy
+5. 照第 4 節驗收清單在雲端跑一輪
+
+### 每次更新部署的順序（2026-11-04 部署測試的教訓）
+
+1. **先跑新的 migration**：看這次合併有沒有新增 `supabase/migrations/0xx_*.sql`，有就先在 Supabase SQL Editor 執行
+   （後端先上線、資料庫沒跟上時，例如沒跑 010，模組管理頁會回 503 `MIGRATION_REQUIRED`）
+2. 再到 Render 按 Manual Deploy；Vercel 合併到 main 會自動部署
+3. 開 `/api/health` 確認 `branch`、`commit` 是剛部署的版本
+
+### Supabase Auth 網址（漏設會讓登入導到 localhost）
+
+- **Site URL** 要是 Vercel 正式網址，不是 `http://localhost:3000`（忘記密碼、註冊驗證信沒帶 redirect 時會用它）
+- **Redirect URLs** 要有 `https://<vercel 網址>/**`，結尾的 `/**` 不能省，否則配不到 `/auth/callback`、`/auth/confirm`。
+  本機也要能收重設密碼信的話，再加一行 `http://localhost:3000/**`
+
+### 忘記密碼信件範本（每個 Supabase 專案都要改一次）
+
+Authentication → Emails → Templates → **Reset Password** → Body 切到 **Source**（要先設好下面的 SMTP 才能編輯），整段換成：
+
+```html
+<h2>重設密碼</h2>
+<p>我們收到重設這個帳號密碼的申請，請點擊下面的連結設定新密碼：</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=recovery">設定新密碼</a></p>
+<p>如果不是你本人申請，請忽略這封信，你的密碼不會被更改。</p>
+```
+
+- `{{ .RedirectTo }}` 是忘記密碼頁送出的 `<目前網站>/auth/confirm?next=/reset-password`：
+  在本機申請就連回本機，在 Vercel 申請就連回 Vercel。兩個網站都要在 **Redirect URLs** 清單裡（見上一節），
+  不在清單的話 Supabase 會改用 Site URL，連結就會壞掉
+- 預設範本的 `{{ .ConfirmationURL }}` 走 PKCE：只有在**寄信的同一個瀏覽器**開信才有效，
+  寄第二封後舊信也會失效。改成上面的 token_hash 後，在手機、別的瀏覽器開信都可以
+- 範本還沒改時忘記密碼仍然能用，只是要在同一個瀏覽器開最新一封信
+
+註冊驗證信（**Confirm signup** 範本）有一樣的問題，建議一起改成：
+`{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`
+
+### 寄信服務（SMTP，正式給學生用之前要設定）
+
+Supabase 內建的寄信服務每小時只能寄很少封，而且只寄給專案成員的信箱，一般學生收不到重設密碼信。
+Authentication → Emails → **SMTP Settings** 改用自己的寄信服務（免費方案即可設定），例如專案專用的 Gmail：
+
+| 欄位 | 值 |
+|------|----|
+| Host / Port | `smtp.gmail.com` / `465` |
+| Username | 專案 Gmail 信箱 |
+| Password | Gmail「應用程式密碼」（帳號要先開兩步驟驗證；不是 Gmail 登入密碼） |
+| Sender email / name | 同一個 Gmail / 平台名稱 |
+
+設定好後到 Authentication → **Rate Limits** 調高寄信上限。應用程式密碼只填在 Supabase 後台，不要寫進程式碼、`.env` 或文件。
+
+### 注意
+
+- `render.yaml` 設了 `autoDeploy: false`：main 合併後**不會**自動更新，要到 Render 按 Manual Deploy
+- 免費方案閒置 15 分鐘會休眠，第一次請求要等 30–60 秒。Demo 前先開一次 `/api/health`
+- `FRONTEND_URL` 的網址要和瀏覽器網址列**完全一致**（`https`、沒有結尾 `/`），否則前端會出現 CORS 錯誤
+- 單元測試由 GitHub Actions（`.github/workflows/backend-tests.yml`）在 PR 自動執行

@@ -52,12 +52,9 @@ py -m pytest tests/ -v
 
 ### 現有測試檔案
 
-```
-backend/tests/
-├── test_privacy.py          ← 個資偵測（13 個測試）
-├── test_rubric_formatter.py ← Rubric 格式化（8 個測試）
-└── test_gemini_provider.py  ← AI 評分邏輯（7 個測試）
-```
+測試都在 `backend/tests/`，一個功能一個檔（例如 `test_privacy.py`、`test_practice_api.py`、`test_admin_api.py`）。
+數量以 `py -m pytest tests/ -q` 的輸出為準，不在這裡逐一列出（舊清單只列了 3 個檔，已經過時）。
+PR 會由 GitHub Actions（`.github/workflows/backend-tests.yml`）自動再跑一次。
 
 ---
 

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { apiFetch } from "@/utils/api";
 import AdminNav from "../../AdminNav";
@@ -28,6 +28,8 @@ type Submission = {
     confidence?: number | null;
     needs_teacher_review?: boolean;
     detected_errors?: DetectedError[];
+    // 回饋當時 AI 參考的記憶（backend/api/practice.py 的 _memory_snapshot；migration 015 之前為 null）
+    memory_snapshot?: { text: string } | null;
   };
   teacher_reviews: TeacherReview[];
   prompt_logs: PromptLog[];
@@ -45,8 +47,20 @@ const card: React.CSSProperties = { backgroundColor: "#1e293b", borderRadius: "1
 const field: React.CSSProperties = { padding: "8px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "13px", outline: "none" };
 const inset = "rgba(255,255,255,0.04)";
 
+// useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
 export default function ReviewDetailPage() {
+  return (
+    <Suspense fallback={null}>
+      <ReviewDetail />
+    </Suspense>
+  );
+}
+
+function ReviewDetail() {
   const { id } = useParams<{ id: string }>();
+  // 從課程的「待複核」或「學習監控」點進來時帶 ?course=，判定完回到那門課的待複核分頁
+  const courseParam = useSearchParams().get("course");
+  const backHref = courseParam ? `/admin/courses/${encodeURIComponent(courseParam)}?tab=review` : "/admin/courses";
   const router = useRouter();
   const [supabase] = useState(() => createClient());
 
@@ -110,7 +124,7 @@ export default function ReviewDetailPage() {
           is_published: isPublished,
         }),
       });
-      router.push("/admin/tools");
+      router.push(backHref);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "儲存失敗");
       setSaving(false);
@@ -126,8 +140,8 @@ export default function ReviewDetailPage() {
         <AdminNav />
       </header>
       <div style={{ maxWidth: "960px", margin: "0 auto", padding: "24px 16px", display: "flex", flexDirection: "column", gap: "16px" }}>
-        <Link href="/admin/tools" style={{ fontSize: "13px", color: "#38bdf8", textDecoration: "none" }}>
-          ← 返回待複核清單
+        <Link href={backHref} style={{ fontSize: "13px", color: "#4ade80", textDecoration: "none" }}>
+          {courseParam ? "← 返回這門課的待複核" : "← 返回課程管理"}
         </Link>
 
         {errorMsg && (
@@ -198,6 +212,21 @@ export default function ReviewDetailPage() {
                   ))}
                 </div>
               )}
+              <details style={{ marginTop: "12px", fontSize: "12px", color: "#cbd5e1" }}>
+                <summary style={{ cursor: "pointer", fontWeight: "bold" }}>AI 當時參考的記憶</summary>
+                <p style={{ margin: "6px 0 0", color: "#94a3b8" }}>
+                  記憶只用在整體回饋與提示，不影響上面的構面分數。
+                </p>
+                {ev.memory_snapshot?.text ? (
+                  <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: "6px 0 0", padding: "8px", borderRadius: "6px", backgroundColor: "rgba(255,255,255,0.04)", lineHeight: 1.6 }}>
+                    {ev.memory_snapshot.text}
+                  </pre>
+                ) : (
+                  <p style={{ margin: "6px 0 0", color: "#94a3b8" }}>
+                    {ev.memory_snapshot ? "這次沒有可用的記憶（第一次作答，或老師關閉了這支機器人的記憶）。" : "這筆評分沒有保存記憶快照（功能上線前的評分）。"}
+                  </p>
+                )}
+              </details>
             </div>
 
             {data.teacher_reviews.length > 0 && (

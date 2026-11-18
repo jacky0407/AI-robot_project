@@ -68,6 +68,21 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 /**
+ * 下載檔案（例如 CSV 匯出）：帶 token 呼叫，回傳檔案內容與後端給的檔名。
+ * 不能用 <a href> 直接下載，因為後端要 Authorization header。
+ */
+export async function apiDownload(path: string, init?: RequestInit): Promise<{ blob: Blob; filename: string | null; headers: Headers }> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(await authHeader()), ...(init?.headers ?? {}) },
+  })
+  if (!res.ok) throw await toApiError(res)
+  const disposition = res.headers.get('Content-Disposition') ?? ''
+  const match = /filename="?([^";]+)"?/.exec(disposition)
+  return { blob: await res.blob(), filename: match ? match[1] : null, headers: res.headers }
+}
+
+/**
  * 呼叫回傳 SSE 的 POST 端點，逐一把事件交給 onEvent。
  *
  * 不能用 EventSource（只支援 GET），改用 fetch + ReadableStream 邊收邊解析，

@@ -2,7 +2,7 @@
 測試用的記憶體版 Supabase：資料真的會被新增、修改、刪除，
 適合要驗證「操作後資料變成什麼樣子」的測試（模組與步驟管理、解鎖規則）。
 
-只支援測試用到的鏈式方法：select / insert / update / delete / eq / in_ / order / limit / execute，
+只支援測試用到的鏈式方法：select / insert / update / delete / eq / lt / in_ / order / limit / execute，
 以及 rpc()。select 一律回傳整列（不做欄位投影），巢狀關聯直接寫在列資料裡。
 
 模擬錯誤：db.errors[(table, op)] = Exception，該操作執行時拋出。
@@ -45,6 +45,10 @@ class _Query:
 
     def eq(self, column, value):
         self.filters.append(lambda r, c=column, v=value: r.get(c) == v)
+        return self
+
+    def lt(self, column, value):
+        self.filters.append(lambda r, c=column, v=value: r.get(c) is not None and r.get(c) < v)
         return self
 
     def in_(self, column, values):

@@ -1,7 +1,10 @@
 "use client";
 
 // 忘記密碼：寄出重設密碼信
-// 信中的連結會回到 /auth/callback?next=/reset-password，換到 session 後再到 /reset-password 設新密碼
+// redirectTo 指向「目前這個網站」的 /auth/confirm：在本機申請就回本機，在 Vercel 申請就回 Vercel。
+// Supabase 的 Reset Password 信件範本要用 {{ .RedirectTo }} 組連結（docs/SETUP.md「忘記密碼信件範本」），
+// /auth/confirm 用信中的 token_hash 換到 session，再到 /reset-password 設新密碼。
+// 這個網址要在 Supabase 的 Redirect URLs 清單裡，否則 Supabase 會改用 Site URL。
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
@@ -30,7 +33,7 @@ function ForgotPasswordForm() {
     setError("");
 
     const { error } = await createClient().auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
+      redirectTo: `${window.location.origin}/auth/confirm?next=/reset-password`,
     });
 
     setSending(false);

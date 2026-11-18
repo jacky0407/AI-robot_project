@@ -5,7 +5,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SignOutButton from "./SignOutButton";
-import { SYSTEMS } from "./systems";
+import { systemsFor } from "./systems";
 
 export const metadata = { title: "選擇系統｜學前特教 AI 培訓平台" };
 
@@ -50,11 +50,11 @@ export default async function PortalPage() {
       <main style={{ maxWidth: "960px", margin: "0 auto", padding: "56px 24px" }}>
         <div style={{ textAlign: "center", marginBottom: "40px" }}>
           <h1 style={{ fontSize: "28px", fontWeight: "bold", margin: "0 0 8px 0" }}>請選擇要進入的系統</h1>
-          <p style={{ fontSize: "14px", color: "#94a3b8", margin: 0 }}>同一組帳號可以使用以下所有系統</p>
+          <p style={{ fontSize: "14px", color: "#94a3b8", margin: 0 }}>同一組帳號可以使用以下所有系統，不用重新登入</p>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "20px" }}>
-          {SYSTEMS.map((sys) => {
+          {systemsFor(portalUser).map((sys) => {
             const enabled = sys.enabled ? sys.enabled() : true;
             const card = (
               <div
@@ -85,13 +85,13 @@ export default async function PortalPage() {
 
             if (enabled && sys.fullPageLoad) {
               return (
-                <a key={sys.id} href={sys.href(portalUser)} style={{ textDecoration: "none" }}>
+                <a key={sys.id} href={sys.href} style={{ textDecoration: "none" }}>
                   {card}
                 </a>
               );
             }
             return enabled ? (
-              <Link key={sys.id} href={sys.href(portalUser)} style={{ textDecoration: "none" }}>
+              <Link key={sys.id} href={sys.href} style={{ textDecoration: "none" }}>
                 {card}
               </Link>
             ) : (

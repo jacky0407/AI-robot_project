@@ -1044,6 +1044,65 @@ class TestAccessAndQuota:
         assert consumed == []
 
 
+class TestQuotaRefundOnAIFailure:
+    """AI 評分因系統錯誤失敗時退回額度（KNOWN_GAPS #18）"""
+
+    @pytest.fixture
+    def permission_mode(self, monkeypatch):
+        refunds = []
+        monkeypatch.setattr(
+            practice, "check_step_access",
+            lambda db, user, step: StepAccess(mode="permission", permission_id="perm-1"),
+        )
+        monkeypatch.setattr(practice, "consume_quota", lambda db, access: {"used": 3, "quota": 10})
+        monkeypatch.setattr(
+            practice, "refund_quota",
+            lambda db, access: refunds.append(access) or {"used": 2, "quota": 10},
+        )
+        return refunds
+
+    def test_whole_evaluation_error_refunds_quota(self, permission_mode, monkeypatch):
+        async def boom(**kwargs):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+            yield  # pragma: no cover - 讓它成為 async generator
+
+        monkeypatch.setattr(practice.tutor_agent, "process_stream", boom)
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        names = [e for e, _ in events]
+        assert "error" in names
+        assert ("quota_refunded", {"reason": "evaluation_error", "quota": {"used": 2, "quota": 10}}) in events
+        assert len(permission_mode) == 1
+
+    def test_failed_dimension_refunds_quota(self, permission_mode):
+        responses = ["這不是 JSON", dim_response("B", 3), dim_response("C", 3), SYNTH_RESPONSE]
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), responses)
+
+        assert any(e == "score_complete" for e, _ in events)
+        assert ("quota_refunded", {"reason": "dimension_failed", "quota": {"used": 2, "quota": 10}}) in events
+        assert len(permission_mode) == 1
+
+    def test_successful_evaluation_does_not_refund(self, permission_mode):
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), FULL_EVALUATION)
+
+        assert not any(e == "quota_refunded" for e, _ in events)
+        assert permission_mode == []
+
+    def test_course_mode_never_refunds(self, monkeypatch):
+        refunds = []
+        monkeypatch.setattr(practice, "refund_quota", lambda db, access: refunds.append(access))
+
+        async def boom(**kwargs):
+            raise RuntimeError("timeout")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(practice.tutor_agent, "process_stream", boom)
+        _, events = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        assert any(e == "error" for e, _ in events)
+        assert refunds == []
+
+
 # ──────────────────────────────────────────
 # GET /steps/{step_id}/quota：剩餘額度（只查不扣）
 # ──────────────────────────────────────────
@@ -1177,6 +1236,7 @@ class TestBotMemory:
 
         assert res.json()["data"] == {
             "enabled": False, "attempts": [], "recurring_errors": [], "prior_steps": [],
+            "profile_highlights": [], "profile_version": None,
         }
         assert fake_db.find("step_attempts", "select") == []
 
@@ -1375,3 +1435,52 @@ class TestPracticeSession:
 
         assert res.status_code == 200
         assert fake_db.find("practice_sessions", "insert")[0]["payload"]["id"] == SESSION_ID
+
+
+# ──────────────────────────────────────────
+# 2026-11-12 全 repo 審查的修正
+# ──────────────────────────────────────────
+
+class TestReviewFindings:
+
+    def test_attempt_is_recorded_under_the_steps_own_module(self):
+        """前端傳錯（或故意傳別的）module_id，作答仍記在步驟所屬的模組"""
+        real_module = "33333333-3333-3333-3333-333333333333"
+        fake_db = FakeSupabase({**STEP_ROW, "module_id": real_module}, prev_attempts=[])
+        submit(fake_db, FULL_EVALUATION)
+
+        inserted = fake_db.find("step_attempts", "insert")[0]["payload"]
+        assert inserted["module_id"] == real_module != BODY["module_id"]
+
+    def test_too_long_answer_is_rejected_before_any_work(self):
+        fake_db = FakeSupabase(STEP_ROW, prev_attempts=[])
+        res, _ = submit(fake_db, [], body={**BODY, "content": "字" * (practice.MAX_ANSWER_CHARS + 1)})
+
+        assert res.status_code == 422
+        assert fake_db.calls == []
+
+    def test_empty_answer_is_rejected(self):
+        res, _ = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [], body={**BODY, "content": ""})
+        assert res.status_code == 422
+
+    def test_internal_error_does_not_leak_details(self, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError('relation "secret_internal_table" does not exist')
+
+        monkeypatch.setattr(practice, "check_step_access", broken)
+        res, _ = submit(FakeSupabase(STEP_ROW, prev_attempts=[]), [])
+
+        assert res.status_code == 500
+        assert "secret_internal_table" not in res.text
+        assert res.json()["detail"]["code"] == "INTERNAL_ERROR"
+
+
+def test_privacy_detect_requires_login():
+    main.app.dependency_overrides.pop(get_current_user, None)
+    res = TestClient(main.app).post("/api/privacy/detect", json={"content": "0912-345-678"})
+    assert res.status_code == 401
+
+
+def test_privacy_detect_works_when_logged_in():
+    res = TestClient(main.app).post("/api/privacy/detect", json={"content": "請聯絡 0912-345-678"})
+    assert res.status_code == 200 and res.json()["data"]["has_pii_risk"] is True

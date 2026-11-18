@@ -87,17 +87,17 @@ class FakeSupabase:
 
 
 def attempt(attempt_id, *, evaluation=None, reviews=None, tutor_action="evaluate",
-            require_review=False, status="revision_required"):
+            require_review=False, status="revision_required", user_id="student-1", module_id="module-1"):
     return {
         "id": attempt_id,
         "created_at": "2026-10-01T00:00:00Z",
         "status": status,
         "attempt_number": 1,
-        "user_id": "student-1",
+        "user_id": user_id,
         "user_input_content": "作答",
         "tutor_action": tutor_action,
         "profiles": {"full_name": "測試學生", "email": "s@example.com"},
-        "module_steps": {"step_title": "步驟1", "tool_id": "tool-1",
+        "module_steps": {"module_id": module_id, "step_title": "步驟1", "tool_id": "tool-1",
                          "require_teacher_review": require_review,
                          "ai_tools": {"title": "教練"}},
         "ai_evaluations": [evaluation] if evaluation else [],
@@ -194,6 +194,40 @@ class TestPendingQueue:
         data = get("/api/review/pending", db, needs_attention=True).json()["data"]
 
         assert [d["submission_id"] for d in data] == ["a-fail"]
+
+
+    def test_course_filter_keeps_only_course_modules_and_active_members(self):
+        """依課程篩選：模組要指派給這門課、作答者要是這門課 active 的成員"""
+        db = FakeSupabase({
+            ("step_attempts", "select"): [
+                attempt("a-in", evaluation=EVAL_OK),
+                attempt("a-other-module", evaluation=EVAL_OK, module_id="module-9"),
+                attempt("a-other-student", evaluation=EVAL_OK, user_id="student-9"),
+            ],
+            ("course_modules", "select"): [{"module_id": "module-1"}],
+            ("course_members", "select"): [{"user_id": "student-1"}],
+        })
+        data = get("/api/review/pending", db, course_id="course-1").json()["data"]
+
+        assert [d["submission_id"] for d in data] == ["a-in"]
+        members_call = db.find("course_members", "select")[0]
+        assert ("course_id", "course-1") in members_call["filters"]
+        assert ("status", "active") in members_call["filters"]
+
+    def test_course_without_modules_returns_empty(self):
+        db = FakeSupabase({
+            ("step_attempts", "select"): [attempt("a-1", evaluation=EVAL_OK)],
+            ("course_modules", "select"): [],
+            ("course_members", "select"): [{"user_id": "student-1"}],
+        })
+        assert get("/api/review/pending", db, course_id="course-1").json()["data"] == []
+
+    def test_without_course_id_does_not_query_courses(self):
+        db = FakeSupabase({("step_attempts", "select"): [attempt("a-1", evaluation=EVAL_OK)]})
+        data = get("/api/review/pending", db).json()["data"]
+
+        assert [d["submission_id"] for d in data] == ["a-1"]
+        assert db.find("course_modules", "select") == []
 
 
 # ──────────────────────────────────────────
