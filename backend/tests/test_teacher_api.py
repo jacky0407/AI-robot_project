@@ -53,11 +53,11 @@ class TestListTools:
 
     def test_list_is_wrapped_in_data(self):
         """依 docs/api.md 通用規範，成功回應包成 {"data": ...}"""
-        db = fake_db(data=[{"id": "t1", "title": "教練"}])
+        db = fake_db(data=[{"id": "t1", "title": "教練", "created_by": "prof-1"}])
         res = call("GET", "/api/teacher/tools", db)
 
         assert res.status_code == 200
-        assert res.json() == {"data": [{"id": "t1", "title": "教練"}]}
+        assert res.json() == {"data": [{"id": "t1", "title": "教練", "created_by": "prof-1", "can_edit": True}]}
 
     def test_empty_list(self):
         res = call("GET", "/api/teacher/tools", fake_db(data=None))
