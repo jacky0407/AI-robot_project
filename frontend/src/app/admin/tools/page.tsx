@@ -3,6 +3,7 @@
 // 教師端：建立機器人（機器人卡片由左上往右排列，最後一張是「＋ 建立機器人」，連到 /admin/tools/new）
 // 原本的「機器人與複核」頁：待複核清單移到每門課的「待複核」分頁，資料匯出移到課程的「資料匯出」分頁
 // 後端：GET /api/teacher/tools、DELETE /api/teacher/tools/{id}（backend/api/teacher.py）
+// 「編輯」只顯示在可以修改的機器人上（建立者或教授，後端回傳 can_edit），連到 /admin/tools/{id}/edit
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -17,6 +18,7 @@ type Tool = {
   target_competency?: string | null;
   status: string;
   version: number;
+  can_edit?: boolean;
 };
 
 const STATUS_LABEL: Record<string, { text: string; color: string; bg: string }> = {
@@ -106,14 +108,24 @@ export default function AdminToolsPage() {
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "12px" }}>
                     <span style={{ color: "#64748b" }}>第 {t.version} 版</span>
-                    <button
-                      onClick={() => handleDelete(t)}
-                      disabled={deleting === t.id}
-                      title="已排進關卡的機器人不能刪除"
-                      style={{ ...smallBtn, padding: "3px 10px", fontSize: "11px", color: "#f87171" }}
-                    >
-                      {deleting === t.id ? "刪除中…" : "刪除"}
-                    </button>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      {t.can_edit && (
+                        <Link
+                          href={`/admin/tools/${t.id}/edit`}
+                          style={{ ...smallBtn, padding: "3px 10px", fontSize: "11px", color: "#4ade80", textDecoration: "none" }}
+                        >
+                          編輯
+                        </Link>
+                      )}
+                      <button
+                        onClick={() => handleDelete(t)}
+                        disabled={deleting === t.id}
+                        title="已排進關卡的機器人不能刪除"
+                        style={{ ...smallBtn, padding: "3px 10px", fontSize: "11px", color: "#f87171" }}
+                      >
+                        {deleting === t.id ? "刪除中…" : "刪除"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               );

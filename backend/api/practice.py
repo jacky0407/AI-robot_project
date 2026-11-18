@@ -332,6 +332,8 @@ async def submit_answer(
                         "detected_errors": detected_errors,
                         # 這次回饋當時實際參考的記憶，供教師複核與研究重現（migration 015）
                         "memory_snapshot": _memory_snapshot(memory),
+                        # 評分當時的機器人版本，內容查 ai_tool_versions（migration 019）
+                        "tool_version": tool.get("version"),
                     })
 
                     # 同步更新 step_attempts 狀態為 passed 或 revision_required
@@ -714,18 +716,31 @@ def _memory_snapshot(memory) -> dict | None:
     return {"text": memory.to_prompt_text(), "summary": memory.to_event_data()}
 
 
+# 後來的 migration 才加的欄位：資料庫還沒跑時拿掉再寫，評分結果照常保存
+_OPTIONAL_EVALUATION_COLUMNS = {
+    "memory_snapshot": "015_learner_profiles.sql",
+    "tool_version": "019_ai_tool_versions.sql",
+}
+
+
 def _insert_evaluation(db, row: dict) -> None:
     """
-    寫入 ai_evaluations。還沒跑 migration 015（沒有 memory_snapshot 欄位）時，
-    拿掉快照再寫一次，評分結果照常保存。
+    寫入 ai_evaluations。還沒跑 migration 015 / 019（沒有 memory_snapshot / tool_version 欄位）時，
+    拿掉缺少的欄位再寫一次，評分結果照常保存。
     """
-    try:
-        db.table("ai_evaluations").insert(row).execute()
-    except Exception as e:  # noqa: BLE001 - postgrest 例外型別依版本不同
-        if "memory_snapshot" not in str(e):
-            raise
-        logger.warning("ai_evaluations.memory_snapshot 不存在，請執行 supabase/migrations/015_learner_profiles.sql")
-        db.table("ai_evaluations").insert({k: v for k, v in row.items() if k != "memory_snapshot"}).execute()
+    row = dict(row)
+    while True:
+        try:
+            db.table("ai_evaluations").insert(row).execute()
+            return
+        except Exception as e:  # noqa: BLE001 - postgrest 例外型別依版本不同
+            # 錯誤訊息一次只提到一個缺少的欄位：只拿掉那一個再試，其他欄位照存
+            missing = [col for col in _OPTIONAL_EVALUATION_COLUMNS if col in row and col in str(e)]
+            if not missing:
+                raise
+            for col in missing:
+                logger.warning(f"ai_evaluations.{col} 不存在，請執行 supabase/migrations/{_OPTIONAL_EVALUATION_COLUMNS[col]}")
+                row.pop(col)
 
 
 def _student_api_key(db, user, access) -> str | None:
