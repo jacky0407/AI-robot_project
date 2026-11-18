@@ -30,6 +30,8 @@ EXPECTED_TABLES = [
     "learner_profiles",   # migration 015 才有
     "user_api_keys",      # migration 017：學生自備 Gemini 金鑰（加密）
     "export_logs",        # migration 018：資料匯出稽核紀錄
+    "chat_room_bots",     # migration 020：多機器人聊天室
+    "chat_messages",      # migration 020
     "ai_tool_versions",   # migration 022：機器人每次修改前的舊版內容
 ]
 
@@ -40,6 +42,8 @@ TABLE_MIGRATIONS = {
     "learner_profiles": "015_learner_profiles.sql",
     "user_api_keys": "017_user_api_keys.sql",
     "export_logs": "018_export_logs.sql",
+    "chat_room_bots": "020_chat_rooms.sql",
+    "chat_messages": "020_chat_rooms.sql",
     "ai_tool_versions": "022_ai_tool_versions.sql",
 }
 
@@ -50,7 +54,7 @@ EXPECTED_COLUMNS = {
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
     "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
-    "module_steps": ["is_active", "pass_mode"],  # 010：停用步驟；019：怎麼算通過
+    "module_steps": ["is_active", "pass_mode", "step_type"],  # 010 停用步驟；019 怎麼算通過；020 聊天室
 }
 
 PLACEHOLDERS = {

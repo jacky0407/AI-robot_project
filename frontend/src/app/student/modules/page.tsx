@@ -6,6 +6,7 @@ import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
 import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 import BotMemoryPanel from "./BotMemoryPanel";
+import ChatRoom, { loadChatRoom, type ChatRoomInfo } from "./ChatRoom";
 
 // ─── 步驟與模組型別定義 ───
 
@@ -166,6 +167,8 @@ function StudentWorkspace() {
   const [history, setHistory] = useState<Submission[]>([]);
   const [showCompare, setShowCompare] = useState(false);
   const [progressKey, setProgressKey] = useState(0);
+  // 聊天室關卡（#68）：選到的關卡是聊天室時，中間的作答區換成聊天室；null = 一般作答關卡或還沒讀到
+  const [chatRoom, setChatRoom] = useState<{ stepId: string; room: ChatRoomInfo } | null>(null);
   const [isLoadingHint, setIsLoadingHint] = useState(false);
 
   // 切換步驟或模組時清空這一步的作答狀態
@@ -334,6 +337,21 @@ function StudentWorkspace() {
       active = false;
     };
   }, [selectedStep, sessionId, progressKey]);
+
+  // 這一關是不是聊天室（後端回 chat: false 就維持原本的作答區；讀不到也當作一般關卡）
+  useEffect(() => {
+    if (!selectedStep) return;
+    let active = true;
+    const stepId = selectedStep.id;
+    loadChatRoom(stepId).then(
+      (room) => active && setChatRoom(room ? { stepId, room } : null),
+      () => active && setChatRoom(null)
+    );
+    return () => {
+      active = false;
+    };
+  }, [selectedStep]);
+  const chat = chatRoom && selectedStep && chatRoom.stepId === selectedStep.id ? chatRoom.room : null;
 
   // 模組裡每一步的解鎖狀態。切換模組、送出作答後重新查（通過一步就可能解鎖下一步）
   const progressModuleId = currentModuleId || modules[0]?.id;
@@ -627,7 +645,8 @@ function StudentWorkspace() {
       <main className="ws-grid" style={{ padding: "20px 24px", display: "grid", gap: "20px", alignItems: "start" }}>
         {/* ─── 左邊：分層提示與評分回饋 ─── */}
         <div className="ws-col ws-left" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
-            {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用 */}
+            {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用（聊天室關卡不用：直接問機器人） */}
+            {!chat && (
             <div style={panel}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                 <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
@@ -660,6 +679,8 @@ function StudentWorkspace() {
               ))}
             </div>
 
+            )}
+
             {/* AI 評分回饋 */}
             <div style={{ ...panel, minHeight: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -667,7 +688,7 @@ function StudentWorkspace() {
               </h3>
 
               {!run && !isSubmitting && (
-                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>尚未送出作答。完成撰寫後按「送出作答並評分」。</p>
+                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>{chat ? "和機器人聊完後，按「送出評分」或 @ 評分機器人，評分結果會顯示在這裡。" : "尚未送出作答。完成撰寫後按「送出作答並評分」。"}</p>
               )}
 
               {run?.failure && (
@@ -784,7 +805,21 @@ function StudentWorkspace() {
               )}
             </div>
 
-            {/* 作答 */}
+            {/* 作答：聊天室關卡改成聊天室 */}
+            {chat ? (
+              <ChatRoom
+                key={chat.step_id}
+                room={chat}
+                sessionId={sessionId}
+                disabledReason={lockReason ?? quotaBlockReason}
+                onEvaluationStart={() => setRun({ ...EMPTY_RUN })}
+                onEvaluationEvent={handleEvent}
+                onFinished={() => {
+                  setQuotaKey((k) => k + 1);
+                  setProgressKey((k) => k + 1);
+                }}
+              />
+            ) : (
             <div style={panel}>
               <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>你的作答</h3>
               {piiWarning && (
@@ -829,6 +864,7 @@ function StudentWorkspace() {
                 </button>
               </div>
             </div>
+            )}
                     {/* 題目切換：取代原本左側的關卡清單 */}
             <StepNav
               position={stepPos}

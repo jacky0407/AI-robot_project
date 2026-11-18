@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, apiFetch } from "@/utils/api";
+import ChatBotsPanel from "./ChatBotsPanel";
 
 export type ModuleSummary = {
   id: string;
@@ -26,6 +27,7 @@ type Step = {
   pass_score: number | null;
   require_teacher_review: boolean;
   pass_mode?: PassMode;
+  step_type?: StepType;
   is_active: boolean;
   tool_title: string | null;
   tool_status: string | null;
@@ -45,7 +47,11 @@ const PASS_MODE_OPTIONS: { value: PassMode; label: string }[] = [
   { value: "teacher_review", label: "老師複核後才通過" },
 ];
 
+// 關卡類型（#68，migration 020）：作答關卡／多機器人聊天室
+type StepType = "answer" | "chat";
+
 type StepForm = {
+  step_type: StepType;
   tool_id: string;
   step_title: string;
   is_required: boolean;
@@ -54,7 +60,7 @@ type StepForm = {
   pass_mode: PassMode;
 };
 
-const EMPTY_STEP: StepForm = { tool_id: "", step_title: "", is_required: true, pass_score: "70", require_teacher_review: false, pass_mode: "score" };
+const EMPTY_STEP: StepForm = { step_type: "chat", tool_id: "", step_title: "", is_required: true, pass_score: "70", require_teacher_review: false, pass_mode: "score" };
 
 const input: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "13px", outline: "none" };
 const smallBtn: React.CSSProperties = { padding: "4px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "transparent", color: "#cbd5e1", cursor: "pointer" };
@@ -236,7 +242,7 @@ export default function ModuleEditor({
         {detail.steps.length === 0 && <p style={{ fontSize: "13px", color: "#94a3b8" }}>還沒有關卡，請從下方新增。</p>}
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {detail.steps.map((s, i) => (
-            <StepRow key={`${s.id}-${version}`} step={s} index={i} total={detail.steps.length} tools={tools} busy={busy} onMove={moveStep} onSave={saveStep} onDelete={deleteStep} />
+            <StepRow key={`${s.id}-${version}`} moduleId={detail.id} step={s} index={i} total={detail.steps.length} tools={tools} busy={busy} onMove={moveStep} onSave={saveStep} onDelete={deleteStep} />
           ))}
         </div>
       </div>
@@ -244,9 +250,21 @@ export default function ModuleEditor({
       {/* 新增關卡 */}
       <form onSubmit={handleAddStep} style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "14px", borderRadius: "10px", border: "1px dashed rgba(255,255,255,0.2)" }}>
         <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: 0 }}>新增關卡（排在最後）</h4>
+        <div style={{ display: "flex", gap: "16px", fontSize: "12px", flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+            <input type="radio" checked={newStep.step_type === "chat"} onChange={() => setNewStep({ ...newStep, step_type: "chat" })} />
+            聊天室（多個機器人對話，評分機器人評整段對話）
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+            <input type="radio" checked={newStep.step_type === "answer"} onChange={() => setNewStep({ ...newStep, step_type: "answer" })} />
+            作答關卡（寫完一份作答再送出）
+          </label>
+        </div>
         <div className="me-two" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
           <select value={newStep.tool_id} onChange={(e) => setNewStep({ ...newStep, tool_id: e.target.value })} style={{ ...input, backgroundColor: "#0f172a" }}>
-            <option value="">{tools.length ? "選擇這一關使用的機器人…" : "還沒有機器人，請先到「建立機器人」建立"}</option>
+            <option value="">
+              {tools.length ? (newStep.step_type === "chat" ? "選擇評分機器人…（對話機器人新增後再設定）" : "選擇這一關使用的機器人…") : "還沒有機器人，請先到「建立機器人」建立"}
+            </option>
             {tools.map((t) => (
               <option key={t.id} value={t.id}>
                 {toolLabel(t)}
@@ -295,6 +313,7 @@ function StepOptions({ form, onChange }: { form: Pick<StepForm, "is_required" | 
 }
 
 function StepRow({
+  moduleId,
   step,
   index,
   total,
@@ -304,6 +323,7 @@ function StepRow({
   onSave,
   onDelete,
 }: {
+  moduleId: string;
   step: Step;
   index: number;
   total: number;
@@ -314,6 +334,7 @@ function StepRow({
   onDelete: (step: Step) => void;
 }) {
   const [form, setForm] = useState<StepForm>({
+    step_type: step.step_type ?? "answer",
     tool_id: step.tool_id,
     step_title: step.step_title,
     is_required: step.is_required,
@@ -330,6 +351,7 @@ function StepRow({
   if (form.pass_score !== String(step.pass_score ?? 70)) changes.pass_score = form.pass_score;
   if (form.require_teacher_review !== step.require_teacher_review) changes.require_teacher_review = form.require_teacher_review;
   if (form.pass_mode !== (step.pass_mode ?? "score")) changes.pass_mode = form.pass_mode;
+  if (form.step_type !== (step.step_type ?? "answer")) changes.step_type = form.step_type;
   const dirty = Object.keys(changes).length > 0;
 
   const handleSave = () => {
@@ -353,6 +375,7 @@ function StepRow({
         <span style={{ fontSize: "12px", fontWeight: "bold", color: "#4ade80", minWidth: "52px" }}>第 {step.step_order} 關</span>
         <button disabled={busy || index === 0} onClick={() => onMove(index, -1)} title="往前移" style={{ ...smallBtn, padding: "2px 8px", opacity: busy || index === 0 ? 0.3 : 1 }}>↑</button>
         <button disabled={busy || index === total - 1} onClick={() => onMove(index, 1)} title="往後移" style={{ ...smallBtn, padding: "2px 8px", opacity: busy || index === total - 1 ? 0.3 : 1 }}>↓</button>
+        {step.step_type === "chat" && <span style={pill("#7dd3fc", "rgba(14,165,233,0.15)")}>聊天室</span>}
         {!step.is_active && <span style={pill("#94a3b8", "rgba(255,255,255,0.08)")}>已停用</span>}
         {step.tool_status && step.tool_status !== "published" && <span style={pill("#fbbf24", "rgba(245,158,11,0.15)")}>機器人未發布</span>}
         <span style={{ fontSize: "11px", color: "#94a3b8" }}>{step.attempt_count} 筆學生作答</span>
@@ -395,6 +418,15 @@ function StepRow({
         </button>
       </div>
       {error && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#fca5a5" }}>{error}</p>}
+      {!locked && (
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px", fontSize: "12px", color: "#94a3b8", cursor: "pointer" }}>
+          <input type="checkbox" checked={form.step_type === "chat"} onChange={(e) => setForm({ ...form, step_type: e.target.checked ? "chat" : "answer" })} />
+          改成聊天室（上面選的機器人會變成評分機器人）
+        </label>
+      )}
+      {step.step_type === "chat" && (
+        <ChatBotsPanel moduleId={moduleId} stepId={step.id} evaluatorToolId={step.tool_id} evaluatorTitle={step.tool_title} tools={tools} />
+      )}
     </div>
   );
 }

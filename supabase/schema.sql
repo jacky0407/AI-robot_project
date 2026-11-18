@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS public.module_steps (
     pass_forward_keys JSONB DEFAULT '[]'::jsonb,  -- 需傳給下一步的欄位 key
     is_active BOOLEAN NOT NULL DEFAULT true, -- false = 已停用：學生看不到、不能作答，作答保留（migration 010）
     pass_mode TEXT NOT NULL DEFAULT 'score' CHECK (pass_mode IN ('score', 'complete', 'teacher_review')), -- 怎麼算通過（migration 019）
+    step_type TEXT NOT NULL DEFAULT 'answer' CHECK (step_type IN ('answer', 'chat')), -- 作答關卡／聊天室（migration 020）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(module_id, step_order)
 );
@@ -308,6 +309,36 @@ CREATE TABLE IF NOT EXISTS public.export_logs (
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- 多機器人聊天室（migration 020）：聊天室裡可對話的機器人；評分機器人是 module_steps.tool_id
+CREATE TABLE IF NOT EXISTS public.chat_room_bots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    step_id UUID NOT NULL REFERENCES public.module_steps(id) ON DELETE CASCADE,
+    tool_id UUID NOT NULL REFERENCES public.ai_tools(id) ON DELETE RESTRICT,
+    display_name TEXT NOT NULL,            -- 聊天室裡顯示的名字，學生用 @名字 指名
+    when_to_use TEXT NOT NULL DEFAULT '',  -- 給調度員看：學生說什麼時該它出場
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    UNIQUE (step_id, tool_id),
+    UNIQUE (step_id, display_name)
+);
+
+-- 聊天室對話（migration 020）：誰說的、由哪個機器人回答、為什麼是它；只給 service_role
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    module_id UUID NOT NULL REFERENCES public.learning_modules(id) ON DELETE CASCADE,
+    step_id UUID NOT NULL REFERENCES public.module_steps(id) ON DELETE CASCADE,
+    session_id UUID REFERENCES public.practice_sessions(id) ON DELETE SET NULL,
+    role TEXT NOT NULL CHECK (role IN ('student', 'bot')),
+    tool_id UUID REFERENCES public.ai_tools(id) ON DELETE SET NULL,
+    bot_name TEXT,
+    content TEXT NOT NULL,
+    routing JSONB,                          -- {"by": "mention" | "router" | "only_bot" | "evaluate", "reason": "..."}
+    attempt_id UUID REFERENCES public.step_attempts(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_messages_thread_idx ON public.chat_messages (user_id, step_id, created_at);
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -398,6 +429,8 @@ ALTER TABLE public.research_consents   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.learner_profiles    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.user_api_keys       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.export_logs         ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.chat_room_bots      ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.chat_messages       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 
