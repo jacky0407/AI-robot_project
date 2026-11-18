@@ -297,6 +297,8 @@ async def _evaluate(db, user, step, evaluator, rows, session_id) -> AsyncGenerat
             "confidence": final.get("confidence"),
             "needs_teacher_review": bool(final.get("needs_teacher_review", False)),
             "detected_errors": [],
+            # 評分當時的評分機器人版本（migration 022；還沒跑時 _insert_evaluation 會拿掉）
+            "tool_version": tool.get("version"),
         })
         ai_passed = bool(final.get("passed"))
         summary = f"評分：{round(float(final.get('percentage', final.get('total_score', 0))))} 分\n{final.get('overall_feedback', '')}".strip()
