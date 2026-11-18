@@ -157,6 +157,12 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? '')
 
   const [rubrics, setRubrics] = useState<RubricItem[]>(initialRubrics)
+  // 評分規準可以不填（#65）：關掉時這個機器人只給文字回饋、不打分數；編輯原本就不評分的機器人時預設關閉
+  const [scoringEnabled, setScoringEnabled] = useState(!(Boolean(initial) && initialRubrics.length === 0))
+  const toggleScoring = (on: boolean) => {
+    setScoringEnabled(on)
+    if (on && rubrics.length === 0) setRubrics(DEFAULT_RUBRICS)
+  }
 
   const [scaleType, setScaleType] = useState(initialScale)
 
@@ -177,7 +183,7 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
   const [memoryIncludePrior, setMemoryIncludePrior] = useState(initialMemory.include_prior_steps !== false)
 
   // 已有作答的機器人改了評分規準或級距 → 舊的評分不會重算，要提醒老師
-  const rubricChanged = editing && (!sameJson(rubrics, initialRubrics) || scaleType !== initialScale)
+  const rubricChanged = editing && (!sameJson(scoringEnabled ? rubrics : [], initialRubrics) || scaleType !== initialScale)
   const showRegradeWarning = rubricChanged && attemptCount > 0
 
   const updateHint = (index: number, patch: Partial<HintItem>) =>
@@ -211,7 +217,7 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
       target_competency: targetCompetency,
       role_instruction: roleInstruction,
       system_prompt: systemPrompt,
-      rubric_criteria: rubrics,
+      rubric_criteria: scoringEnabled ? rubrics : [],
       scale_type: scaleType,
       teaching_strategy: {
         ...otherStrategy,
@@ -366,14 +372,26 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
           {/* 評分規準 */}
           <section style={panel}>
             <SectionHead
-              title={`評分規準（總配分 ${totalRubricScore} 分）`}
-              desc="每個評分項目的配分是它的權重；AI 依說明逐項評分，總分一律換算成 0–100。"
+              title={scoringEnabled ? `評分規準（總配分 ${totalRubricScore} 分）` : '評分規準（不評分）'}
+              desc={
+                scoringEnabled
+                  ? '每個評分項目的配分是它的權重；AI 依說明逐項評分，總分一律換算成 0–100。'
+                  : '這個機器人只給文字回饋、不打分數。關卡要怎麼算通過，在模組管理的關卡設定裡選。'
+              }
               action={
-                <button type="button" onClick={handleAddRubric} style={addBtn}>
-                  ＋ 新增評分項目
-                </button>
+                scoringEnabled ? (
+                  <button type="button" onClick={handleAddRubric} style={addBtn}>
+                    ＋ 新增評分項目
+                  </button>
+                ) : undefined
               }
             />
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: '13px', color: '#cbd5e1' }}>
+              <input type="checkbox" checked={scoringEnabled} onChange={(e) => toggleScoring(e.target.checked)} />
+              這個機器人要評分
+            </label>
+            {scoringEnabled && (
+            <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {rubrics.map((r, idx) => (
                 <div key={idx} className="tf-rubric" style={{ ...item, display: 'grid', gridTemplateColumns: '1fr 80px 2fr auto', gap: '8px', alignItems: 'center' }}>
@@ -399,10 +417,14 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
               ))}
             </div>
 
+            </>
+            )}
+
             {showRegradeWarning && (
               <div style={{ ...warnBox, marginTop: '12px' }}>你改了評分規準：已經評過的 {attemptCount} 筆作答不會重算。</div>
             )}
 
+            {scoringEnabled && (
             <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '14px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '13px', color: '#cbd5e1' }}>評分級距</span>
               <select value={scaleType} onChange={(e) => setScaleType(e.target.value)} style={{ ...select, width: 'auto', minWidth: '220px' }}>
@@ -413,6 +435,7 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
                 ))}
               </select>
             </label>
+            )}
           </section>
 
           {/* 分層提示 */}
@@ -491,7 +514,7 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
                   </select>
                   <select value={er.related_dimension} onChange={(e) => updateError(idx, { related_dimension: e.target.value })} style={select}>
                     <option value="">（不指定評分項目）</option>
-                    {rubrics.map((r) => (
+                    {(scoringEnabled ? rubrics : []).map((r) => (
                       <option key={r.dimension} value={r.dimension}>
                         {r.dimension}
                       </option>

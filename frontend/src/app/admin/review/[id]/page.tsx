@@ -15,7 +15,17 @@ type PromptLog = { id: string; hint_level: number; hint_content: string; hint_tr
 type Submission = {
   submission_id: string;
   student: { full_name?: string; email?: string };
-  step: { step_title: string; pass_score: number | null; require_teacher_review?: boolean; tool: { title?: string } };
+  step: {
+    step_title: string;
+    pass_score: number | null;
+    require_teacher_review?: boolean;
+    tool: { title?: string };
+    // #65：怎麼算通過、這個機器人會不會評分
+    pass_mode?: "score" | "complete" | "teacher_review";
+    scoring?: boolean;
+  };
+  // 沒有評分規準的機器人只給回饋、不評分（存在 step_attempts.structured_data）
+  ai_feedback?: string | null;
   attempt_number: number;
   status: string;
   tutor_action?: string | null;
@@ -159,6 +169,8 @@ function ReviewDetail() {
               <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
                 {data.step.tool?.title}・第 {data.attempt_number} 次作答・門檻 {data.step.pass_score ?? "—"} 分
                 {data.step.require_teacher_review && "・教授設定的強制審核點"}
+                {data.step.pass_mode === "teacher_review" && "・這一關要老師複核後才通過"}
+                {data.step.pass_mode === "complete" && "・這一關送出作答即通過"}
               </p>
               {data.tutor_action === "escalate" && (
                 <p style={{ marginTop: "10px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.15)", padding: "8px 10px", borderRadius: "6px" }}>
@@ -190,6 +202,10 @@ function ReviewDetail() {
                 </div>
               ))}
               {ev.feedback_text && <p style={{ fontSize: "13px", marginTop: "12px", whiteSpace: "pre-wrap" }}>{ev.feedback_text}</p>}
+              {data.step.scoring === false && (
+                <p style={{ fontSize: "13px", marginTop: "12px", color: "#94a3b8" }}>這個機器人沒有評分規準，只給文字回饋、不評分。</p>
+              )}
+              {data.ai_feedback && <p style={{ fontSize: "13px", marginTop: "8px", whiteSpace: "pre-wrap" }}>{data.ai_feedback}</p>}
               {(ev.detected_errors ?? []).length > 0 && (
                 <div style={{ marginTop: "12px", fontSize: "13px" }}>
                   <strong>偵測到的常見錯誤</strong>
@@ -247,7 +263,8 @@ function ReviewDetail() {
                 <select value={decision} onChange={(e) => setDecision(e.target.value)} style={field}>
                   {DECISIONS.map((d) => (
                     <option key={d.value} value={d.value}>
-                      {d.label}
+                      {/* 沒有評分的作答沒有「AI 評分」可採用：採用 = 老師看過、讓這一關通過（#65） */}
+                      {data.step.scoring === false && d.value === "accept_ai" ? "通過（不評分）" : d.label}
                     </option>
                   ))}
                 </select>

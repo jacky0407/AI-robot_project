@@ -25,6 +25,7 @@ type Step = {
   is_required: boolean;
   pass_score: number | null;
   require_teacher_review: boolean;
+  pass_mode?: PassMode;
   is_active: boolean;
   tool_title: string | null;
   tool_status: string | null;
@@ -36,15 +37,24 @@ type ModuleDetail = Omit<ModuleSummary, "step_count" | "active_step_count"> & { 
 
 export type Tool = { id: string; title: string; status: string };
 
+// 關卡怎麼算通過（#65，migration 019）
+type PassMode = "score" | "complete" | "teacher_review";
+const PASS_MODE_OPTIONS: { value: PassMode; label: string }[] = [
+  { value: "score", label: "分數達到通過分數" },
+  { value: "complete", label: "送出作答即通過" },
+  { value: "teacher_review", label: "老師複核後才通過" },
+];
+
 type StepForm = {
   tool_id: string;
   step_title: string;
   is_required: boolean;
   pass_score: string;
   require_teacher_review: boolean;
+  pass_mode: PassMode;
 };
 
-const EMPTY_STEP: StepForm = { tool_id: "", step_title: "", is_required: true, pass_score: "70", require_teacher_review: false };
+const EMPTY_STEP: StepForm = { tool_id: "", step_title: "", is_required: true, pass_score: "70", require_teacher_review: false, pass_mode: "score" };
 
 const input: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "13px", outline: "none" };
 const smallBtn: React.CSSProperties = { padding: "4px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "transparent", color: "#cbd5e1", cursor: "pointer" };
@@ -255,7 +265,7 @@ export default function ModuleEditor({
 }
 
 // 必修、通過分數、教師審核點（新增與編輯共用）
-function StepOptions({ form, onChange }: { form: Pick<StepForm, "is_required" | "pass_score" | "require_teacher_review">; onChange: (changes: Partial<StepForm>) => void }) {
+function StepOptions({ form, onChange }: { form: Pick<StepForm, "is_required" | "pass_score" | "require_teacher_review" | "pass_mode">; onChange: (changes: Partial<StepForm>) => void }) {
   return (
     <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", alignItems: "center", fontSize: "12px" }}>
       <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
@@ -263,6 +273,16 @@ function StepOptions({ form, onChange }: { form: Pick<StepForm, "is_required" | 
         必修（沒通過會擋住後面的關卡）
       </label>
       <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        怎麼算通過
+        <select value={form.pass_mode} onChange={(e) => onChange({ pass_mode: e.target.value as PassMode })} style={{ ...input, width: "auto" }}>
+          {PASS_MODE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value} style={{ color: "#000" }}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: "6px" }} title="機器人沒有評分規準時，「分數達到通過分數」會當作「送出作答即通過」">
         通過分數
         <input type="number" min={0} max={100} value={form.pass_score} onChange={(e) => onChange({ pass_score: e.target.value })} onFocus={(e) => e.target.select()} style={{ ...input, width: "70px" }} />
       </label>
@@ -299,6 +319,7 @@ function StepRow({
     is_required: step.is_required,
     pass_score: String(step.pass_score ?? 70),
     require_teacher_review: step.require_teacher_review,
+    pass_mode: step.pass_mode ?? "score",
   });
   const [error, setError] = useState("");
 
@@ -308,6 +329,7 @@ function StepRow({
   if (form.is_required !== step.is_required) changes.is_required = form.is_required;
   if (form.pass_score !== String(step.pass_score ?? 70)) changes.pass_score = form.pass_score;
   if (form.require_teacher_review !== step.require_teacher_review) changes.require_teacher_review = form.require_teacher_review;
+  if (form.pass_mode !== (step.pass_mode ?? "score")) changes.pass_mode = form.pass_mode;
   const dirty = Object.keys(changes).length > 0;
 
   const handleSave = () => {

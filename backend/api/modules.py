@@ -18,7 +18,7 @@
 """
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,6 +42,9 @@ STEP_FIELDS = (
     "id, module_id, tool_id, step_order, step_title, is_required, "
     "pass_score, require_teacher_review, is_active"
 )
+# migration 019 才有的欄位：還沒跑時讀步驟照常運作（當作 score），只有要設定它時才回 503
+STEP_FIELDS_019 = STEP_FIELDS + ", pass_mode"
+PASS_MODES = ("score", "complete", "teacher_review")
 
 DEFAULT_DOMAIN = "學前IEP"
 
@@ -73,6 +76,8 @@ class CreateStepRequest(_Body):
     is_required: bool = True
     pass_score: int = Field(default=70, ge=0, le=100)
     require_teacher_review: bool = False
+    # 怎麼算通過（#65）：score 看分數、complete 作答即通過、teacher_review 教師複核後通過
+    pass_mode: Literal["score", "complete", "teacher_review"] = "score"
 
 
 class UpdateStepRequest(_Body):
@@ -82,6 +87,7 @@ class UpdateStepRequest(_Body):
     pass_score: Optional[int] = Field(default=None, ge=0, le=100)
     require_teacher_review: Optional[bool] = None
     is_active: Optional[bool] = None
+    pass_mode: Optional[Literal["score", "complete", "teacher_review"]] = None
 
 
 class ReorderStepsRequest(BaseModel):
@@ -101,11 +107,11 @@ def _require_owner(user: CurrentUser) -> None:
         raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_DENIED", "只有教授可以修改模組與步驟")
 
 
-def _migration_required() -> HTTPException:
+def _migration_required(migration: str = "010_module_management.sql") -> HTTPException:
     return _error(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "MIGRATION_REQUIRED",
-        "資料庫還沒更新：請在 Supabase SQL Editor 執行 supabase/migrations/010_module_management.sql",
+        f"資料庫還沒更新：請在 Supabase SQL Editor 執行 supabase/migrations/{migration}",
     )
 
 
@@ -127,9 +133,15 @@ def _get_module_or_404(db, module_id: str) -> dict:
 
 
 def _load_steps(db, module_id: str) -> list[dict]:
-    res = _execute(
-        db.table("module_steps").select(STEP_FIELDS).eq("module_id", module_id).order("step_order")
-    )
+    def query(fields: str):
+        return db.table("module_steps").select(fields).eq("module_id", module_id).order("step_order")
+
+    try:
+        res = query(STEP_FIELDS_019).execute()
+    except APIError as e:
+        if e.code != UNDEFINED_COLUMN or "pass_mode" not in str(e.message):
+            raise
+        res = _execute(query(STEP_FIELDS))
     return sorted(res.data or [], key=lambda s: s.get("step_order") or 0)
 
 
@@ -171,6 +183,7 @@ def _step_output(step: dict, tools: dict[str, dict], counts: dict[str, int]) -> 
     return {
         **step,
         "is_active": step.get("is_active", True),
+        "pass_mode": step.get("pass_mode") if step.get("pass_mode") in PASS_MODES else "score",
         "tool_title": tool.get("title"),
         "tool_status": tool.get("status"),
         "attempt_count": attempts,
@@ -326,10 +339,14 @@ async def add_step(module_id: UUID, body: CreateStepRequest, user: CurrentUser =
             "is_required": body.is_required,
             "pass_score": body.pass_score,
             "require_teacher_review": body.require_teacher_review,
+            # 預設值不寫：還沒跑 019 的資料庫照樣能新增步驟
+            **({"pass_mode": body.pass_mode} if body.pass_mode != "score" else {}),
         }).execute()
     except APIError as e:
         if e.code == UNIQUE_VIOLATION:
             raise _error(status.HTTP_409_CONFLICT, "ORDER_CONFLICT", "步驟順序剛好被別人改了，請重新整理後再試")
+        if e.code == UNDEFINED_COLUMN and "pass_mode" in str(e.message):
+            raise _migration_required("019_step_pass_mode.sql")
         raise
 
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
@@ -364,7 +381,12 @@ async def update_step(
                 )
             _get_usable_tool(db, changes["tool_id"])
 
-    _execute(db.table("module_steps").update(changes).eq("id", step_id))
+    try:
+        _execute(db.table("module_steps").update(changes).eq("id", step_id))
+    except HTTPException:
+        if "pass_mode" in changes:
+            raise _migration_required("019_step_pass_mode.sql")
+        raise
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 

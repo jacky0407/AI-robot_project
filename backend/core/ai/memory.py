@@ -52,7 +52,7 @@ HINT_CHARS = 80
 
 # 這一步的歷程：評分、錯誤、提示、已發布的教師複核
 ATTEMPT_SELECT = (
-    "id, attempt_number, status, "
+    "id, attempt_number, status, structured_data, "
     "ai_evaluations(total_score, dimension_scores, detected_errors, feedback_text), "
     "teacher_reviews(final_score, final_feedback, is_published), "
     "prompt_logs(hint_level, hint_content)"
@@ -129,7 +129,7 @@ class BotMemory:
         if self.attempts:
             lines.append("【這位學生在本步驟的先前作答】")
             for a in self.attempts:
-                score = f"{a.score:.0f} 分" if a.score is not None else "未評分（只給了提示）"
+                score = f"{a.score:.0f} 分" if a.score is not None else ("未評分（只給了提示）" if a.hints else "未評分")
                 parts = [f"第 {a.attempt_number} 次：{score}"]
                 if a.weakest_dimension:
                     parts.append(f"最弱構面「{a.weakest_dimension}」")
@@ -294,6 +294,11 @@ def _attempt_from_row(row: dict) -> AttemptMemory:
             if isinstance(e, dict) and (e.get("label") or e.get("code"))
         ]
         memory.feedback = _truncate(evaluation.get("feedback_text"), FEEDBACK_CHARS)
+    else:
+        # 沒有評分規準的機器人只給回饋、不寫 ai_evaluations（#65），回饋存在 structured_data
+        structured = row.get("structured_data")
+        if isinstance(structured, dict) and structured.get("ai_feedback"):
+            memory.feedback = _truncate(structured["ai_feedback"], FEEDBACK_CHARS)
 
     logs = row.get("prompt_logs") or []
     if isinstance(logs, list):
