@@ -44,6 +44,7 @@ from core.chat_room import (
     transcript_for_evaluation,
 )
 from core.learner_profile import refresh_learner_profile
+from core.materials import context_block, courses_for_module, own_attempt_lines, search_materials
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
 from core.practice_session import ensure_session, parse_session_id
 from core.privacy import detect_pii
@@ -103,7 +104,8 @@ async def get_chat_room(step_id: str, user: CurrentUser = Depends(get_current_us
         "chat": True,
         "step_id": step_id,
         "step_title": step.get("step_title"),
-        "bots": [{"tool_id": b.tool_id, "name": b.name, "when_to_use": b.when_to_use} for b in bots],
+        "bots": [{"tool_id": b.tool_id, "name": b.name, "when_to_use": b.when_to_use, "use_materials": b.use_materials}
+                 for b in bots],
         "evaluator": {"tool_id": evaluator.tool_id, "name": evaluator.name} if evaluator else None,
         "pass_mode": effective_pass_mode(step, scoring),
         "scoring": scoring,
@@ -204,13 +206,38 @@ async def _reply(db, user, step, bots, mentioned, history_rows, content, session
         routing = {"by": "router", "reason": reason}
 
     yield practice._sse_event("bot_selected", {"tool_id": bot.tool_id, "bot_name": bot.name, **routing})
-    text = await chat_bot_agent.reply(bot, bots, turns, content)
+    context = ""
+    if bot.use_materials:
+        # 學習助教（#67）：先查這門課的教材與學生自己的作答紀錄，再回答
+        context, sources = await _tutor_context(db, user, step, content)
+        routing["sources"] = sources
+        yield practice._sse_event("materials_used", {"sources": sources})
+    text = await chat_bot_agent.reply(bot, bots, turns, content, context)
     row = save_message(db, {
         "user_id": user.id, "module_id": step.get("module_id"), "step_id": step["id"],
         "session_id": session_id, "role": "bot", "tool_id": bot.tool_id, "bot_name": bot.name,
         "content": text, "routing": routing,
     })
     yield practice._sse_event("bot_reply", {"message": public_message(row)})
+
+
+async def _tutor_context(db, user, step, question: str) -> tuple[str, list[str]]:
+    """
+    學習助教的參考資料：這門課的教材（向量搜尋，不跨課程）＋學生自己的作答紀錄。
+    任一部分失敗都只記 log：沒有參考資料時助教會說「教材裡沒有找到」，不擋對話。
+    """
+    module_id = step.get("module_id")
+    chunks, lines = [], []
+    try:
+        course_ids = courses_for_module(db, user.id, module_id, is_staff=user.is_staff)
+        chunks = await search_materials(db, course_ids, question)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"教材搜尋失敗（是否尚未執行 migration 021？）：{e}")
+    try:
+        lines = own_attempt_lines(db, user.id, module_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"讀取作答紀錄失敗：{e}")
+    return context_block(chunks, lines), [c.label for c in chunks]
 
 
 async def _evaluate(db, user, step, evaluator, rows, session_id) -> AsyncGenerator[str, None]:

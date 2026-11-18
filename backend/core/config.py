@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     # Gemini API
     gemini_api_key: str = ""
     gemini_model: str = DEFAULT_GEMINI_MODEL
+    # 學習助教（RAG，#67）切段與搜尋用的向量模型；維度固定 768（migration 021 的 vector(768)）
+    gemini_embedding_model: str = "gemini-embedding-001"
 
     # 環境
     environment: str = "development"

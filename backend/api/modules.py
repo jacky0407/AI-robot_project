@@ -100,6 +100,8 @@ class ChatBotItem(_Body):
     tool_id: UUID
     display_name: str = Field(min_length=1, max_length=30)
     when_to_use: str = Field(default="", max_length=300)
+    # 學習助教（#67）：回答前先查這門課的教材與學生自己的作答紀錄（需要 migration 021）
+    use_materials: bool = False
 
 
 class ChatBotsRequest(BaseModel):
@@ -512,10 +514,14 @@ async def replace_chat_bots(
         if body.bots:
             db.table("chat_room_bots").insert([
                 {"step_id": step_id, "tool_id": str(item.tool_id), "display_name": item.display_name,
-                 "when_to_use": item.when_to_use, "sort_order": i + 1}
+                 "when_to_use": item.when_to_use, "sort_order": i + 1,
+                 # 預設值不寫：還沒跑 021 的資料庫照樣能存
+                 **({"use_materials": True} if item.use_materials else {})}
                 for i, item in enumerate(body.bots)
             ]).execute()
     except APIError as e:
+        if e.code == UNDEFINED_COLUMN and "use_materials" in str(e.message):
+            raise _migration_required("021_course_materials.sql")
         if e.code in (UNDEFINED_COLUMN, "42P01", "PGRST205"):
             raise _migration_required("020_chat_rooms.sql")
         raise

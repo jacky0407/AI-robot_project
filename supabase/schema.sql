@@ -301,6 +301,7 @@ CREATE TABLE IF NOT EXISTS public.chat_room_bots (
     display_name TEXT NOT NULL,            -- 聊天室裡顯示的名字，學生用 @名字 指名
     when_to_use TEXT NOT NULL DEFAULT '',  -- 給調度員看：學生說什麼時該它出場
     sort_order INT NOT NULL DEFAULT 0,
+    use_materials BOOLEAN NOT NULL DEFAULT false,  -- 學習助教：回答前先查教材（migration 021）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE (step_id, tool_id),
     UNIQUE (step_id, display_name)
@@ -322,6 +323,48 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_messages_thread_idx ON public.chat_messages (user_id, step_id, created_at);
+
+-- 學習助教的教材庫（migration 021，RAG）：老師的教材切段與向量；只給 service_role（pgvector 見檔案開頭）
+CREATE TABLE IF NOT EXISTS public.course_materials (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'text',   -- text：貼上或 .txt/.md；pdf/docx/pptx 由 #66 的上傳流程補上
+    char_count INT NOT NULL DEFAULT 0,
+    chunk_count INT NOT NULL DEFAULT 0,
+    created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.material_chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    material_id UUID NOT NULL REFERENCES public.course_materials(id) ON DELETE CASCADE,
+    course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,  -- 冗餘一份，搜尋時直接過濾
+    chunk_index INT NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(768) NOT NULL,
+    UNIQUE (material_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS material_chunks_course_idx ON public.material_chunks (course_id);
+
+-- 搜尋：只搜指定課程的教材（不跨課程），依餘弦相似度由高到低
+CREATE OR REPLACE FUNCTION public.match_material_chunks(
+    p_course_ids UUID[],
+    p_query vector(768),
+    p_match_count INT DEFAULT 5
+)
+RETURNS TABLE (chunk_id UUID, material_id UUID, title TEXT, chunk_index INT, content TEXT, similarity FLOAT)
+LANGUAGE sql STABLE
+SET search_path = public
+AS $$
+    SELECT c.id, c.material_id, m.title, c.chunk_index, c.content, 1 - (c.embedding <=> p_query) AS similarity
+    FROM public.material_chunks c
+    JOIN public.course_materials m ON m.id = c.material_id
+    WHERE c.course_id = ANY (p_course_ids)
+    ORDER BY c.embedding <=> p_query
+    LIMIT GREATEST(1, LEAST(p_match_count, 20));
+$$;
 
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
@@ -414,6 +457,8 @@ ALTER TABLE public.user_api_keys       ENABLE ROW LEVEL SECURITY;  -- 不建政�
 ALTER TABLE public.export_logs         ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.chat_room_bots      ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.chat_messages       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.course_materials    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.material_chunks     ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

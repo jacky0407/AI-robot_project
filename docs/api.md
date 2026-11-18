@@ -1132,6 +1132,26 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 
 ---
 
+## 五之二、學習助教的教材 (Course Materials) ✅（#67，migration 021）
+
+老師確認：學習助教接「老師的教材講義」＋「學生自己的作答紀錄」。
+- 聊天室設定裡勾 `use_materials` 的機器人就是學習助教：回答前用學生的問題搜尋**這門課**的教材（pgvector，不跨課程，相似度太低的段落不用），
+  加上學生**自己**最近的作答與回饋（教師已發布的判定優先），回答時標出引用段落；找不到就說「教材裡沒有找到」
+- SSE 多一個 `materials_used`（`sources`：引用的段落），`bot_reply.message.sources` 同一份
+- 助教的回答不算評分，不寫 `ai_evaluations`
+- 教材新增時先過個資檢查（命中 400 `PII_DETECTED`，整份不存）；向量用 `GEMINI_EMBEDDING_MODEL`（預設 `gemini-embedding-001`，768 維），一律用平台金鑰
+
+| 端點（限教師端） | 說明 |
+|---|---|
+| `GET /api/courses/:course_id/materials` | 教材清單（`title`、`char_count`、`chunk_count`…） |
+| `POST /api/courses/:course_id/materials` | `{title, content}`（最多 200,000 字）→ 切段、算向量、存入；`400 EMPTY_MATERIAL / MATERIAL_TOO_LONG / PII_DETECTED`、`502 EMBEDDING_FAILED` |
+| `GET /api/courses/:course_id/materials/:id/chunks` | 看切段結果 |
+| `DELETE /api/courses/:course_id/materials/:id` | 刪除（切段一起刪） |
+
+pdf／docx／pptx 的取文字由 #66（檔案上傳）負責，取出的文字走同一個 `core/materials.add_material()`。
+
+---
+
 ## 六、教師複核 (Review)
 
 ### `GET /api/review/pending`

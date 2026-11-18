@@ -32,6 +32,8 @@ class ChatBot:
     when_to_use: str = ""
     system_prompt: str = ""
     role_instruction: str = ""
+    # 學習助教（#67）：回答前先查課程教材與學生自己的作答紀錄
+    use_materials: bool = False
 
 
 @dataclass
@@ -91,7 +93,10 @@ class RouterAgent:
 class ChatBotAgent:
     """被選中的機器人回覆一則訊息"""
 
-    async def reply(self, bot: ChatBot, others: list[ChatBot], history: list[ChatTurn], message: str) -> str:
+    async def reply(
+        self, bot: ChatBot, others: list[ChatBot], history: list[ChatTurn], message: str, context: str = ""
+    ) -> str:
+        """context：學習助教查到的教材與作答紀錄（core/materials.context_block），沒有就空字串"""
         roster = "、".join(b.name for b in others if b.tool_id != bot.tool_id) or "（沒有）"
         system = "\n\n".join(part for part in [
             (bot.system_prompt or "").strip(),
@@ -100,6 +105,7 @@ class ChatBotAgent:
             f"聊天室裡的其他機器人：{roster}。學生可以用 @名字 找特定的機器人。\n"
             "只回答屬於你角色的部分；學生的問題比較適合別的機器人時，簡短建議學生 @ 那個機器人。"
             "用繁體中文回答，口吻像老師在對話，不要打分數。",
+            context,
         ] if part)
 
         messages = [SystemMessage(content=system)]

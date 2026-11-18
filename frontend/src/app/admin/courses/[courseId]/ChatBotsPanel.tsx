@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { ApiError, apiFetch } from "@/utils/api";
 import type { Tool } from "./ModuleEditor";
 
-type BotRow = { tool_id: string; display_name: string; when_to_use: string };
+type BotRow = { tool_id: string; display_name: string; when_to_use: string; use_materials: boolean };
 
 const input: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "7px 9px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "12px", outline: "none" };
 const smallBtn: React.CSSProperties = { padding: "4px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "transparent", color: "#cbd5e1", cursor: "pointer" };
@@ -34,7 +34,7 @@ export default function ChatBotsPanel({ moduleId, stepId, evaluatorToolId, evalu
     apiFetch<{ data: BotRow[] }>(url).then(
       (res) => {
         if (!active) return;
-        const loaded = res.data.map((r) => ({ tool_id: r.tool_id, display_name: r.display_name, when_to_use: r.when_to_use ?? "" }));
+        const loaded = res.data.map((r) => ({ tool_id: r.tool_id, display_name: r.display_name, when_to_use: r.when_to_use ?? "", use_materials: Boolean(r.use_materials) }));
         setRows(loaded);
         setSaved(JSON.stringify(loaded));
       },
@@ -60,7 +60,7 @@ export default function ChatBotsPanel({ moduleId, stepId, evaluatorToolId, evalu
     setNotice(null);
     try {
       const res = await apiFetch<{ data: BotRow[] }>(url, { method: "PUT", body: JSON.stringify({ bots: rows }) });
-      const loaded = res.data.map((r) => ({ tool_id: r.tool_id, display_name: r.display_name, when_to_use: r.when_to_use ?? "" }));
+      const loaded = res.data.map((r) => ({ tool_id: r.tool_id, display_name: r.display_name, when_to_use: r.when_to_use ?? "", use_materials: Boolean(r.use_materials) }));
       setRows(loaded);
       setSaved(JSON.stringify(loaded));
       setNotice({ text: "已儲存聊天室的機器人", ok: true });
@@ -94,13 +94,17 @@ export default function ChatBotsPanel({ moduleId, stepId, evaluatorToolId, evalu
           <button type="button" onClick={() => setRows(rows.filter((_, j) => j !== i))} style={{ ...smallBtn, color: "#f87171" }}>
             移除
           </button>
+          <label style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#94a3b8", cursor: "pointer" }}>
+            <input type="checkbox" checked={r.use_materials} onChange={(e) => update(i, { use_materials: e.target.checked })} />
+            學習助教：回答前先查這門課的「教材」與學生自己的作答紀錄，並標出引用段落
+          </label>
         </div>
       ))}
       <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
         <button
           type="button"
           disabled={rows.length >= MAX_BOTS}
-          onClick={() => setRows([...rows, { tool_id: "", display_name: "", when_to_use: "" }])}
+          onClick={() => setRows([...rows, { tool_id: "", display_name: "", when_to_use: "", use_materials: false }])}
           style={{ ...smallBtn, opacity: rows.length >= MAX_BOTS ? 0.4 : 1 }}
         >
           ＋ 加入機器人

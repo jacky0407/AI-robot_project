@@ -26,6 +26,8 @@ type ChatMessage = {
   content: string;
   routed_by?: string | null;
   attempt_id?: string | null;
+  // 學習助教引用的教材段落（#67）
+  sources?: string[];
 };
 
 const MAX_CHARS = 2000;
@@ -89,6 +91,8 @@ export default function ChatRoom({
             setText("");
           } else if (event === "bot_selected") {
             setBusy(`${String(data.bot_name ?? "機器人")} 回覆中…`);
+          } else if (event === "materials_used") {
+            setBusy((b) => `${b.replace("回覆中…", "")}查過教材，回覆中…`);
           } else if (event === "bot_reply") {
             setMessages((prev) => [...prev, data.message as ChatMessage]);
           } else if (event === "error") {
@@ -162,6 +166,9 @@ export default function ChatRoom({
             >
               {m.content}
             </div>
+            {m.sources && m.sources.length > 0 && (
+              <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "3px" }}>參考教材：{m.sources.join("、")}</div>
+            )}
           </div>
         ))}
         {busy && <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>{busy}</p>}

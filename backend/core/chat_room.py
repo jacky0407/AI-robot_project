@@ -14,7 +14,9 @@ from typing import Optional
 
 from core.ai.agents.chat_agents import ChatBot, ChatTurn
 
-BOT_SELECT = "id, tool_id, display_name, when_to_use, sort_order, ai_tools(id, title, system_prompt, role_instruction, status)"
+BOT_SELECT_020 = "id, tool_id, display_name, when_to_use, sort_order, ai_tools(id, title, system_prompt, role_instruction, status)"
+# migration 021：學習助教（會查教材的機器人）
+BOT_SELECT = BOT_SELECT_020.replace("sort_order,", "sort_order, use_materials,")
 MESSAGE_SELECT = "id, role, tool_id, bot_name, content, routing, attempt_id, created_at"
 
 # 一次讀進來的對話則數（畫面與 prompt 共用）；評分時讀整串
@@ -50,9 +52,19 @@ def evaluator_bot(step: dict) -> Optional[ChatBot]:
     )
 
 
+def _select_bots(db, step_id: str):
+    """還沒跑 021（沒有 use_materials）時退回舊欄位：聊天室照常，只是沒有學習助教"""
+    try:
+        return db.table("chat_room_bots").select(BOT_SELECT).eq("step_id", step_id).order("sort_order").execute()
+    except Exception as e:  # noqa: BLE001
+        if getattr(e, "code", None) != UNDEFINED_COLUMN or "use_materials" not in str(e):
+            raise
+        return db.table("chat_room_bots").select(BOT_SELECT_020).eq("step_id", step_id).order("sort_order").execute()
+
+
 def load_bots(db, step_id: str, *, published_only: bool = True) -> list[ChatBot]:
     """聊天室的對話機器人（不含評分機器人），依 sort_order；已封存或未發布的機器人學生端不出現"""
-    res = db.table("chat_room_bots").select(BOT_SELECT).eq("step_id", step_id).order("sort_order").execute()
+    res = _select_bots(db, step_id)
     bots = []
     for row in sorted(res.data or [], key=lambda r: r.get("sort_order") or 0):
         tool = row.get("ai_tools") or {}
@@ -64,13 +76,14 @@ def load_bots(db, step_id: str, *, published_only: bool = True) -> list[ChatBot]
             when_to_use=row.get("when_to_use") or "",
             system_prompt=tool.get("system_prompt") or "",
             role_instruction=tool.get("role_instruction") or "",
+            use_materials=bool(row.get("use_materials")),
         ))
     return bots
 
 
 def load_bot_rows(db, step_id: str) -> list[dict]:
     """教師端設定頁用：原始的 chat_room_bots（含機器人名稱與狀態）"""
-    res = db.table("chat_room_bots").select(BOT_SELECT).eq("step_id", step_id).order("sort_order").execute()
+    res = _select_bots(db, step_id)
     rows = sorted(res.data or [], key=lambda r: r.get("sort_order") or 0)
     return [{
         "id": r.get("id"),
@@ -78,6 +91,7 @@ def load_bot_rows(db, step_id: str) -> list[dict]:
         "display_name": r.get("display_name"),
         "when_to_use": r.get("when_to_use") or "",
         "sort_order": r.get("sort_order") or 0,
+        "use_materials": bool(r.get("use_materials")),
         "tool_title": (r.get("ai_tools") or {}).get("title"),
         "tool_status": (r.get("ai_tools") or {}).get("status"),
     } for r in rows]
@@ -151,6 +165,8 @@ def public_message(row: dict) -> dict:
         "tool_id": row.get("tool_id"),
         "content": row.get("content"),
         "routed_by": routing.get("by"),
+        # 學習助教引用的教材段落（例如「IEP 撰寫指引・第 2 段」）
+        "sources": routing.get("sources") or [],
         "attempt_id": row.get("attempt_id"),
         "created_at": row.get("created_at"),
     }
