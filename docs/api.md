@@ -730,6 +730,48 @@
 
 ## 四、AI 工具管理 (Tools)
 
+### 已實作：機器人建立、修改與版本（`/api/teacher/tools`，migration 022）
+
+實作在 `backend/api/teacher.py`。下方 `/api/tools` 系列是早期規劃，以這一段為準。
+
+| 權限 | 方法與路徑 | 說明 |
+|------|-----------|------|
+| HOST、ASSISTANT | `GET /api/teacher/tools` | 全部機器人，每支附 `can_edit`（目前登入者能不能改） |
+| HOST、ASSISTANT | `GET /api/teacher/tools/:tool_id` | 單一機器人完整設定（編輯頁用），附 `can_edit`、`attempt_count`（已有幾筆作答用過它） |
+| HOST、ASSISTANT | `POST /api/teacher/tools` | 建立（第 1 版），`created_by` 一律是登入者，回 201 |
+| 建立者、HOST | `PATCH /api/teacher/tools/:tool_id` | 修改，只送要改的欄位 |
+| HOST | `DELETE /api/teacher/tools/:tool_id` | 刪除；已排進關卡回 409 `TOOL_IN_USE` |
+
+**可建立／修改的欄位**：`title`、`domain`、`target_competency`、`role_instruction`、`system_prompt`、`teaching_strategy`、`rubric_criteria`（可以是空陣列 = 不評分、只給文字回饋，見 #65；`dimension` 不可重複，可帶額外欄位如 `levels`）、`scale_type`（`4_point` / `5_point` / `100_point` / `pass_fail`）、`error_taxonomy`。建立時另可帶 `status`（`draft` / `published`，預設 `published`）。
+
+**版本規則：**
+- 內容有改才升版：`version` + 1，`updated_by` / `updated_at` 記修改者；內容沒變回 `changed: false`，不升版
+- 每一版的完整內容存在 `ai_tool_versions`（只給後端），舊版不會被覆蓋
+- 每筆 `ai_evaluations.tool_version` 記評分當時的版本，研究時用 `(tool_id, version)` 查當時的規準
+- PATCH 可帶 `expected_version`（打開編輯頁時看到的版本）；之後別人已存新版 → 409 `VERSION_CONFLICT`
+
+**PATCH 回應：**
+```json
+{
+  "data": { "id": "…", "version": 3, "...": "…" },
+  "changed": true,
+  "rubric_changed": true,
+  "attempt_count": 12
+}
+```
+> `rubric_changed`：這次改了 `rubric_criteria` 或 `scale_type`。舊的評分**不會重算**；`attempt_count > 0` 時前端要提醒老師（編輯頁儲存前已會確認）。
+
+| 情況 | 回應 |
+|------|------|
+| 不是建立者也不是教授 | 403 `PERMISSION_DENIED` |
+| 機器人不存在 | 404 `TOOL_NOT_FOUND` |
+| 版本已被別人更新 | 409 `VERSION_CONFLICT` |
+| 欄位空白、規準名稱空白或重複、級距不合法 | 422 |
+
+> 誰可以修改目前是「建立者 + 教授」，待老師確認；要改只動 `can_edit_tool()`。
+
+---
+
 ### `GET /api/tools`
 **權限**：HOST, ASSISTANT, STUDENT
 
