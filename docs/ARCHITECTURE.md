@@ -70,7 +70,7 @@ Summer_project/
 ├── supabase/
 │   ├── schema.sql              21 張表 + 觸發器（已同步 migrations）
 │   ├── seed.sql                示範資料（只限本機）
-│   ├── migrations/             001–018（016 未使用），可重複執行
+│   ├── migrations/             001–022（016 保留不用），可重複執行
 │   └── practice_repo.py        ⚠️ 已停用，沒有任何地方 import
 └── docs/
 ```
@@ -236,7 +236,8 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | 013 | 一門課多組邀請碼（`course_invite_codes`） |
 | 014 | 註冊一律建立成學生 |
 | 015 | 學習者側寫 `learner_profiles`、`ai_evaluations.memory_snapshot` |
-| 017 | 學生自備金鑰 `user_api_keys`（016 未使用） |
+| 016 | 保留不用（空檔，原本給已關閉的 #53） |
+| 017 | 學生自備金鑰 `user_api_keys` |
 | 018 | 匯出紀錄 `export_logs` |
 
 **種子資料固定 UUID**：
