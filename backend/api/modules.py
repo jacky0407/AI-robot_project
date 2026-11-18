@@ -44,6 +44,9 @@ STEP_FIELDS = (
 )
 # migration 019 才有的欄位：還沒跑時讀步驟照常運作（當作 score），只有要設定它時才回 503
 STEP_FIELDS_019 = STEP_FIELDS + ", pass_mode"
+# migration 020：聊天室關卡
+STEP_FIELDS_020 = STEP_FIELDS_019 + ", step_type"
+STEP_TYPES = ("answer", "chat")
 PASS_MODES = ("score", "complete", "teacher_review")
 
 DEFAULT_DOMAIN = "學前IEP"
@@ -78,6 +81,8 @@ class CreateStepRequest(_Body):
     require_teacher_review: bool = False
     # 怎麼算通過（#65）：score 看分數、complete 作答即通過、teacher_review 教師複核後通過
     pass_mode: Literal["score", "complete", "teacher_review"] = "score"
+    # answer = 原本的作答關卡；chat = 多機器人聊天室（#68），tool_id 是聊天室的評分機器人
+    step_type: Literal["answer", "chat"] = "answer"
 
 
 class UpdateStepRequest(_Body):
@@ -88,6 +93,17 @@ class UpdateStepRequest(_Body):
     require_teacher_review: Optional[bool] = None
     is_active: Optional[bool] = None
     pass_mode: Optional[Literal["score", "complete", "teacher_review"]] = None
+    step_type: Optional[Literal["answer", "chat"]] = None
+
+
+class ChatBotItem(_Body):
+    tool_id: UUID
+    display_name: str = Field(min_length=1, max_length=30)
+    when_to_use: str = Field(default="", max_length=300)
+
+
+class ChatBotsRequest(BaseModel):
+    bots: list[ChatBotItem] = Field(max_length=8)
 
 
 class ReorderStepsRequest(BaseModel):
@@ -136,11 +152,16 @@ def _load_steps(db, module_id: str) -> list[dict]:
     def query(fields: str):
         return db.table("module_steps").select(fields).eq("module_id", module_id).order("step_order")
 
-    try:
-        res = query(STEP_FIELDS_019).execute()
-    except APIError as e:
-        if e.code != UNDEFINED_COLUMN or "pass_mode" not in str(e.message):
-            raise
+    # 新欄位依 migration 逐層退回：沒跑 020 就不讀 step_type、沒跑 019 就不讀 pass_mode
+    res = None
+    for fields, column in ((STEP_FIELDS_020, "step_type"), (STEP_FIELDS_019, "pass_mode")):
+        try:
+            res = query(fields).execute()
+            break
+        except APIError as e:
+            if e.code != UNDEFINED_COLUMN or column not in str(e.message):
+                raise
+    if res is None:
         res = _execute(query(STEP_FIELDS))
     return sorted(res.data or [], key=lambda s: s.get("step_order") or 0)
 
@@ -184,6 +205,7 @@ def _step_output(step: dict, tools: dict[str, dict], counts: dict[str, int]) -> 
         **step,
         "is_active": step.get("is_active", True),
         "pass_mode": step.get("pass_mode") if step.get("pass_mode") in PASS_MODES else "score",
+        "step_type": step.get("step_type") if step.get("step_type") in STEP_TYPES else "answer",
         "tool_title": tool.get("title"),
         "tool_status": tool.get("status"),
         "attempt_count": attempts,
@@ -341,12 +363,15 @@ async def add_step(module_id: UUID, body: CreateStepRequest, user: CurrentUser =
             "require_teacher_review": body.require_teacher_review,
             # 預設值不寫：還沒跑 019 的資料庫照樣能新增步驟
             **({"pass_mode": body.pass_mode} if body.pass_mode != "score" else {}),
+            **({"step_type": body.step_type} if body.step_type != "answer" else {}),
         }).execute()
     except APIError as e:
         if e.code == UNIQUE_VIOLATION:
             raise _error(status.HTTP_409_CONFLICT, "ORDER_CONFLICT", "步驟順序剛好被別人改了，請重新整理後再試")
         if e.code == UNDEFINED_COLUMN and "pass_mode" in str(e.message):
             raise _migration_required("019_step_pass_mode.sql")
+        if e.code == UNDEFINED_COLUMN and "step_type" in str(e.message):
+            raise _migration_required("020_chat_rooms.sql")
         raise
 
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
@@ -384,6 +409,8 @@ async def update_step(
     try:
         _execute(db.table("module_steps").update(changes).eq("id", step_id))
     except HTTPException:
+        if "step_type" in changes:
+            raise _migration_required("020_chat_rooms.sql")
         if "pass_mode" in changes:
             raise _migration_required("019_step_pass_mode.sql")
         raise
@@ -430,3 +457,77 @@ async def reorder_steps(module_id: UUID, body: ReorderStepsRequest, user: Curren
 
     _execute(db.rpc("reorder_module_steps", {"p_module_id": module_id, "p_step_ids": wanted}))
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
+
+
+# ──────────────────────────────────────────
+# 聊天室的機器人（#68，migration 020）
+# ──────────────────────────────────────────
+
+@router.get("/{module_id}/steps/{step_id}/chat-bots")
+async def get_chat_bots(module_id: UUID, step_id: UUID, user: CurrentUser = Depends(require_staff)):
+    """聊天室關卡的對話機器人（評分機器人是步驟本身的 tool_id，不在清單裡）"""
+    db = get_supabase()
+    module_id, step_id = str(module_id), str(step_id)
+    _get_module_or_404(db, module_id)
+    _get_step_or_404(db, module_id, step_id)
+    return {"data": _chat_bot_rows(db, step_id)}
+
+
+@router.put("/{module_id}/steps/{step_id}/chat-bots")
+async def replace_chat_bots(
+    module_id: UUID,
+    step_id: UUID,
+    body: ChatBotsRequest,
+    user: CurrentUser = Depends(require_staff),
+):
+    """
+    整份換掉聊天室的對話機器人（新增、刪除、改名、改出場時機、排序都走這裡）。
+    已有的對話不受影響：chat_messages 只記當時回答的機器人名稱。
+    """
+    _require_owner(user)
+    db = get_supabase()
+    module_id, step_id = str(module_id), str(step_id)
+    _get_module_or_404(db, module_id)
+    step = _get_step_or_404(db, module_id, step_id)
+
+    evaluator = _load_tools(db, [step["tool_id"]]).get(step["tool_id"]) or {}
+    names, tool_ids = set(), set()
+    for item in body.bots:
+        tool_id = str(item.tool_id)
+        if tool_id == step["tool_id"]:
+            raise _error(status.HTTP_400_BAD_REQUEST, "EVALUATOR_IN_LIST",
+                         "評分機器人已經在聊天室裡（關卡的機器人），不用再加一次")
+        if tool_id in tool_ids:
+            raise _error(status.HTTP_400_BAD_REQUEST, "DUPLICATE_TOOL", "同一支機器人只能加一次")
+        key = item.display_name.lower()
+        if key in names or key == (evaluator.get("title") or "").strip().lower():
+            raise _error(status.HTTP_400_BAD_REQUEST, "DUPLICATE_NAME",
+                         f"名稱「{item.display_name}」重複了：學生用 @名稱 指名，名稱不能一樣")
+        _get_usable_tool(db, tool_id)
+        names.add(key)
+        tool_ids.add(tool_id)
+
+    try:
+        db.table("chat_room_bots").delete().eq("step_id", step_id).execute()
+        if body.bots:
+            db.table("chat_room_bots").insert([
+                {"step_id": step_id, "tool_id": str(item.tool_id), "display_name": item.display_name,
+                 "when_to_use": item.when_to_use, "sort_order": i + 1}
+                for i, item in enumerate(body.bots)
+            ]).execute()
+    except APIError as e:
+        if e.code in (UNDEFINED_COLUMN, "42P01", "PGRST205"):
+            raise _migration_required("020_chat_rooms.sql")
+        raise
+    return {"data": _chat_bot_rows(db, step_id)}
+
+
+def _chat_bot_rows(db, step_id: str) -> list[dict]:
+    from core.chat_room import load_bot_rows, migration_missing
+
+    try:
+        return load_bot_rows(db, step_id)
+    except Exception as e:  # noqa: BLE001
+        if migration_missing(e):
+            raise _migration_required("020_chat_rooms.sql")
+        raise

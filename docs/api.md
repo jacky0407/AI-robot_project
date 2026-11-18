@@ -1095,6 +1095,43 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 
 ---
 
+## 五之一、多機器人聊天室 (Chat Room) ✅（#68，migration 020）
+
+聊天室關卡（`module_steps.step_type = 'chat'`）取代「寫完一份作答再送出」：學生一則一則對話，**每則只由一個機器人回答**。
+參考 ChatGPT 網頁版用 @ 叫出不同 GPTs：所有機器人共用同一段對話。
+
+- **評分機器人** = 關卡本身的 `module_steps.tool_id`；學生 `@評分機器人名稱` 或按「送出評分」時評整段對話，
+  結果照舊寫 `step_attempts`（`user_input_content` = 對話紀錄、`structured_data.source = "chat"`）與 `ai_evaluations`，
+  通過方式看 `pass_mode`；教師判定寫 `teacher_reviews`，兩者分開
+- **對話機器人** = `chat_room_bots`（名稱、出場時機）；學生 `@名稱` 指定，沒指定時調度員依內容選一個（只有一個時直接由它回答）
+- **每日次數按每一則學生訊息扣一次**；個資命中 400，不存、不扣
+- 對話存在 `chat_messages`（`routing.by` = `mention` / `router` / `only_bot` / `evaluate`），只給後端讀寫
+
+### `GET /api/chat/steps/:step_id`
+不是聊天室的關卡回 `{"data": {"chat": false}}`。聊天室回 `chat`、`bots[]`（`tool_id`, `name`, `when_to_use`；只列已發布的）、
+`evaluator`（`tool_id`, `name`）、`pass_mode`、`scoring`、`messages[]`（只有自己的）、`quota`。
+
+### `POST /api/chat/sessions/:session_id/steps/:step_id/messages`（SSE）
+Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate: true` 可不帶 content（「送出評分」按鈕）。
+
+| 事件 | 內容 |
+|------|------|
+| `message_saved` | `message`（學生這則；只按送出評分時為 null）、`quota` |
+| `bot_selected` | `tool_id`, `bot_name`, `by`, `reason` |
+| `bot_reply` | `message`（機器人回覆；評分時是評分摘要，帶 `attempt_id`） |
+| 評分時另有 | `score_start`、`analysis_start`、`dimension_score`、`score_complete` 或 `feedback_complete`、`pass_status`（同作答關卡） |
+| `error` / `quota_refunded` | 回覆失敗時退回這次次數 |
+
+錯誤：`400 PII_DETECTED`、`400 NOT_CHAT_STEP`、`400 EMPTY_MESSAGE`、`400 NO_CHAT_BOTS`（沒有對話機器人又不是要評分）、
+`403`（沒被指派、沒解鎖、Session 不是自己的）、`429 QUOTA_EXCEEDED`、`503 MIGRATION_REQUIRED`。
+
+### 教師端：`GET` / `PUT /api/modules/:module_id/steps/:step_id/chat-bots`
+`PUT` 整份換掉：`{"bots": [{"tool_id", "display_name"（1–30 字）, "when_to_use"（≤300 字）}]}`，最多 8 個，只限教授。
+評分機器人不能再加進清單（`EVALUATOR_IN_LIST`）、名稱不能重複也不能和評分機器人同名（`DUPLICATE_NAME`）、同一支機器人只能加一次（`DUPLICATE_TOOL`）。
+新增步驟時帶 `step_type: "chat"` 就是聊天室關卡（需要 migration 020）。
+
+---
+
 ## 六、教師複核 (Review)
 
 ### `GET /api/review/pending`
