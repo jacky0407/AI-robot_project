@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS public.module_steps (
     require_teacher_review BOOLEAN DEFAULT false, -- 是否為教師強制審核點
     pass_forward_keys JSONB DEFAULT '[]'::jsonb,  -- 需傳給下一步的欄位 key
     is_active BOOLEAN NOT NULL DEFAULT true, -- false = 已停用：學生看不到、不能作答，作答保留（migration 010）
+    pass_mode TEXT NOT NULL DEFAULT 'score' CHECK (pass_mode IN ('score', 'complete', 'teacher_review')), -- 怎麼算通過（migration 019）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(module_id, step_order)
 );

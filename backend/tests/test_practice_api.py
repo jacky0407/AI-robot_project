@@ -326,7 +326,8 @@ class TestFirstAttempt:
         names = [e for e, _ in events]
         assert names[0] == "score_start"
         assert "tutor_decision" in names
-        assert names[-1] == "score_complete"
+        # 評分完最後補一個 pass_status（依關卡通過方式算的最終結果，#65）
+        assert names[-2:] == ["score_complete", "pass_status"]
 
     def test_first_attempt_does_not_query_prompt_logs(self):
         """

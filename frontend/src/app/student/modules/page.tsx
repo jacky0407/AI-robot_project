@@ -68,6 +68,10 @@ type RunState = {
   escalation?: string;
   errors: DetectedError[];
   failure?: string;
+  // 沒有評分規準的機器人只給文字回饋、不評分（#65）
+  feedback?: string;
+  // 依關卡通過方式算出的最終結果（score_complete.passed 只代表 AI 分數有沒有過門檻）
+  pass?: { pass_mode: string; status: string; passed: boolean; awaiting_teacher: boolean };
 };
 const EMPTY_RUN: RunState = { dimensions: [], errors: [] };
 
@@ -414,15 +418,20 @@ function StudentWorkspace() {
           return { ...r, escalation: String(data.message ?? "") };
         case "errors_detected":
           return { ...r, errors: (data.errors as DetectedError[]) ?? [] };
+        case "feedback_complete":
+          return { ...r, feedback: String(data.feedback ?? "") };
+        case "pass_status":
+          return { ...r, pass: data as unknown as NonNullable<RunState["pass"]> };
         case "error":
           return { ...r, failure: `${String(data.message ?? "AI 評分失敗")}，請稍後再試。` };
         default:
           return r;
       }
     });
-    if (event === "score_complete" && selectedStep) {
-      const passed = Boolean(data.passed);
-      setStatusByStep((prev) => ({ ...prev, [selectedStep.id]: passed ? "passed" : "revision_required" }));
+    // 是否通過以 pass_status 為準：關卡可能是「作答即通過」或「教師複核後通過」（#65）
+    if (event === "pass_status" && selectedStep) {
+      const status = String(data.status ?? "submitted");
+      setStatusByStep((prev) => ({ ...prev, [selectedStep.id]: status as AttemptStatus }));
     }
   };
 
@@ -670,6 +679,23 @@ function StudentWorkspace() {
               {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.12)" }}>{run.escalation}</div>}
               {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "#a5b4fc" }}>AI 給了一則提示，請看上方「分層提示」。</p>}
 
+              {run?.feedback && (
+                <div style={{ padding: "16px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)" }}>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>這個關卡不評分，以下是 AI 的回饋</p>
+                  <p style={{ margin: "8px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{run.feedback}</p>
+                </div>
+              )}
+
+              {run?.pass && run.pass.pass_mode !== "score" && (
+                <p style={{ margin: 0, fontSize: "13px", color: run.pass.passed ? "#4ade80" : "#fbbf24" }}>
+                  {run.pass.passed
+                    ? "✓ 這個關卡送出作答即通過"
+                    : run.pass.awaiting_teacher
+                      ? "已送出，等老師複核後才會通過"
+                      : "這次還沒通過，請修改後再送出"}
+                </p>
+              )}
+
               {run?.score && (
                 <div
                   style={{
@@ -684,7 +710,11 @@ function StudentWorkspace() {
                       {Math.round(run.score.percentage ?? run.score.total_score)} 分
                     </span>
                     <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "#fff", backgroundColor: run.score.passed ? "#22c55e" : "#ef4444" }}>
-                      {run.score.passed ? "✓ 已達通過門檻" : "✕ 尚未達標，請依回饋修改"}
+                      {run.pass && run.pass.pass_mode !== "score"
+                        ? "AI 分數僅供參考"
+                        : run.score.passed
+                          ? "✓ 已達通過門檻"
+                          : "✕ 尚未達標，請依回饋修改"}
                     </span>
                   </div>
                   {run.score.overall_feedback && (
@@ -806,7 +836,7 @@ function StudentWorkspace() {
               prev={prevItem}
               next={nextItem}
               nextLockedReason={nextLockedReason}
-              justPassed={Boolean(run?.score?.passed) || (selectedStep ? statusByStep[selectedStep.id] === "passed" : false)}
+              justPassed={(run?.pass ? run.pass.passed : Boolean(run?.score?.passed)) || (selectedStep ? statusByStep[selectedStep.id] === "passed" : false)}
               onGo={(item) => goToStep(item.moduleId, item.step)}
               onOverview={() => router.push(backHref)}
               overviewLabel={courseId ? "回到課程簡介" : "回到自主探索"}

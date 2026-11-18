@@ -700,7 +700,7 @@
 | `GET /api/modules/:module_id` | 模組與全部步驟（含停用）；每步附 `tool_title`、`tool_status`、`attempt_count`、`can_delete` |
 | `PATCH /api/modules/:module_id` | 修改 `title` / `description` / `domain` / `is_published` |
 | `DELETE /api/modules/:module_id` | 刪除模組（會一併取消課程指派） |
-| `POST /api/modules/:module_id/steps` | 在最後新增步驟 `{tool_id, step_title, is_required?, pass_score?, require_teacher_review?}` |
+| `POST /api/modules/:module_id/steps` | 在最後新增步驟 `{tool_id, step_title, is_required?, pass_score?, require_teacher_review?, pass_mode?}`；`pass_mode` = `score`（預設）／`complete`／`teacher_review`，非預設值需要 migration 019 |
 | `PATCH /api/modules/:module_id/steps/:step_id` | 修改步驟；停用／啟用用 `{is_active: false/true}` |
 | `DELETE /api/modules/:module_id/steps/:step_id` | 刪除步驟，其餘步驟重新編號 1、2、3… |
 | `PUT /api/modules/:module_id/steps/order` | 重排 `{step_ids: [...]}`，必須剛好是模組的全部步驟 |

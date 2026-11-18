@@ -159,6 +159,8 @@
 | `analysis_start` | `total_dimensions` |
 | `dimension_score` | `dimension`, `score`, `max_score`, `weight`, `reason`, `evidence`, `progress` |
 | `score_complete` | `total_score`(0–100), `max_total_score`(100), `percentage`, `passed`, `overall_feedback`, `confidence`, `needs_teacher_review`, `dimension_scores` |
+| `feedback_complete` | `feedback`：機器人沒有評分規準時只給這段文字回饋，不會有 `score_complete`（#65） |
+| `pass_status` | `pass_mode`, `status`, `passed`, `awaiting_teacher`：依關卡通過方式算出的最終結果，評分或回饋後一定會送；`score_complete.passed` 只代表 AI 分數有沒有過門檻 |
 | `hint` | `level`, `content`, `trigger`, `source`, `is_example`, `warning?`, `dimension?` |
 | `encouragement` | `message` |
 | `escalation` | `message`, `suggest_teacher_review` |
@@ -285,8 +287,20 @@ GET /api/practice/sessions/{session_id}/hints?user_id=&step_id=&reveal=false
 | `escalated` | `step_attempts.tutor_action = 'escalate'`（TutorAgent 建議找老師） |
 | `low_confidence` | `ai_evaluations.needs_teacher_review`（信心值 < 0.7） |
 | `step_requires_review` | `module_steps.require_teacher_review`（教授設定的強制審核點） |
+| `awaiting_teacher_pass` | 關卡設成「老師複核後才通過」（`module_steps.pass_mode = 'teacher_review'`），作答還在 submitted |
 
 `/api/review/submissions/{id}` 也會回傳 `confidence`、`needs_teacher_review`、`detected_errors` 與 `tutor_action`。
+
+---
+
+### 評分規準可選與關卡通過方式（#65，migration 019）
+
+- 機器人可以不填評分規準：送出作答時只呼叫一次 LLM（`core/ai/agents/feedback_agent.py`）給文字回饋，
+  不寫 `ai_evaluations`（不產生分數），回饋存在 `step_attempts.structured_data.ai_feedback`，記憶與複核頁都讀得到
+- `module_steps.pass_mode`（規則在 `core/pass_mode.py`）：
+  `score` 分數達門檻（預設）、`complete` 送出即通過、`teacher_review` 老師複核後才通過
+- 機器人沒有評分規準卻設成 `score` → 當作 `complete`（沒有分數可以比門檻）
+- 結果一律寫進 `step_attempts.status`，解鎖、記憶、側寫、監控照舊只讀 status 與已發布的教師分數
 
 ---
 

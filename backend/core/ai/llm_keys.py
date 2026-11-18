@@ -41,3 +41,25 @@ def build_llm(api_key: str, temperature: float):
         google_api_key=api_key,
         temperature=temperature,
     )
+
+
+_platform_llms: dict = {}
+
+
+def chat_llm(temperature: float):
+    """
+    這次請求要用的 Gemini client：有自備金鑰就用學生的（不快取），否則用平台金鑰（依溫度各快取一個）。
+
+    新的 Agent 都用這個，不用再各自寫一份 llm 屬性。
+    """
+    key = override_api_key()
+    if key:
+        return build_llm(key, temperature=temperature)
+    if temperature not in _platform_llms:
+        from core.config import get_settings
+
+        settings = get_settings()
+        if not settings.gemini_api_key:
+            raise ValueError("GEMINI_API_KEY 未設定")
+        _platform_llms[temperature] = build_llm(settings.gemini_api_key, temperature=temperature)
+    return _platform_llms[temperature]

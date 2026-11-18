@@ -94,6 +94,8 @@ function NewToolForm() {
   ])
 
   const [scaleType, setScaleType] = useState('4_point')
+  // 評分規準可以不填（#65）：關掉時這個機器人只給文字回饋、不打分數
+  const [scoringEnabled, setScoringEnabled] = useState(true)
 
   const [hints, setHints] = useState<HintItem[]>([])
   const [maxAutoHints, setMaxAutoHints] = useState(2)
@@ -147,7 +149,7 @@ function NewToolForm() {
       target_competency: targetCompetency,
       role_instruction: roleInstruction,
       system_prompt: systemPrompt,
-      rubric_criteria: rubrics,
+      rubric_criteria: scoringEnabled ? rubrics : [],
       scale_type: scaleType,
       teaching_strategy: {
         ...(hints.length
@@ -267,14 +269,26 @@ function NewToolForm() {
           {/* 評分規準 */}
           <section style={panel}>
             <SectionHead
-              title={`評分規準（總配分 ${totalRubricScore} 分）`}
-              desc="每個評分項目的配分是它的權重；AI 依說明逐項評分，總分一律換算成 0–100。"
+              title={scoringEnabled ? `評分規準（總配分 ${totalRubricScore} 分）` : '評分規準（不評分）'}
+              desc={
+                scoringEnabled
+                  ? '每個評分項目的配分是它的權重；AI 依說明逐項評分，總分一律換算成 0–100。'
+                  : '這個機器人只給文字回饋、不打分數。關卡要怎麼算通過，在模組管理的關卡設定裡選。'
+              }
               action={
-                <button type="button" onClick={handleAddRubric} style={addBtn}>
-                  ＋ 新增評分項目
-                </button>
+                scoringEnabled ? (
+                  <button type="button" onClick={handleAddRubric} style={addBtn}>
+                    ＋ 新增評分項目
+                  </button>
+                ) : undefined
               }
             />
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: '13px', color: '#cbd5e1' }}>
+              <input type="checkbox" checked={scoringEnabled} onChange={(e) => setScoringEnabled(e.target.checked)} />
+              這個機器人要評分
+            </label>
+            {scoringEnabled && (
+            <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {rubrics.map((r, idx) => (
                 <div key={idx} className="tf-rubric" style={{ ...item, display: 'grid', gridTemplateColumns: '1fr 80px 2fr auto', gap: '8px', alignItems: 'center' }}>
@@ -310,6 +324,8 @@ function NewToolForm() {
                 ))}
               </select>
             </label>
+            </>
+            )}
           </section>
 
           {/* 分層提示 */}
@@ -388,7 +404,7 @@ function NewToolForm() {
                   </select>
                   <select value={er.related_dimension} onChange={(e) => updateError(idx, { related_dimension: e.target.value })} style={select}>
                     <option value="">（不指定評分項目）</option>
-                    {rubrics.map((r) => (
+                    {(scoringEnabled ? rubrics : []).map((r) => (
                       <option key={r.dimension} value={r.dimension}>
                         {r.dimension}
                       </option>

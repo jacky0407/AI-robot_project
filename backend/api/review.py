@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 
 from core.auth import CurrentUser, require_staff
 from core.learner_profile import refresh_learner_profile
+from core.pass_mode import effective_pass_mode, has_rubric, status_after_review
+from core.step_unlock import DEFAULT_PASS_SCORE
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,8 @@ UNDEFINED_COLUMN = "42703"
 PENDING_SELECT = (
     "id, created_at, status, attempt_number, user_id, user_input_content, tutor_action, "
     "profiles(full_name, email), "
-    "module_steps(module_id, step_title, tool_id, require_teacher_review, ai_tools(title)), "
+    # module_steps 用 *：跑過 019 才有 pass_mode，沒跑過也不會因為欄位不存在而失敗
+    "module_steps(*, ai_tools(title, rubric_criteria)), "
     "ai_evaluations(id, total_score, feedback_text, confidence, needs_teacher_review), "
     "teacher_reviews(id)"
 )
@@ -115,12 +118,15 @@ async def get_pending_reviews(
 
         escalated = attempt.get("tutor_action") == "escalate"
 
-        # 待複核 = 尚無教師判定，且（有 AI 初評，或被建議找老師）
-        if reviews or not (evaluations or escalated):
-            continue
-
         step = attempt.get("module_steps") or {}
         tool = step.get("ai_tools") or {}
+        pass_mode = effective_pass_mode(step, has_rubric(tool.get("rubric_criteria")))
+        # 「教師複核後通過」的關卡：送出後停在 submitted 等老師，不一定有 AI 初評（#65）
+        awaiting_teacher = pass_mode == "teacher_review" and attempt.get("status") == "submitted"
+
+        # 待複核 = 尚無教師判定，且（有 AI 初評、被建議找老師，或關卡要老師複核才通過）
+        if reviews or not (evaluations or escalated or awaiting_teacher):
+            continue
         profile = attempt.get("profiles") or {}
         evaluation = evaluations[0] if evaluations else {}
 
@@ -131,6 +137,8 @@ async def get_pending_reviews(
             review_reasons.append("low_confidence")
         if step.get("require_teacher_review"):
             review_reasons.append("step_requires_review")
+        if awaiting_teacher:
+            review_reasons.append("awaiting_teacher_pass")
 
         if tool_id and step.get("tool_id") != tool_id:
             continue
@@ -156,6 +164,7 @@ async def get_pending_reviews(
             "ai_confidence": evaluation.get("confidence"),
             "needs_attention": attempt.get("status") == "revision_required",
             "review_reasons": review_reasons,
+            "pass_mode": pass_mode,
         })
 
     # 需要優先處理的排前面；同組內維持新到舊（sort 是穩定排序）
@@ -175,7 +184,7 @@ async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(req
         db.table("step_attempts")
         .select(
             "*, profiles(full_name, email), "
-            "module_steps(step_title, pass_score, require_teacher_review, ai_tools(title, rubric_criteria)), "
+            "module_steps(*, ai_tools(title, rubric_criteria)), "
             "ai_evaluations(*), teacher_reviews(*)"
         )
         .eq("id", attempt_id)
@@ -198,6 +207,9 @@ async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(req
     )
 
     step = attempt.get("module_steps") or {}
+    tool = step.get("ai_tools") or {}
+    scoring = has_rubric(tool.get("rubric_criteria"))
+    structured = attempt.get("structured_data") if isinstance(attempt.get("structured_data"), dict) else {}
 
     return {
         "data": {
@@ -207,8 +219,12 @@ async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(req
                 "step_title": step.get("step_title", ""),
                 "pass_score": step.get("pass_score"),
                 "require_teacher_review": bool(step.get("require_teacher_review")),
-                "tool": step.get("ai_tools") or {},
+                "tool": tool,
+                "pass_mode": effective_pass_mode(step, scoring),
+                "scoring": scoring,
             },
+            # 沒有評分規準的機器人只給回饋、不評分（#65）：回饋存在 structured_data
+            "ai_feedback": structured.get("ai_feedback"),
             "attempt_number": attempt.get("attempt_number"),
             "status": attempt.get("status"),
             "tutor_action": attempt.get("tutor_action"),
@@ -253,7 +269,12 @@ async def judge_submission(
 
     db = get_supabase()
 
-    attempt_res = db.table("step_attempts").select("id, user_id, module_id").eq("id", attempt_id).execute()
+    attempt_res = (
+        db.table("step_attempts")
+        .select("id, user_id, module_id, module_steps(*, ai_tools(rubric_criteria))")
+        .eq("id", attempt_id)
+        .execute()
+    )
     if not attempt_res.data:
         raise HTTPException(status_code=404, detail="Submission not found")
     attempt = attempt_res.data[0]
@@ -271,10 +292,14 @@ async def judge_submission(
     if not review_res.data:
         raise HTTPException(status_code=500, detail="Failed to save review")
 
-    if body.decision == "request_retry":
-        db.table("step_attempts").update(
-            {"status": "revision_required"}
-        ).eq("id", attempt_id).execute()
+    # 要求重寫 → revision_required；「教師複核後通過」的關卡，其他判定由老師決定通過與否（core/pass_mode.py）
+    step = attempt.get("module_steps") or {}
+    pass_mode = effective_pass_mode(step, has_rubric((step.get("ai_tools") or {}).get("rubric_criteria")))
+    new_status = status_after_review(
+        pass_mode, body.decision, body.final_score, step.get("pass_score") or DEFAULT_PASS_SCORE
+    )
+    if new_status:
+        db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
 
     # 已發布的教師分數會改變「是否通過」與教師叮嚀：重算學生的側寫（失敗只記 log）
     if attempt.get("user_id") and attempt.get("module_id"):

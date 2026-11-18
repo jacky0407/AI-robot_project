@@ -26,6 +26,7 @@ from core.user_api_keys import load_decrypted_key
 from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser, get_current_user
 from core.ai.agents.tutor_agent import TutorAgent, StudentContext
+from core.ai.agents.feedback_agent import FeedbackAgent
 from core.ai.agents.coherence_agent import CoherenceAgent, StepAnswer
 from core.ai.error_detector import ErrorDetector
 from core.ai.hint_engine import HintEngine, parse_teaching_strategy, select_hint
@@ -33,6 +34,7 @@ from core.ai.memory import load_bot_memory, parse_memory_config
 from core.learner_profile import refresh_learner_profile
 from core.practice_session import ensure_session, parse_session_id
 from core.ai.rubric_formatter import normalize_rubric
+from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
 from core.privacy import detect_pii
 from core.step_unlock import check_step_unlocked, load_active_steps, module_progress
 from database.client import get_supabase
@@ -49,6 +51,7 @@ coherence_agent = CoherenceAgent()
 
 # 錯誤分類偵測器（教授未定義 error_taxonomy 時不會呼叫 LLM）
 error_detector = ErrorDetector()
+feedback_agent = FeedbackAgent()
 
 # 分層提示引擎（查詢可用提示層級時使用）
 hint_engine = HintEngine()
@@ -184,6 +187,10 @@ async def submit_answer(
 
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
+        # 評分規準可以不填（#65）：沒有規準的機器人只給文字回饋、不評分；
+        # 怎麼算通過看關卡的 pass_mode（core/pass_mode.py）
+        scoring_enabled = has_rubric(rubric_criteria)
+        pass_mode = effective_pass_mode(step_res.data, scoring_enabled)
         system_prompt = tool.get("system_prompt", "你是一位學前特殊教育的評分助理。")
 
         # 通過門檻定義在 module_steps.pass_score，不在 ai_tools
@@ -272,7 +279,15 @@ async def submit_answer(
                     "attempt_number": next_attempt_number,
                     # 自主模式才有：{"used": 今天已用次數, "quota": 每日上限}；課程模式為 null
                     "quota": quota,
+                    # 怎麼算通過、這個機器人會不會評分（前端依此決定要顯示分數還是只顯示回饋）
+                    "pass_mode": pass_mode,
+                    "scoring": scoring_enabled,
                 })
+
+                if not scoring_enabled:
+                    async for event in _feedback_only_events():
+                        yield event
+                    return
 
                 final_data = None
                 tutor_action = None
@@ -334,18 +349,22 @@ async def submit_answer(
                         "memory_snapshot": _memory_snapshot(memory),
                     })
 
-                    # 同步更新 step_attempts 狀態為 passed 或 revision_required
-                    new_status = "passed" if final_data["passed"] else "revision_required"
-                    db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+                    # 同步更新 step_attempts 狀態：依關卡的通過方式（score 看分數、complete 直接通過、
+                    # teacher_review 維持 submitted 等老師）
+                    new_status = status_after_submit(pass_mode, bool(final_data["passed"]))
+                    if new_status:
+                        db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+                    yield _sse_event("pass_status", _pass_status(pass_mode, new_status))
 
                     # 學習者側寫：評分寫入後重算一個新版本（失敗只記 log，不影響這次評分）
                     refresh_learner_profile(db, user.id, body.module_id, attempt_id)
                 elif tutor_action in ("give_hint", "escalate"):
-                    # 沒有評分（只給提示或建議找老師）→ 學生需要修改後再交，
-                    # 不讓狀態永遠停在 submitted
-                    db.table("step_attempts").update(
-                        {"status": "revision_required"}
-                    ).eq("id", attempt_id).execute()
+                    # 沒有評分（只給提示或建議找老師）→ score 關卡要修改後再交，不讓狀態永遠停在 submitted；
+                    # complete 關卡照樣算通過；teacher_review 關卡等老師
+                    new_status = status_after_submit(pass_mode, None)
+                    if new_status:
+                        db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+                    yield _sse_event("pass_status", _pass_status(pass_mode, new_status))
 
                 # 有構面因 AI 呼叫失敗而給了保底分數：不是學生的問題，退回這次額度
                 if final_data and _has_failed_dimension(final_data):
@@ -364,6 +383,20 @@ async def submit_answer(
                 refunded = refund_quota(db, access) if quota else None
                 if refunded:
                     yield _sse_event("quota_refunded", {"reason": "evaluation_error", "quota": refunded})
+
+        async def _feedback_only_events() -> AsyncGenerator[str, None]:
+            """沒有評分規準的機器人：只給一段文字回饋，不寫 ai_evaluations（不產生分數）"""
+            feedback = await feedback_agent.feedback(body.content, system_prompt, memory.to_prompt_text())
+            yield _sse_event("feedback_complete", {"feedback": feedback})
+            new_status = status_after_submit(pass_mode, None)
+            if new_status:
+                db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+            yield _sse_event("pass_status", _pass_status(pass_mode, new_status))
+            # 沒有評分也要記下回饋：放在 structured_data，老師複核與作答紀錄看得到
+            db.table("step_attempts").update(
+                {"structured_data": {"ai_feedback": feedback}}
+            ).eq("id", attempt_id).execute()
+            refresh_learner_profile(db, user.id, module_id, attempt_id)
 
         return StreamingResponse(
             event_generator(),
@@ -844,3 +877,13 @@ def _extract_last_score_percent(last_attempt: dict | None) -> float | None:
 
 def _sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+def _pass_status(pass_mode: str, new_status: str | None) -> dict:
+    """pass_status 事件：這次作答最後算不算通過（score_complete.passed 只代表 AI 分數有沒有過門檻）"""
+    status = new_status or "submitted"
+    return {
+        "pass_mode": pass_mode,
+        "status": status,
+        "passed": status == "passed",
+        "awaiting_teacher": status == "submitted" and pass_mode == "teacher_review",
+    }
