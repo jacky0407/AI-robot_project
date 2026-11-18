@@ -99,9 +99,10 @@ const asRecord = (v: unknown): Record<string, unknown> =>
 
 // ── 把資料庫的內容轉成表單狀態 ──────────────────────────────────────────────
 
-function toRubrics(raw: ToolData['rubric_criteria']): RubricItem[] {
-  if (!raw?.length) return DEFAULT_RUBRICS
-  return raw.map((r) => ({
+// 建立時給預設規準；編輯不評分的機器人（規準為空，#65）時保持空的，不要偷偷變成要評分
+function toRubrics(raw: ToolData['rubric_criteria'], editing: boolean): RubricItem[] {
+  if (!editing && !raw?.length) return DEFAULT_RUBRICS
+  return (raw ?? []).map((r) => ({
     ...r,
     dimension: String(r.dimension ?? r.name ?? ''),
     max_score: Number(r.max_score ?? r.weight ?? 0),
@@ -143,7 +144,7 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
   const initialStrategy = asRecord(initial?.teaching_strategy)
   const initialMemory = asRecord(initialStrategy.memory)
   // 表單一開始的規準與級距（只算一次），用來判斷老師有沒有改
-  const [initialRubrics] = useState<RubricItem[]>(() => toRubrics(initial?.rubric_criteria ?? null))
+  const [initialRubrics] = useState<RubricItem[]>(() => toRubrics(initial?.rubric_criteria ?? null, Boolean(initial)))
   const initialScale = initial?.scale_type || '4_point'
 
   const [submitting, setSubmitting] = useState(false)

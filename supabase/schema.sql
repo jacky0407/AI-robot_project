@@ -103,16 +103,16 @@ CREATE TABLE IF NOT EXISTS public.ai_tools (
     scale_type TEXT CHECK (scale_type IN ('4_point', '5_point', '100_point', 'pass_fail')) DEFAULT '4_point',
     error_taxonomy JSONB DEFAULT '[]'::jsonb,    -- 錯誤分類定義
     max_cost_limit FLOAT DEFAULT 0.5,      -- 單次任務成本上限 ($)
-    version INT NOT NULL DEFAULT 1,        -- 每次修改 + 1，每一版的內容存在 ai_tool_versions（migration 019）
+    version INT NOT NULL DEFAULT 1,        -- 每次修改 + 1，每一版的內容存在 ai_tool_versions（migration 022）
     status TEXT CHECK (status IN ('draft', 'published', 'paused', 'archived')) DEFAULT 'draft',
     created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
-    updated_at TIMESTAMPTZ,                -- 最後修改時間與修改者（migration 019）
+    updated_at TIMESTAMPTZ,                -- 最後修改時間與修改者（migration 022）
     updated_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL
 );
 -- 新增、修改一律走後端 API（backend/api/teacher.py），前端不能直接寫
 
--- 機器人每一版的完整內容，不覆蓋（migration 019，只給 service_role）
+-- 機器人每一版的完整內容，不覆蓋（migration 022，只給 service_role）
 -- 查某次評分當時的規準：WHERE tool_id = … AND version = ai_evaluations.tool_version
 CREATE TABLE IF NOT EXISTS public.ai_tool_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -218,7 +218,7 @@ CREATE TABLE IF NOT EXISTS public.ai_evaluations (
     suggested_next_step TEXT,              -- 建議下一步
     ai_cost FLOAT DEFAULT 0.0,             -- 單次呼叫估算成本
     memory_snapshot JSONB,                 -- 回饋當時參考的記憶（文字 + 摘要），migration 015
-    tool_version INT,                      -- 評分當時的機器人版本，內容查 ai_tool_versions（migration 019）
+    tool_version INT,                      -- 評分當時的機器人版本，內容查 ai_tool_versions（migration 022）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
@@ -361,7 +361,7 @@ CREATE TRIGGER on_auth_user_created
 -- ==============================================================================
 -- 8. 權限（RLS）：學生只看得到被指派的內容
 --
--- 這一節是 migrations 005、006、010、012、013、019 的「最終版本」，讓只跑 schema.sql 的新資料庫
+-- 這一節是 migrations 005、006、010、012、013、022 的「最終版本」，讓只跑 schema.sql 的新資料庫
 -- 也有完整的權限規則（docs/KNOWN_GAPS.md #9）。已經有資料庫的人照樣跑 migrations 即可，
 -- 兩邊內容相同、全部可重複執行。⚠️ 之後改權限規則，migration 和這裡要一起改。
 --
@@ -381,6 +381,7 @@ ALTER TABLE public.course_invite_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.course_members      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tool_permissions    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_tools            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ai_tool_versions    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取（migration 022）
 ALTER TABLE public.tool_cases          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.learning_modules    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.module_steps        ENABLE ROW LEVEL SECURITY;
@@ -396,7 +397,6 @@ ALTER TABLE public.research_consents   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.learner_profiles    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.user_api_keys       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.export_logs         ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
-ALTER TABLE public.ai_tool_versions    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 
@@ -524,7 +524,7 @@ CREATE POLICY "read assigned modules" ON public.learning_modules
     );
 
 -- ── AI 機器人：已發布，且（逐位核准，或出現在課程指派的模組裡）──────────────────
--- 新增、修改不開放前端，一律走後端 API（migration 019 拿掉了 005 的 "staff create tools"）
+-- 新增、修改不開放前端，一律走後端 API（migration 022 拿掉了 005 的 "staff create tools"）
 DROP POLICY IF EXISTS "read assigned tools" ON public.ai_tools;
 CREATE POLICY "read assigned tools" ON public.ai_tools
     FOR SELECT TO authenticated
