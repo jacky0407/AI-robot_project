@@ -30,6 +30,7 @@ EXPECTED_TABLES = [
     "learner_profiles",   # migration 015 才有
     "user_api_keys",      # migration 017：學生自備 Gemini 金鑰（加密）
     "export_logs",        # migration 018：資料匯出稽核紀錄
+    "ai_tool_versions",   # migration 022：機器人每次修改前的舊版內容
 ]
 
 # 只靠 migration 建立的資料表 → 缺少時要跑哪一支
@@ -39,11 +40,12 @@ TABLE_MIGRATIONS = {
     "learner_profiles": "015_learner_profiles.sql",
     "user_api_keys": "017_user_api_keys.sql",
     "export_logs": "018_export_logs.sql",
+    "ai_tool_versions": "022_ai_tool_versions.sql",
 }
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
 EXPECTED_COLUMNS = {
-    "ai_evaluations": ["confidence", "needs_teacher_review", "memory_snapshot"],  # memory_snapshot：migration 015
+    "ai_evaluations": ["confidence", "needs_teacher_review", "memory_snapshot", "tool_version"],  # 015 memory_snapshot；022 tool_version
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
