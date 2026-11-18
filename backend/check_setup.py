@@ -32,6 +32,8 @@ EXPECTED_TABLES = [
     "export_logs",        # migration 018：資料匯出稽核紀錄
     "chat_room_bots",     # migration 020：多機器人聊天室
     "chat_messages",      # migration 020
+    "course_materials",   # migration 021：學習助教的教材（RAG）
+    "material_chunks",    # migration 021
     "ai_tool_versions",   # migration 022：機器人每次修改前的舊版內容
 ]
 
@@ -44,6 +46,8 @@ TABLE_MIGRATIONS = {
     "export_logs": "018_export_logs.sql",
     "chat_room_bots": "020_chat_rooms.sql",
     "chat_messages": "020_chat_rooms.sql",
+    "course_materials": "021_course_materials.sql",
+    "material_chunks": "021_course_materials.sql",
     "ai_tool_versions": "022_ai_tool_versions.sql",
 }
 
@@ -55,6 +59,7 @@ EXPECTED_COLUMNS = {
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
     "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
     "module_steps": ["is_active", "pass_mode", "step_type"],  # 010 停用步驟；019 怎麼算通過；020 聊天室
+    "chat_room_bots": ["use_materials"],  # 021：學習助教查教材
 }
 
 PLACEHOLDERS = {
