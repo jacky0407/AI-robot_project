@@ -1,5 +1,5 @@
 """
-單元測試：機器人建立、修改與版本（api/teacher.py，migration 019）
+單元測試：機器人建立、修改與版本（api/teacher.py，migration 022）
 
 用記憶體版 Supabase（tests/inmemory_db.py），不連線、不寫入真的資料庫。
 """
@@ -124,8 +124,17 @@ class TestCreateTool:
         res = call("POST", "/api/teacher/tools", InMemoryDB(), json={**NEW_TOOL, "title": "   "})
         assert res.status_code == 422
 
-    def test_empty_rubric_is_rejected(self):
-        res = call("POST", "/api/teacher/tools", InMemoryDB(), json={**NEW_TOOL, "rubric_criteria": []})
+    def test_tool_without_rubric_can_be_created(self):
+        """評分規準可以不填（#65）：不評分、只給文字回饋的機器人"""
+        db = InMemoryDB()
+        res = call("POST", "/api/teacher/tools", db, json={**NEW_TOOL, "rubric_criteria": []})
+
+        assert res.status_code == 201
+        assert res.json()["data"]["rubric_criteria"] == []
+
+    def test_rubric_item_without_name_is_rejected(self):
+        body = {**NEW_TOOL, "rubric_criteria": [{"dimension": "  ", "max_score": 10}]}
+        res = call("POST", "/api/teacher/tools", InMemoryDB(), json=body)
         assert res.status_code == 422
 
     def test_duplicate_rubric_dimension_is_rejected(self):
@@ -252,6 +261,15 @@ class TestRubricChangeNotice:
         res = call("PATCH", "/api/teacher/tools/t1", self._db_with_attempts(1), json={"scale_type": "5_point"})
         assert res.json()["rubric_changed"] is True
 
+    def test_switching_to_no_scoring_counts_as_rubric_change(self):
+        """改成不評分（規準清空）也要提醒：舊的分數還在，不會被拿掉"""
+        res = call("PATCH", "/api/teacher/tools/t1", self._db_with_attempts(3), json={"rubric_criteria": []})
+
+        assert res.status_code == 200
+        assert res.json()["data"]["rubric_criteria"] == []
+        assert res.json()["rubric_changed"] is True
+        assert res.json()["attempt_count"] == 3
+
     def test_prompt_change_is_not_rubric_change(self):
         res = call("PATCH", "/api/teacher/tools/t1", self._db_with_attempts(2), json={"system_prompt": "新的"})
         assert res.json()["rubric_changed"] is False
@@ -328,8 +346,8 @@ class TestEvaluationToolVersion:
         _insert_evaluation(db, {"attempt_id": "a1", "tool_version": 3, "memory_snapshot": None})
         assert db.rows == [{"attempt_id": "a1", "tool_version": 3, "memory_snapshot": None}]
 
-    def test_without_migration_019_only_tool_version_is_dropped(self):
-        """跑了 015 但還沒跑 019：只拿掉 tool_version，記憶快照照存"""
+    def test_without_migration_022_only_tool_version_is_dropped(self):
+        """跑了 015 但還沒跑 022：只拿掉 tool_version，記憶快照照存"""
         db = self._DB(missing={"tool_version"})
         _insert_evaluation(db, {"attempt_id": "a1", "tool_version": 3, "memory_snapshot": {"text": "x"}})
         assert db.rows == [{"attempt_id": "a1", "memory_snapshot": {"text": "x"}}]

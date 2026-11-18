@@ -7,7 +7,7 @@
   - 修改機器人：建立者本人或教授（owner），見 can_edit_tool()
   - 刪除機器人：只限 owner（教授）
 
-版本（migration 019）：
+版本（migration 022）：
   - 每次修改內容 ai_tools.version + 1，每一版的完整內容存一列在 ai_tool_versions，不覆蓋
   - 評分時 practice.py 把當時的 version 記在 ai_evaluations.tool_version，研究時對得上
   - 改評分規準不會重算舊的評分；回應的 attempt_count 讓前端提醒老師
@@ -113,7 +113,8 @@ class ToolCreate(_ToolValidators):
     role_instruction: str = Field(max_length=2000)
     system_prompt: str = Field(max_length=20000)
     teaching_strategy: dict[str, Any] = Field(default_factory=dict)
-    rubric_criteria: list[RubricItem] = Field(min_length=1, max_length=20)
+    # 可以是空的：不評分、只給文字回饋的機器人（#65）
+    rubric_criteria: list[RubricItem] = Field(default_factory=list, max_length=20)
     scale_type: ScaleType = "4_point"
     error_taxonomy: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     status: Literal["draft", "published"] = "published"
@@ -128,7 +129,8 @@ class ToolUpdate(_ToolValidators):
     role_instruction: str | None = Field(default=None, max_length=2000)
     system_prompt: str | None = Field(default=None, max_length=20000)
     teaching_strategy: dict[str, Any] | None = None
-    rubric_criteria: list[RubricItem] | None = Field(default=None, min_length=1, max_length=20)
+    # 傳 [] = 改成不評分的機器人（#65）
+    rubric_criteria: list[RubricItem] | None = Field(default=None, max_length=20)
     scale_type: ScaleType | None = None
     error_taxonomy: list[dict[str, Any]] | None = Field(default=None, max_length=50)
     # 送出前看到的版本；別人在這之間改過就回 409，避免蓋掉別人的修改
@@ -175,7 +177,7 @@ def _save_version(db, tool: dict, user_id: str | None) -> None:
             "edited_by": user_id,
         }).execute()
     except Exception:  # noqa: BLE001 - 版本紀錄失敗不擋住儲存，但一定要留下 log
-        logger.exception("ai_tool_versions 寫入失敗（tool_id=%s, version=%s），請確認已執行 migration 019",
+        logger.exception("ai_tool_versions 寫入失敗（tool_id=%s, version=%s），請確認已執行 migration 022",
                          tool.get("id"), tool.get("version"))
 
 
@@ -244,7 +246,7 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
     if not changes:
         return {"data": tool, "changed": False, "rubric_changed": False, "attempt_count": 0}
 
-    # 修改前先確認目前這一版有存檔（migration 019 之前建立、或上次存檔失敗的機器人）
+    # 修改前先確認目前這一版有存檔（migration 022 之前建立、或上次存檔失敗的機器人）
     _save_version(db, tool, tool.get("updated_by") or tool.get("created_by"))
 
     new_version = current_version + 1

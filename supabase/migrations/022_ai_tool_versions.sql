@@ -1,5 +1,5 @@
 -- ==============================================================================
--- Migration 019：機器人可以修改，並保留每一版的內容（11/16 會議第 6 項）
+-- Migration 022：機器人可以修改，並保留每一版的內容（11/16 會議第 6 項）
 --
 -- 規則：
 --   - 機器人的新增、修改一律走後端 API（backend/api/teacher.py），前端不能再直接寫 ai_tools
@@ -16,6 +16,8 @@
 --
 -- ⚠️ 部署順序：先部署後端（Render Manual Deploy），再跑這支 migration。
 --    跑完之後，舊版前端「直接寫資料表」的建立方式就會失效。
+-- 編號說明：這支原本叫 019（PR #73），因為和 019_step_pass_mode.sql（#65）撞號改成 022；
+--   內容沒變，用舊檔名跑過的資料庫不用重跑（重跑也沒關係）。
 -- 全部可重複執行。
 -- ==============================================================================
 
@@ -54,7 +56,7 @@ ALTER TABLE public.ai_evaluations
     ADD COLUMN IF NOT EXISTS tool_version INT;
 
 COMMENT ON COLUMN public.ai_evaluations.tool_version IS
-    '評分當時的 ai_tools.version；內容查 ai_tool_versions。NULL = migration 019 之前的評分';
+    '評分當時的 ai_tools.version；內容查 ai_tool_versions。NULL = migration 022 之前的評分';
 
 -- ── 5. 前端不能再直接新增機器人（改走 POST /api/teacher/tools）───────────────
 DROP POLICY IF EXISTS "staff create tools" ON public.ai_tools;
