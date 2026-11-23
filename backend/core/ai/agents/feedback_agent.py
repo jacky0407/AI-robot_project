@@ -42,5 +42,5 @@ class FeedbackAgent:
                 f"【學生這次的作答】\n{student_answer}"
             )),
         ]
-        text = await invoke_with_retry(chat_llm(0.4), messages, label="feedback_only")
+        text = await invoke_with_retry(chat_llm(0.4, light=True), messages, label="feedback_only")
         return text.strip()

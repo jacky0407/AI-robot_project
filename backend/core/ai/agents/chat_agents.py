@@ -80,7 +80,7 @@ class RouterAgent:
 依學生這則訊息的內容和對話脈絡，選最適合回答的機器人。
 嚴格以 JSON 回傳：{{"bot": 編號（1 到 {len(bots)} 的整數）, "reason": "一句話說明為什麼"}}"""
         try:
-            data = await invoke_json(chat_llm(0.0), [HumanMessage(content=prompt)], label="chat_router")
+            data = await invoke_json(chat_llm(0.0, light=True), [HumanMessage(content=prompt)], label="chat_router")
             index = int(data.get("bot")) - 1
             if 0 <= index < len(bots):
                 return bots[index], str(data.get("reason") or "").strip()[:200]
@@ -118,5 +118,5 @@ class ChatBotAgent:
                 messages.append(AIMessage(content=prefix + _clip(turn.content)))
         messages.append(HumanMessage(content=_clip(message)))
 
-        text = await invoke_with_retry(chat_llm(0.5), messages, label=f"chat_bot:{bot.name}")
+        text = await invoke_with_retry(chat_llm(0.5, light=True), messages, label=f"chat_bot:{bot.name}")
         return text.strip()

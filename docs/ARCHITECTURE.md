@@ -274,6 +274,6 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 |----|------|
 | 前端 | Next.js 16.3、React 19.2、Tailwind 4、`@supabase/ssr` 0.12 |
 | 後端 | FastAPI、pydantic-settings、LangChain + `langchain-google-genai` |
-| AI | Gemini 3.5 Flash（由 `GEMINI_MODEL` 設定） |
+| AI | Gemini 3.5 Flash（由 `GEMINI_MODEL` 設定）；聊天室調度、聊天回覆、學習助教、不評分的回饋可另用 `GEMINI_LIGHT_MODEL`（較便宜） |
 | 資料庫 | Supabase PostgreSQL（pgvector 已啟用但未使用） |
 | 測試 | pytest + `unittest.mock` |
