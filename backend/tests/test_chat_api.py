@@ -323,7 +323,7 @@ class TestRules:
     async def test_router_falls_back_to_first_bot_on_bad_answer(self):
         agent = RouterAgent()
         with patch("core.ai.agents.chat_agents.invoke_json", AsyncMock(return_value={"bot": 9, "reason": "?"})), \
-             patch("core.ai.agents.chat_agents.chat_llm", lambda t: object()):
+             patch("core.ai.agents.chat_agents.chat_llm", lambda t, **kw: object()):
             bot, _ = await agent.route("你好", [ChatTurn(role="student", content="嗨")], self.BOTS)
         assert bot.tool_id == "1"
 
@@ -331,7 +331,7 @@ class TestRules:
     async def test_router_uses_llm_choice(self):
         agent = RouterAgent()
         with patch("core.ai.agents.chat_agents.invoke_json", AsyncMock(return_value={"bot": 3, "reason": "家長情境"})), \
-             patch("core.ai.agents.chat_agents.chat_llm", lambda t: object()):
+             patch("core.ai.agents.chat_agents.chat_llm", lambda t, **kw: object()):
             bot, reason = await agent.route("想和家長談", [], self.BOTS)
         assert bot.tool_id == "3" and reason == "家長情境"
 

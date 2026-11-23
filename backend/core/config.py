@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Gemini API
     gemini_api_key: str = ""
     gemini_model: str = DEFAULT_GEMINI_MODEL
+    # 不打分數的對話功能用的較便宜模型（聊天室調度員、聊天機器人回覆、學習助教、不評分機器人的回饋）。
+    # 不填就跟 GEMINI_MODEL 一樣；評分、錯誤偵測、提示、跨步驟檢核一律用 GEMINI_MODEL。
+    gemini_light_model: str = ""
     # 學習助教（RAG，#67）切段與搜尋用的向量模型；維度固定 768（migration 021 的 vector(768)）
     gemini_embedding_model: str = "gemini-embedding-001"
 
@@ -31,6 +34,11 @@ class Settings(BaseSettings):
     # 產生：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     # ⚠️ 換掉這把會讓已存的學生金鑰全部無法解開（學生要重新填）
     api_key_encryption_key: str = ""
+
+    @property
+    def light_model(self) -> str:
+        """對話類功能實際用的模型：有設 GEMINI_LIGHT_MODEL 就用它，否則用 GEMINI_MODEL"""
+        return (self.gemini_light_model or "").strip() or self.gemini_model
 
     @property
     def is_production(self) -> bool:

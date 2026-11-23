@@ -30,14 +30,14 @@ def override_api_key() -> Optional[str]:
     return _override.get()
 
 
-def build_llm(api_key: str, temperature: float):
-    """用指定金鑰建立 Gemini client（模型一律讀 GEMINI_MODEL）"""
+def build_llm(api_key: str, temperature: float, model: Optional[str] = None):
+    """用指定金鑰建立 Gemini client；model 不給就用 GEMINI_MODEL"""
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     from core.config import get_settings
 
     return ChatGoogleGenerativeAI(
-        model=get_settings().gemini_model,
+        model=model or get_settings().gemini_model,
         google_api_key=api_key,
         temperature=temperature,
     )
@@ -46,20 +46,23 @@ def build_llm(api_key: str, temperature: float):
 _platform_llms: dict = {}
 
 
-def chat_llm(temperature: float):
+def chat_llm(temperature: float, *, light: bool = False):
     """
-    這次請求要用的 Gemini client：有自備金鑰就用學生的（不快取），否則用平台金鑰（依溫度各快取一個）。
+    這次請求要用的 Gemini client：有自備金鑰就用學生的（不快取），否則用平台金鑰（依模型與溫度各快取一個）。
 
+    light=True：不打分數的對話功能，改用較便宜的 GEMINI_LIGHT_MODEL（沒設定就是 GEMINI_MODEL）。
     新的 Agent 都用這個，不用再各自寫一份 llm 屬性。
     """
+    from core.config import get_settings
+
+    settings = get_settings()
+    model = settings.light_model if light else settings.gemini_model
     key = override_api_key()
     if key:
-        return build_llm(key, temperature=temperature)
-    if temperature not in _platform_llms:
-        from core.config import get_settings
-
-        settings = get_settings()
+        return build_llm(key, temperature=temperature, model=model)
+    cache_key = (model, temperature)
+    if cache_key not in _platform_llms:
         if not settings.gemini_api_key:
             raise ValueError("GEMINI_API_KEY 未設定")
-        _platform_llms[temperature] = build_llm(settings.gemini_api_key, temperature=temperature)
-    return _platform_llms[temperature]
+        _platform_llms[cache_key] = build_llm(settings.gemini_api_key, temperature=temperature, model=model)
+    return _platform_llms[cache_key]

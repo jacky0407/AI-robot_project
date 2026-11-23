@@ -19,6 +19,9 @@ services:
         value: production
       - key: GEMINI_MODEL
         value: gemini-3.5-flash
+      # 不打分數的對話功能改用較便宜的模型；清空就跟 GEMINI_MODEL 一樣
+      - key: GEMINI_LIGHT_MODEL
+        value: gemini-3.5-flash-lite
       - key: LLM_TIMEOUT_SECONDS
         value: "90"
       - key: SUPABASE_URL

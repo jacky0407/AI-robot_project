@@ -97,3 +97,82 @@ def test_llm_timeout_default_is_90_seconds(monkeypatch):
 def test_llm_timeout_can_be_overridden_by_env(monkeypatch):
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "45")
     assert Settings(_env_file=None).llm_timeout_seconds == 45.0
+
+
+# ──────────────────────────────────────────
+# 較便宜的對話模型（GEMINI_LIGHT_MODEL）
+# ──────────────────────────────────────────
+
+@pytest.fixture
+def light_env(monkeypatch):
+    """設定 GEMINI_MODEL / GEMINI_LIGHT_MODEL，清掉設定與 client 的快取，測完還原"""
+    from core.ai import llm_keys
+
+    def _set(model: str, light: str | None):
+        monkeypatch.setenv("GEMINI_MODEL", model)
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        if light is None:
+            monkeypatch.delenv("GEMINI_LIGHT_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("GEMINI_LIGHT_MODEL", light)
+        get_settings.cache_clear()
+        llm_keys._platform_llms.clear()
+    yield _set
+    get_settings.cache_clear()
+    llm_keys._platform_llms.clear()
+
+
+def test_light_model_falls_back_to_main_model(light_env):
+    light_env("gemini-main", None)
+    assert get_settings().light_model == "gemini-main"
+
+
+def test_light_model_can_be_set(light_env):
+    light_env("gemini-main", "gemini-lite")
+    assert get_settings().light_model == "gemini-lite"
+    assert get_settings().gemini_model == "gemini-main"
+
+
+def test_chat_features_use_light_model_and_scoring_does_not(light_env):
+    """調度員、聊天回覆、不評分的回饋用便宜模型；評分、提示、錯誤偵測、跨步驟檢核維持主模型"""
+    light_env("gemini-main", "gemini-lite")
+    from core.ai.agents.coherence_agent import CoherenceAgent
+    from core.ai.agents.evaluator_agent import EvaluatorAgent
+    from core.ai.error_detector import ErrorDetector
+    from core.ai.hint_engine import HintEngine
+    from core.ai.llm_keys import chat_llm
+
+    assert _model_name(chat_llm(0.0, light=True)) == "gemini-lite"
+    assert _model_name(chat_llm(0.5)) == "gemini-main"
+    for agent in (EvaluatorAgent(), CoherenceAgent(), ErrorDetector(), HintEngine()):
+        assert _model_name(agent.llm) == "gemini-main"
+
+
+def test_student_key_also_uses_light_model(light_env):
+    light_env("gemini-main", "gemini-lite")
+    from core.ai.llm_keys import chat_llm, use_api_key
+
+    with use_api_key("student-key"):
+        assert _model_name(chat_llm(0.5, light=True)) == "gemini-lite"
+
+
+@pytest.mark.asyncio
+async def test_agents_request_light_model(monkeypatch):
+    """三個對話 Agent 都要帶 light=True 呼叫 chat_llm"""
+    from unittest.mock import AsyncMock
+
+    from core.ai.agents import chat_agents, feedback_agent
+
+    calls = []
+    fake = lambda temperature, *, light=False: calls.append(light) or object()  # noqa: E731
+    monkeypatch.setattr(chat_agents, "chat_llm", fake)
+    monkeypatch.setattr(feedback_agent, "chat_llm", fake)
+    monkeypatch.setattr(chat_agents, "invoke_json", AsyncMock(return_value={"bot": 1, "reason": ""}))
+    monkeypatch.setattr(chat_agents, "invoke_with_retry", AsyncMock(return_value="好"))
+    monkeypatch.setattr(feedback_agent, "invoke_with_retry", AsyncMock(return_value="好"))
+
+    bots = [chat_agents.ChatBot(tool_id="1", name="甲"), chat_agents.ChatBot(tool_id="2", name="乙")]
+    await chat_agents.RouterAgent().route("你好", [], bots)
+    await chat_agents.ChatBotAgent().reply(bots[0], bots, [], "你好")
+    await feedback_agent.FeedbackAgent().feedback("作答", "你是老師")
+    assert calls == [True, True, True]
