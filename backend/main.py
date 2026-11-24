@@ -10,7 +10,7 @@ from api import teacher
 settings = get_settings()
 
 app = FastAPI(
-    title="AI 專業能力培訓平台 API",
+    title="EduBloom_AI API（早療特教專業發展實驗室）",
     description="學前特殊教育與早期療育專業能力培訓平台後端 API",
     version="1.0.0",
 )
@@ -57,7 +57,7 @@ app.include_router(materials_router)
 
 @app.get("/")
 def read_root():
-    return {"message": "AI 專業能力培訓平台 API", "version": "1.0.0"}
+    return {"message": "EduBloom_AI API（早療特教專業發展實驗室）", "version": "1.0.0"}
 
 
 @app.get("/api/health")

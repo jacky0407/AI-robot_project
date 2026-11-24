@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { DEFAULT_AFTER_LOGIN, safeNext } from "@/utils/redirect";
+import { APP_NAME, APP_NAME_ZH } from "../brand";
 
 // 職業選項（value 會存進 profiles.profession，可自行增減）
 const PROFESSIONS = [
@@ -122,7 +123,7 @@ function OnboardingForm() {
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif", padding: "24px" }}>
       <div style={{ width: "100%", maxWidth: "420px", backgroundColor: "#1e293b", borderRadius: "24px", border: "1px solid rgba(255,255,255,0.15)", padding: "28px" }}>
         <span style={{ padding: "4px 12px", fontSize: "12px", borderRadius: "9999px", backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#a5b4fc" }}>
-          學前特教與早療・AI 培訓平台
+          {APP_NAME}・{APP_NAME_ZH}
         </span>
 
         <h1 style={{ fontSize: "22px", fontWeight: "bold", margin: "16px 0 6px 0" }}>完成註冊</h1>

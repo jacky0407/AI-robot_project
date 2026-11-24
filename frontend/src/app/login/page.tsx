@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
+import { APP_ICON, APP_NAME, APP_NAME_ZH } from '../brand'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -53,9 +54,10 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 p-4">
       <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-md">
-        <h1 className="mb-2 text-center text-2xl font-bold text-gray-800">
-          學前特教 AI 培訓平台
-        </h1>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={APP_ICON} alt="" width={56} height={56} className="mx-auto mb-3" />
+        <h1 className="mb-1 text-center text-2xl font-bold text-gray-800">{APP_NAME_ZH}</h1>
+        <p className="mb-2 text-center text-xs font-semibold tracking-wide text-emerald-700">{APP_NAME}</p>
         <p className="mb-6 text-center text-sm text-gray-500">請登入您的帳號</p>
 
         {errorMsg && (

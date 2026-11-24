@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/client";
 import { DEFAULT_AFTER_LOGIN, safeNext, withNext } from "@/utils/redirect";
+import { APP_ICON, APP_NAME, APP_NAME_ZH } from "./brand";
 
 const CALLBACK_ERRORS: Record<string, string> = {
   link_expired: "驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。",
@@ -178,11 +179,13 @@ function HomeContent() {
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif", padding: "24px" }}>
       <div style={{ textAlign: "center", marginBottom: "32px" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={APP_ICON} alt="" width={64} height={64} style={{ display: "block", margin: "0 auto 12px" }} />
         <span style={{ padding: "4px 12px", fontSize: "12px", borderRadius: "9999px", backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#a5b4fc" }}>
-          學前特教與早療・AI 培訓平台
+          {APP_NAME}
         </span>
         <h1 style={{ fontSize: "32px", fontWeight: "bold", margin: "16px 0 8px 0", color: "#ffffff" }}>
-          專業能力情境化訓練系統
+          {APP_NAME_ZH}
         </h1>
         <p style={{ fontSize: "14px", color: "#94a3b8", margin: 0 }}>
           學生、教師與工作人員都從這裡登入，系統會依帳號身分開啟對應功能

@@ -1,6 +1,6 @@
 # API 規格書 (API Specification)
 
-> AI 專業能力培訓平台｜Backend API｜v1.0
+> EduBloom_AI（早療特教專業發展實驗室）｜Backend API｜v1.0
 > 
 > Base URL（本地開發）：`http://localhost:8000`
 > Base URL（正式環境）：`https://your-api.render.com`

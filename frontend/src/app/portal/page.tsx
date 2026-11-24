@@ -6,8 +6,9 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SignOutButton from "./SignOutButton";
 import { systemsFor } from "./systems";
+import { APP_TITLE } from "../brand";
 
-export const metadata = { title: "選擇系統｜學前特教 AI 培訓平台" };
+export const metadata = { title: `選擇系統｜${APP_TITLE}` };
 
 export default async function PortalPage() {
   const supabase = await createClient();
