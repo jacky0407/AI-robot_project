@@ -1283,6 +1283,8 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 
 ## 七、資料匯出 (Export)
 
+> 每個匯出欄位的意義、格式、缺失值與計算方式見 [DATA_DICTIONARY.md](./DATA_DICTIONARY.md)（DAT-003）。
+>
 > ✅ 2026-11 已實作（`backend/api/export.py`、migration 018）。與下方原始規格的差異：
 > - 權限：只限教授（owner），助教 403
 > - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, format: "csv"}`；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）

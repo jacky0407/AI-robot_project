@@ -53,6 +53,7 @@ git checkout -b fix/<簡短描述>
   1. 自己已重新看過一次 Code Diff，確保沒有夾帶無關的程式碼或測試用 `console.log`。
   2. **絕對沒有**將金鑰 (API Keys)、憑證或含有個資隱私的檔案 Commit 進去（如 `.env` 檔案必須在 `.gitignore` 內）。
   3. 若程式邏輯或 API 規格有變動，必須同步更新相關的技術文件。
+     - 新增或修改**匯出欄位**時，同一個 PR 要更新 `docs/DATA_DICTIONARY.md`（`tests/test_data_dictionary.py` 會檢查）。
   4. 分支已對齊最新的 `main` 分支進度，確保沒有版本衝突 (Merge Conflicts)。
 - 確認上述事項無誤後（若團隊有要求互相 Code Review 則須等 Review 通過），才可進行 Merge。
 
