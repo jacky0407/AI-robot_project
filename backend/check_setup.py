@@ -35,6 +35,7 @@ EXPECTED_TABLES = [
     "course_materials",   # migration 021：學習助教的教材（RAG）
     "material_chunks",    # migration 021
     "ai_tool_versions",   # migration 022：機器人每次修改前的舊版內容
+    "templates",          # migration 023：機器人與模組的範本
 ]
 
 # 只靠 migration 建立的資料表 → 缺少時要跑哪一支
@@ -49,6 +50,7 @@ TABLE_MIGRATIONS = {
     "course_materials": "021_course_materials.sql",
     "material_chunks": "021_course_materials.sql",
     "ai_tool_versions": "022_ai_tool_versions.sql",
+    "templates": "023_templates.sql",
 }
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）

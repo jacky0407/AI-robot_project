@@ -3,8 +3,9 @@
 // 機器人表單：建立（/admin/tools/new）與編輯（/admin/tools/[id]/edit）共用
 // 後端：POST /api/teacher/tools、PATCH /api/teacher/tools/{id}（backend/api/teacher.py）
 // 每次修改後端會把版本 + 1，舊版內容保留；已有作答時改評分規準，舊的評分不會重算
+// 評分規準可以從其他機器人或機器人範本匯入（#89）：GET /api/teacher/tools、GET /api/templates?kind=tool
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { apiFetch } from '@/utils/api'
@@ -134,6 +135,42 @@ function toErrors(raw: ToolData['error_taxonomy']): ErrorItem[] {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
+// 可以匯入評分規準的來源：其他機器人或機器人範本（只列有規準的）
+interface RubricSource {
+  key: string
+  label: string
+  rubric_criteria: Record<string, unknown>[]
+  scale_type: string | null
+}
+
+type ToolLike = { id: string; title: string; rubric_criteria?: Record<string, unknown>[] | null; scale_type?: string | null }
+type TemplateLike = { id: string; title: string; content?: { rubric_criteria?: Record<string, unknown>[] | null; scale_type?: string | null } | null }
+
+function useRubricSources(selfId?: string): RubricSource[] {
+  const [sources, setSources] = useState<RubricSource[]>([])
+  useEffect(() => {
+    let active = true
+    // 讀不到（例如還沒跑 migration 023）就只是少了選項，不影響表單
+    const tools = apiFetch<{ data: ToolLike[] }>('/api/teacher/tools').then((r) => r.data, () => [] as ToolLike[])
+    const templates = apiFetch<{ data: TemplateLike[] }>('/api/templates?kind=tool').then((r) => r.data, () => [] as TemplateLike[])
+    Promise.all([templates, tools]).then(([tpls, tls]) => {
+      if (!active) return
+      setSources([
+        ...tpls
+          .filter((t) => t.content?.rubric_criteria?.length)
+          .map((t) => ({ key: `tpl:${t.id}`, label: `範本：${t.title}`, rubric_criteria: t.content!.rubric_criteria!, scale_type: t.content?.scale_type ?? null })),
+        ...tls
+          .filter((t) => t.id !== selfId && t.rubric_criteria?.length)
+          .map((t) => ({ key: `tool:${t.id}`, label: `機器人：${t.title}`, rubric_criteria: t.rubric_criteria!, scale_type: t.scale_type ?? null })),
+      ])
+    })
+    return () => {
+      active = false
+    }
+  }, [selfId])
+  return sources
+}
+
 export default function ToolForm({ initial, courseId }: { initial?: ToolData; courseId?: string | null }) {
   const router = useRouter()
   const editing = Boolean(initial)
@@ -204,6 +241,15 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
     const updated = [...rubrics]
     updated[index] = { ...updated[index], [field]: value }
     setRubrics(updated)
+  }
+
+  const rubricSources = useRubricSources(initial?.id)
+  const importRubric = (key: string) => {
+    const source = rubricSources.find((s) => s.key === key)
+    if (!source) return
+    if (!confirm(`用「${source.label}」的評分規準取代目前的 ${rubrics.length} 個評分項目嗎？\n匯入後還可以再修改。`)) return
+    setRubrics(toRubrics(source.rubric_criteria, true))
+    if (source.scale_type) setScaleType(source.scale_type)
   }
 
   const totalRubricScore = rubrics.reduce((sum, r) => sum + (Number(r.max_score) || 0), 0)
@@ -392,6 +438,21 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
             </label>
             {scoringEnabled && (
             <>
+            {rubricSources.length > 0 && (
+              <select
+                value=""
+                onChange={(e) => importRubric(e.target.value)}
+                aria-label="匯入評分規準"
+                style={{ ...select, marginBottom: '10px' }}
+              >
+                <option value="">從其他機器人或範本匯入評分規準…</option>
+                {rubricSources.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}（{s.rubric_criteria.length} 項）
+                  </option>
+                ))}
+              </select>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {rubrics.map((r, idx) => (
                 <div key={idx} className="tf-rubric" style={{ ...item, display: 'grid', gridTemplateColumns: '1fr 80px 2fr auto', gap: '8px', alignItems: 'center' }}>
