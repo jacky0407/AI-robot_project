@@ -1,6 +1,6 @@
 "use client";
 
-// 教師端：自主探索申請（學生在自主探索模式申請使用某個機器人練習；原「機器人申請」頁）
+// 教師端：自主探索申請（學生在自主探索模式申請使用某個模組練習，#86；以前申請機器人的紀錄照常顯示）
 // 核准時設定到期日與每日次數；已核准的可以延長期限、改次數或撤銷；已過期的要設新到期日才能再核准
 // 後端：GET /api/tool-requests?status=、PATCH /api/tool-requests/{id}（backend/api/tool_requests.py）
 
@@ -16,8 +16,10 @@ type ToolRequest = {
   user_id: string;
   full_name: string | null;
   email: string | null;
+  kind: "module" | "tool" | "all"; // module = 申請模組；tool = 以前的申請機器人；all = 全部機器人
+  module_id: string | null;
   tool_id: string | null;
-  tool_title: string | null;
+  title: string;
   status: RequestStatus;
   daily_quota: number | null;
   start_date: string | null;
@@ -122,7 +124,7 @@ export default function AdminToolRequestsPage() {
       }
       // 後端：expire_date 傳 null = 不限期；有傳日期 = 到那天為止
       body = { action, daily_quota: quota, expire_date: draft.unlimited ? null : draft.expireDate };
-    } else if (r.status === "approved" && !confirm(`確定要撤銷「${r.full_name || r.email}」使用「${r.tool_title}」的權限嗎？`)) {
+    } else if (r.status === "approved" && !confirm(`確定要撤銷「${r.full_name || r.email}」使用「${r.title}」的權限嗎？`)) {
       return;
     }
 
@@ -134,7 +136,7 @@ export default function AdminToolRequestsPage() {
         method: "PATCH",
         body: JSON.stringify(body),
       });
-      setNotice(`${r.full_name || r.email}・${r.tool_title}：${res.message}`);
+      setNotice(`${r.full_name || r.email}・${r.title}：${res.message}`);
       await load();
     } catch (err) {
       setRowMsg((p) => ({ ...p, [r.id]: { ok: false, text: err instanceof ApiError ? err.message : "操作失敗，請稍後再試" } }));
@@ -166,7 +168,7 @@ export default function AdminToolRequestsPage() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
             <div>
               <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 4px 0" }}>自主探索申請</h1>
-              <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>學生在「自主探索模式」想用某個機器人自行練習時會送出申請。核准時設定可以用到哪一天、每天可以作答幾次；正式課程的學生不需要申請。</p>
+              <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>學生在「自主探索模式」想自行練習某個模組時會送出申請，核准後可以做模組裡所有開放的關卡。核准時設定可以用到哪一天、每天可以作答幾次（聊天室每則訊息算一次）；正式課程的學生不需要申請。</p>
             </div>
             <div style={{ display: "flex", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
               {FILTERS.map((f) => (
@@ -207,7 +209,8 @@ export default function AdminToolRequestsPage() {
                         <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: label.color, backgroundColor: label.bg }}>{label.text}</span>
                       </div>
                       <p style={{ margin: "6px 0 0", fontSize: "13px", color: "#cbd5e1" }}>
-                        想練習：<b>{r.tool_title || "（已刪除的機器人）"}</b>
+                        想練習：<b>{r.title}</b>
+                        {r.kind === "tool" && <span style={{ fontSize: "12px", color: "#94a3b8" }}>（以前申請的單支機器人）</span>}
                         <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>申請於 {r.created_at.slice(0, 10)}</span>
                       </p>
                       {(r.status === "approved" || r.status === "expired") && (

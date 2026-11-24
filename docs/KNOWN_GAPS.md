@@ -260,7 +260,7 @@ pass_threshold = step_res.data.get("pass_score") or 75
 | `module_steps.is_required` | ✅ 必修步驟通過才解鎖下一步（`core/step_unlock.py`，2026-11） |
 | `step_attempts.structured_data` | 從未寫入 |
 | `prompt_logs.student_reaction` | 從未寫入 |
-| `tool_permissions` | ✅ 已用於機器人申請與自主模式每日額度（`core/access.py`、`api/tool_requests.py`） |
+| `tool_permissions` | ✅ 已用於自主探索申請（模組，migration 025；以前的機器人申請照常有效）與自主模式每日額度（`core/access.py`、`api/tool_requests.py`） |
 | `forms` / `form_responses` | 整張表無人使用（前後測尚未實作） |
 | `backend/core/ai/tools/evaluation_tools.py` | 四個 LangChain tool 未被任何 Agent 掛載 |
 | `core/ai/base.py` / `gemini_provider.py` | `BaseAIProvider` 只有 `GeminiProvider` 繼承，而實際評分流程（各 Agent）直接用 LangChain 建 client，沒有經過這層抽象。AGENTS.md 的「換模型只改 `gemini_provider.py`」目前不成立；換模型請改 `.env` 的 `GEMINI_MODEL` |

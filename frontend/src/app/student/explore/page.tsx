@@ -1,7 +1,8 @@
 "use client";
 
-// 學生：自主探索模式——申請使用機器人、查看申請狀態
-// 後端：GET /api/tool-requests/tools、GET /api/tool-requests/mine、POST /api/tool-requests（backend/api/tool_requests.py）
+// 學生：自主探索模式——申請使用模組、查看申請狀態（#86：原本申請單支機器人，改成申請整個模組）
+// 後端：GET /api/tool-requests/modules、GET /api/tool-requests/mine、POST /api/tool-requests（backend/api/tool_requests.py）
+// 核准後可以做模組裡所有開放的關卡；以前申請的機器人照常有效到原本的到期日，顯示在申請紀錄裡
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -10,13 +11,15 @@ import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch } from "@/utils/api";
 import StudentModeTabs from "../StudentModeTabs";
 
-type Tool = { id: string; title: string; domain: string | null; target_competency: string | null };
+type Module = { id: string; title: string; description: string | null; domain: string | null; step_count: number };
 
 type RequestStatus = "pending" | "approved" | "rejected" | "expired";
 type ToolRequest = {
   id: string;
-  tool_id: string | null; // null = 全部機器人
-  tool_title: string | null;
+  kind: "module" | "tool" | "all"; // module = 申請模組；tool = 以前的申請機器人；all = 全部機器人
+  module_id: string | null;
+  tool_id: string | null;
+  title: string;
   status: RequestStatus;
   daily_quota: number | null;
   start_date: string | null;
@@ -40,10 +43,12 @@ const card: React.CSSProperties = {
 
 const fmtDate = (d: string | null) => (d ? d.slice(0, 10) : "");
 
-// 這支機器人目前的狀態：取最新的一筆；「全部機器人」的有效核准也算
-function currentStatusFor(toolId: string, requests: ToolRequest[]): ToolRequest | null {
-  const own = requests.filter((r) => r.tool_id === toolId);
-  const activeAll = requests.find((r) => r.tool_id === null && r.status === "approved");
+const KIND_NOTE: Record<ToolRequest["kind"], string> = { module: "", tool: "（以前申請的機器人）", all: "" };
+
+// 這個模組目前的狀態：取最新的一筆；「全部機器人」的有效核准也算
+function currentStatusFor(moduleId: string, requests: ToolRequest[]): ToolRequest | null {
+  const own = requests.filter((r) => r.kind === "module" && r.module_id === moduleId);
+  const activeAll = requests.find((r) => r.kind === "all" && r.status === "approved");
   const latest = own[0] ?? null; // /mine 已依 created_at 新到舊排序
   if (latest && (latest.status === "approved" || latest.status === "pending")) return latest;
   return activeAll ?? latest;
@@ -53,29 +58,29 @@ export default function StudentExplorePage() {
   const router = useRouter();
   const [supabase] = useState(() => createClient());
 
-  const [tools, setTools] = useState<Tool[] | null>(null);
+  const [modules, setModules] = useState<Module[] | null>(null);
   const [requests, setRequests] = useState<ToolRequest[]>([]);
   const [loadError, setLoadError] = useState("");
-  const [busyTool, setBusyTool] = useState<string | null>(null);
+  const [busyModule, setBusyModule] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   // 用 .then 寫：setState 都在非同步回呼裡，避免在 effect 裡同步 setState
   const load = useCallback(
     () =>
       Promise.all([
-        apiFetch<{ data: Tool[] }>("/api/tool-requests/tools"),
+        apiFetch<{ data: Module[] }>("/api/tool-requests/modules"),
         apiFetch<{ data: ToolRequest[] }>("/api/tool-requests/mine"),
       ]).then(
-        ([t, r]) => {
-          setTools(t.data);
+        ([m, r]) => {
+          setModules(m.data);
           setRequests(r.data);
           setLoadError("");
         },
         (err) => {
-          setTools([]);
+          setModules([]);
           setLoadError(
             err instanceof ApiError
-              ? `無法讀取機器人清單：${err.message}`
+              ? `無法讀取模組清單：${err.message}`
               : "無法連線到後端（請確認 FastAPI 已啟動，且 NEXT_PUBLIC_API_URL 設定正確）"
           );
         }
@@ -87,20 +92,20 @@ export default function StudentExplorePage() {
     load();
   }, [load]);
 
-  const handleApply = async (tool: Tool) => {
-    setBusyTool(tool.id);
+  const handleApply = async (module: Module) => {
+    setBusyModule(module.id);
     setNotice(null);
     try {
       const res = await apiFetch<{ message: string }>("/api/tool-requests", {
         method: "POST",
-        body: JSON.stringify({ tool_id: tool.id }),
+        body: JSON.stringify({ module_id: module.id }),
       });
-      setNotice({ ok: true, text: `${tool.title}：${res.message}` });
+      setNotice({ ok: true, text: `${module.title}：${res.message}` });
       await load();
     } catch (err) {
-      setNotice({ ok: false, text: `${tool.title}：${err instanceof ApiError ? err.message : "申請失敗，請稍後再試"}` });
+      setNotice({ ok: false, text: `${module.title}：${err instanceof ApiError ? err.message : "申請失敗，請稍後再試"}` });
     } finally {
-      setBusyTool(null);
+      setBusyModule(null);
     }
   };
 
@@ -145,7 +150,7 @@ export default function StudentExplorePage() {
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 6px 0" }}>自主探索模式</h1>
             <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, lineHeight: 1.6 }}>
-              申請想練習的機器人，老師核准後可以在期限內使用，每天有次數上限。
+              申請想練習的模組，老師核准後可以在期限內練習模組裡的所有關卡，每天有次數上限（聊天室每則訊息算一次）。
               <br />
               此模式的 AI 回饋僅供自我練習參考，不是正式評分。
             </p>
@@ -153,7 +158,7 @@ export default function StudentExplorePage() {
           <button
             disabled={!hasApproved}
             onClick={() => router.push("/student/modules")}
-            title={hasApproved ? "" : "有核准的機器人後才能開始練習"}
+            title={hasApproved ? "" : "有核准的模組後才能開始練習"}
             style={{ flexShrink: 0, padding: "10px 18px", borderRadius: "8px", border: "none", backgroundColor: hasApproved ? "#2563eb" : "rgba(255,255,255,0.08)", color: hasApproved ? "#fff" : "#64748b", fontWeight: "bold", fontSize: "14px", cursor: hasApproved ? "pointer" : "not-allowed" }}
           >
             開始練習 →
@@ -175,41 +180,42 @@ export default function StudentExplorePage() {
           </div>
         )}
 
-        {/* 可申請的機器人 */}
+        {/* 可申請的模組 */}
         <section style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-            <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>可申請的機器人</h2>
+            <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>可申請的模組</h2>
             <button onClick={load} style={{ fontSize: "12px", color: "#38bdf8", background: "none", border: "none", cursor: "pointer" }}>
               重新整理
             </button>
           </div>
 
           {loadError && <p style={{ fontSize: "13px", color: "#fca5a5" }}>{loadError}</p>}
-          {tools === null && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
-          {tools?.length === 0 && !loadError && <p style={{ fontSize: "13px", color: "#94a3b8" }}>目前沒有開放申請的機器人。</p>}
+          {modules === null && <p style={{ fontSize: "13px", color: "#94a3b8" }}>載入中…</p>}
+          {modules?.length === 0 && !loadError && <p style={{ fontSize: "13px", color: "#94a3b8" }}>目前沒有開放申請的模組。</p>}
 
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {tools?.map((tool) => {
-              const current = currentStatusFor(tool.id, requests);
+            {modules?.map((module) => {
+              const current = currentStatusFor(module.id, requests);
               const label = current ? STATUS_LABEL[current.status] : null;
               const canApply = !current || current.status === "rejected" || current.status === "expired";
               return (
                 <div
-                  key={tool.id}
+                  key={module.id}
                   style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", padding: "14px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
                 >
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: "bold", fontSize: "15px" }}>{tool.title}</span>
-                      {tool.domain && <span style={{ fontSize: "11px", color: "#94a3b8" }}>{tool.domain}</span>}
+                      <span style={{ fontWeight: "bold", fontSize: "15px" }}>{module.title}</span>
+                      {module.domain && <span style={{ fontSize: "11px", color: "#94a3b8" }}>{module.domain}</span>}
+                      <span style={{ fontSize: "11px", color: "#94a3b8" }}>{module.step_count} 關</span>
                       {label && (
                         <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: label.color, backgroundColor: label.bg }}>
                           {label.text}
-                          {current?.tool_id === null ? "（全部機器人）" : ""}
+                          {current?.kind === "all" ? "（全部機器人）" : ""}
                         </span>
                       )}
                     </div>
-                    {tool.target_competency && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#94a3b8" }}>練習能力：{tool.target_competency}</p>}
+                    {module.description && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#94a3b8", lineHeight: 1.6 }}>{module.description}</p>}
                     {current?.status === "approved" && (
                       <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#86efac" }}>
                         每天 {current.daily_quota ?? 10} 次・{current.expire_date ? `可使用到 ${fmtDate(current.expire_date)}` : "不限期"}
@@ -218,11 +224,11 @@ export default function StudentExplorePage() {
                   </div>
                   {canApply ? (
                     <button
-                      disabled={busyTool === tool.id}
-                      onClick={() => handleApply(tool)}
-                      style={{ flexShrink: 0, padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer", opacity: busyTool === tool.id ? 0.5 : 1 }}
+                      disabled={busyModule === module.id}
+                      onClick={() => handleApply(module)}
+                      style={{ flexShrink: 0, padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer", opacity: busyModule === module.id ? 0.5 : 1 }}
                     >
-                      {busyTool === tool.id ? "送出中…" : current ? "重新申請" : "申請使用"}
+                      {busyModule === module.id ? "送出中…" : current ? "重新申請" : "申請使用"}
                     </button>
                   ) : null}
                 </div>
@@ -241,7 +247,8 @@ export default function StudentExplorePage() {
                 return (
                   <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "13px", padding: "8px 10px", borderRadius: "6px", backgroundColor: "rgba(255,255,255,0.04)" }}>
                     <span>
-                      {r.tool_title || "（已刪除的機器人）"}
+                      {r.title}
+                      {KIND_NOTE[r.kind] && <span style={{ fontSize: "12px", color: "#94a3b8" }}>{KIND_NOTE[r.kind]}</span>}
                       <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>申請於 {fmtDate(r.created_at)}</span>
                     </span>
                     <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "9999px", color: label.color, backgroundColor: label.bg, flexShrink: 0 }}>

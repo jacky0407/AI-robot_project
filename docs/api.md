@@ -652,29 +652,41 @@
 
 ---
 
-## 三之一、機器人申請 (Tool Requests)
+## 三之一、自主探索申請（申請模組，Module Requests）
 
-實作在 `backend/api/tool_requests.py`，資料存在 `tool_permissions`（一筆 = 一次申請）。
+實作在 `backend/api/tool_requests.py`，資料存在 `tool_permissions`（一筆 = 一次申請），需要 migration 025。
+路徑沿用 `/api/tool-requests`；**#86 起學生申請的是「模組」**，核准後可以做模組裡所有已發布、啟用中的關卡。
 登入方式與錯誤格式同「課程管理」第一版。
+
+申請的對象（`kind`）：
+
+| `kind` | 資料 | 說明 |
+|--------|------|------|
+| `module` | `module_id` 有值 | 申請模組；新的申請一律是這種 |
+| `tool` | `tool_id` 有值 | 以前的「申請機器人」，**照常有效到原本的到期日**，不轉換、不刪除；不能再新增這種申請 |
+| `all` | 兩欄都是 `null` | 全部機器人（只能從後台設定） |
+
+> ⚠️ 模組申請的 `tool_id` 也是 `null`，所以「全部機器人」的判斷是**兩欄都是 `null`**（`core/access.py`、migration 025 的 `has_tool_permission()`）。
 
 狀態：`pending`（待審核）、`approved`（已核准）、`rejected`（已拒絕或被撤銷）、`expired`（已過期）。
 `expired` 是算出來的：已核准但到期日（台灣時間）已過，API 一律回傳 `expired`，到期日當天仍可使用。
 
 | 權限 | 方法與路徑 | Request | 成功回應 `data` |
 |------|-----------|---------|----------------|
-| 登入者 | `POST /api/tool-requests` | `{tool_id}` | 申請（`status: "pending"`），201 |
-| 登入者 | `GET /api/tool-requests/tools` | — | 可申請的機器人（已發布）：`[{id, title, domain, target_competency}]`，不含 system_prompt、rubric 等教學內容。學生核准前讀不到 `ai_tools`（RLS），由此端點列出 |
-| 登入者 | `GET /api/tool-requests/mine` | — | 我的申請陣列（新的在前） |
+| 登入者 | `POST /api/tool-requests` | `{module_id}` | 申請（`status: "pending"`），201 |
+| 登入者 | `GET /api/tool-requests/modules` | — | 可申請的模組：已發布、至少有一個可以練習的關卡：`[{id, title, description, domain, step_count}]`，不含機器人的教學內容。學生核准前讀不到模組（RLS），由此端點列出 |
+| 登入者 | `GET /api/tool-requests/mine` | — | 我的申請陣列（新的在前，含以前的機器人申請） |
 | 教師 | `GET /api/tool-requests?status=pending` | — | 申請陣列，每筆多 `user_id`、`full_name`、`email` |
 | 教師 | `PATCH /api/tool-requests/:request_id` | `{action: "approve" \| "reject", expire_date?, daily_quota?}` | 更新後的申請 |
 
-每筆申請的欄位：`{id, tool_id, tool_title, status, daily_quota, start_date, expire_date, created_at}`。
-`tool_id` 為 `null` 代表全部機器人（目前只能從後台設定），`tool_title` 會是「全部機器人」。
+每筆申請的欄位：`{id, kind, module_id, tool_id, title, status, daily_quota, start_date, expire_date, created_at}`。
+`title` 是模組名稱、以前申請的機器人名稱，或「全部機器人」；模組已被刪除時是「（已刪除的模組）」。
 
-`POST` 的錯誤代碼：`TOOL_NOT_FOUND`（404，不存在或未發布）、`ALREADY_PENDING` / `ALREADY_APPROVED`（409）。
-被拒絕或過期後可以再申請，會新增一筆，舊紀錄保留。
+`POST` 的錯誤代碼：`MODULE_NOT_FOUND`（404，不存在或未發布）、`MODULE_EMPTY`（400，沒有可以練習的關卡）、
+`ALREADY_PENDING` / `ALREADY_APPROVED`（409；「全部機器人」的有效核准也算）、`MIGRATION_REQUIRED`（503，還沒跑 025）。
+送 `{tool_id}`（舊的申請機器人）回 422。被拒絕或過期後可以再申請，會新增一筆，舊紀錄保留。
 
-`PATCH` 規則：
+`PATCH` 規則（模組申請與以前的機器人申請都一樣）：
 - `approve`：任何狀態都可以（也用來延長期限、改次數）。沒傳的欄位都沿用原值：
   - `expire_date`：格式 `YYYY-MM-DD`，不可早於今天（400 `INVALID_EXPIRE_DATE`）。
     **沒傳 → 保留原本的到期日；傳 `null` → 改成不限期**。
@@ -683,7 +695,8 @@
   - 例：只改次數送 `{action: "approve", daily_quota: 20}`，到期日不變
 - `reject`：只能用在 `pending`（拒絕）或 `approved`（撤銷），其他回 409 `INVALID_STATUS_TRANSITION`
 
-扣次數與每日歸零由 practice API 處理，這裡只設定 `daily_quota`。
+扣次數與每日歸零由 practice / chat API 處理，這裡只設定 `daily_quota`；聊天室關卡每則訊息扣一次。
+同一個關卡同時有多筆適用的核准時，優先順序：核准這個模組 > 以前核准這支機器人 > 全部機器人。
 
 ---
 
