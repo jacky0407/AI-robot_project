@@ -1187,10 +1187,11 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 |---|---|
 | `GET /api/courses/:course_id/materials` | 教材清單（`title`、`char_count`、`chunk_count`…） |
 | `POST /api/courses/:course_id/materials` | `{title, content}`（最多 200,000 字）→ 切段、算向量、存入；`400 EMPTY_MATERIAL / MATERIAL_TOO_LONG / PII_DETECTED`、`502 EMBEDDING_FAILED` |
+| `POST /api/courses/:course_id/materials/upload` | multipart：`file`（pdf、docx、pptx、txt、md，≤ 20 MB；PDF ≤ 300 頁）、`title`（選填，預設檔名）→ 取文字後同上；`400 UNSUPPORTED_FILE / FILE_TOO_LARGE / BROKEN_FILE / EMPTY_FILE`，掃描的 PDF 沒有文字層回 `EMPTY_MATERIAL` |
 | `GET /api/courses/:course_id/materials/:id/chunks` | 看切段結果 |
 | `DELETE /api/courses/:course_id/materials/:id` | 刪除（切段一起刪） |
 
-pdf／docx／pptx 的取文字由 #66（檔案上傳）負責，取出的文字走同一個 `core/materials.add_material()`。
+上傳的檔案只依內容判斷格式（不只看副檔名），取出文字（`core/file_text.py`）後走同一個 `core/materials.add_material()`；原始檔不保存。
 
 ---
 

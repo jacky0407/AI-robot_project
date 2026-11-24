@@ -2,23 +2,26 @@
 課程教材 API（學習助教 RAG，#67，migration 021）— 限教師端
 
   GET    /api/courses/{course_id}/materials                         教材清單
-  POST   /api/courses/{course_id}/materials                         新增（貼上文字或 .txt/.md 的內容）
+  POST   /api/courses/{course_id}/materials                         新增（貼上文字）
+  POST   /api/courses/{course_id}/materials/upload                  上傳檔案（pdf、docx、pptx、txt、md，#66）
   GET    /api/courses/{course_id}/materials/{material_id}/chunks    看切段結果
   DELETE /api/courses/{course_id}/materials/{material_id}           刪除（切段一起刪）
 
-pdf／docx／pptx 的取文字由 #66（檔案上傳）負責，取出的文字走同一個 add_material()。
+上傳的檔案只取出文字（core/file_text.py），原始檔不保存；取出的文字走同一個 add_material()。
 新增時先過個資檢查（core/privacy.py），有個資整份不存、請老師修改。
 """
 
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.ai.llm_keys import use_api_key
 from core.auth import CurrentUser, require_staff
 from core.chat_room import migration_missing
+from core.file_text import MAX_FILE_BYTES, FileTextError, extract_text
 from core.materials import MAX_MATERIAL_CHARS, MaterialError, add_material
 from database.client import get_supabase
 
@@ -75,9 +78,41 @@ async def create_material(course_id: UUID, body: CreateMaterialRequest, user: Cu
     db = get_supabase()
     course_id = str(course_id)
     _course_or_404(db, course_id)
+    return await _save(db, course_id, body.title, body.content, user, "text")
+
+
+@router.post("/{course_id}/materials/upload", status_code=status.HTTP_201_CREATED)
+async def upload_material(
+    course_id: UUID,
+    file: UploadFile = File(...),
+    title: str = Form(default="", max_length=100),
+    user: CurrentUser = Depends(require_staff),
+):
+    """
+    上傳 pdf、docx、pptx、txt、md：取出文字 → 個資檢查 → 切段 → 向量。
+    只依檔案內容判斷格式；原始檔不保存（教材庫只需要文字）。
+    """
+    db = get_supabase()
+    course_id = str(course_id)
+    _course_or_404(db, course_id)
+
+    data = await file.read(MAX_FILE_BYTES + 1)
+    filename = file.filename or ""
+    try:
+        text, source_type = await run_in_threadpool(extract_text, filename, data)
+    except FileTextError as e:
+        raise _error(status.HTTP_400_BAD_REQUEST, e.code, e.message)
+
+    name = title.strip() or filename.rsplit(".", 1)[0].strip() or "未命名教材"
+    return await _save(db, course_id, name[:100], text, user, source_type)
+
+
+async def _save(db, course_id: str, title: str, text: str, user: CurrentUser, source_type: str) -> dict:
     try:
         with use_api_key(None):  # 教材向量一律用平台金鑰
-            material = await add_material(db, course_id=course_id, title=body.title, text=body.content, created_by=user.id)
+            material = await add_material(
+                db, course_id=course_id, title=title, text=text, created_by=user.id, source_type=source_type
+            )
     except MaterialError as e:
         raise _error(status.HTTP_400_BAD_REQUEST, e.code, e.message, **e.detail)
     except Exception as e:  # noqa: BLE001
