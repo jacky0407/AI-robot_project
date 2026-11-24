@@ -6,6 +6,7 @@
   - 建立機器人：教師端（owner / assistant），建立者記為自己
   - 修改機器人：建立者本人或教授（owner），見 can_edit_tool()
   - 刪除機器人：只限 owner（教授）
+  - 複製機器人：教師端（owner / assistant），新的一支建立者是自己（#89，core/templates.py）
 
 版本（migration 022）：
   - 每次修改內容 ai_tools.version + 1，每一版的完整內容存一列在 ai_tool_versions，不覆蓋
@@ -22,6 +23,7 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.auth import CurrentUser, require_staff
+from core.templates import TOOL_CONTENT_FIELDS, copy_title, create_tool, pick_title, save_tool_version, tool_content
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -31,18 +33,8 @@ router = APIRouter(prefix="/api/teacher", tags=["Teacher Management"])
 # PostgreSQL 外鍵違反：module_steps.tool_id 是 ON DELETE RESTRICT
 FOREIGN_KEY_VIOLATION = "23503"
 
-# 修改時會讓版本 + 1 的欄位（機器人的教學內容）；status 等狀態不在這裡
-CONTENT_FIELDS = (
-    "title",
-    "domain",
-    "target_competency",
-    "role_instruction",
-    "system_prompt",
-    "teaching_strategy",
-    "rubric_criteria",
-    "scale_type",
-    "error_taxonomy",
-)
+# 修改時會讓版本 + 1 的欄位（機器人的教學內容）；status 等狀態不在這裡。複製與範本也用同一份（core/templates.py）
+CONTENT_FIELDS = TOOL_CONTENT_FIELDS
 # 改了這些，舊的評分不會重算，要提醒老師
 RUBRIC_FIELDS = ("rubric_criteria", "scale_type")
 
@@ -161,24 +153,8 @@ def _count_attempts(db, tool_id: str) -> int:
     return len(db.table("step_attempts").select("id").in_("step_id", step_ids).execute().data or [])
 
 
-def _save_version(db, tool: dict, user_id: str | None) -> None:
-    """把這一版的完整內容存進 ai_tool_versions；同一版已經存過就略過"""
-    try:
-        exists = (
-            db.table("ai_tool_versions").select("id")
-            .eq("tool_id", tool["id"]).eq("version", tool["version"]).limit(1).execute().data
-        )
-        if exists:
-            return
-        db.table("ai_tool_versions").insert({
-            "tool_id": tool["id"],
-            "version": tool["version"],
-            "snapshot": tool,
-            "edited_by": user_id,
-        }).execute()
-    except Exception:  # noqa: BLE001 - 版本紀錄失敗不擋住儲存，但一定要留下 log
-        logger.exception("ai_tool_versions 寫入失敗（tool_id=%s, version=%s），請確認已執行 migration 022",
-                         tool.get("id"), tool.get("version"))
+# 存下某一版的完整內容；實作在 core/templates.py（複製機器人也會用到）
+_save_version = save_tool_version
 
 
 def _dump(model: BaseModel, fields: tuple[str, ...]) -> dict:
@@ -275,6 +251,25 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
         "rubric_changed": rubric_changed,
         "attempt_count": _count_attempts(db, tool_id) if rubric_changed else 0,
     }
+
+
+class CopyRequest(BaseModel):
+    """新的名稱（選填）；不填就是「原本的名稱（複本）」"""
+
+    title: str | None = Field(default=None, max_length=100)
+
+
+@router.post("/tools/{tool_id}/copy", status_code=status.HTTP_201_CREATED)
+async def copy_ai_tool(tool_id: str, body: CopyRequest | None = None, user: CurrentUser = Depends(require_staff)):
+    """
+    複製機器人（#89）：用目前的內容建立一支新的機器人。
+    新的一支從第 1 版、草稿開始，建立者是自己，所以複製完一定可以修改；學生作答不會跟著複製。
+    """
+    db = get_supabase()
+    source = _get_tool(db, tool_id)
+    title = pick_title(body.title if body else None, copy_title(source.get("title")))
+    tool = create_tool(db, tool_content(source), user_id=user.id, title=title)
+    return {"data": {**tool, "can_edit": True}, "message": f"已複製成「{tool['title']}」（草稿），請確認內容後再發布"}
 
 
 @router.delete("/tools/{tool_id}")

@@ -15,6 +15,7 @@
 否則學生進來會看到空模組或被 RLS 擋住的機器人。
 
 學生端的解鎖規則（必修步驟通過才解鎖下一步）在 core/step_unlock.py。
+複製模組（#89）：POST /api/modules/{id}/copy，規則在 core/templates.py。
 """
 
 import logging
@@ -26,6 +27,8 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import CurrentUser, require_staff
+from core.templates import copy_title, module_content, pick_title
+from core.templates import create_module as create_module_from_content
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -336,6 +339,54 @@ async def delete_module(module_id: UUID, user: CurrentUser = Depends(require_sta
     db.table("learning_modules").delete().eq("id", module_id).execute()
     message = "已刪除模組" + (f"，並取消 {len(assigned)} 門課程的指派" if assigned else "")
     return {"success": True, "message": message}
+
+
+class CopyModuleRequest(_Body):
+    """新的名稱（選填）；不填就是「原本的名稱（複本）」"""
+    title: Optional[str] = Field(default=None, max_length=100)
+
+
+def load_module_content(db, module: dict) -> dict:
+    """模組要複製或存成範本的內容（core/templates.module_content），範本 API 也用這個"""
+    from core.chat_room import migration_missing
+
+    steps = _load_steps(db, module["id"])
+    bots: list[dict] = []
+    chat_step_ids = [s["id"] for s in steps if s.get("step_type") == "chat"]
+    if chat_step_ids:
+        try:
+            bots = db.table("chat_room_bots").select("*").in_("step_id", chat_step_ids).execute().data or []
+        except Exception as e:  # noqa: BLE001
+            if not migration_missing(e):
+                raise
+    return module_content(module, steps, bots)
+
+
+def copy_result(module: dict, skipped: list[str], db) -> dict:
+    """複製或從範本建立模組的回應：新模組（含關卡）＋略過了哪些關卡"""
+    message = f"已建立「{module['title']}」（未發布）"
+    if skipped:
+        message += f"；這些關卡的機器人已封存或刪除，沒有複製：{'、'.join(skipped)}"
+    return {"data": _module_detail(db, module), "skipped_steps": skipped, "message": message}
+
+
+@router.post("/{module_id}/copy", status_code=status.HTTP_201_CREATED)
+async def copy_module(
+    module_id: UUID,
+    body: Optional[CopyModuleRequest] = None,
+    user: CurrentUser = Depends(require_staff),
+):
+    """
+    複製模組（#89）：啟用中的關卡（含聊天室的對話機器人）照順序複製成一個新的、未發布的模組。
+    關卡指向原本的機器人，不會連機器人一起複製；學生作答與課程指派都不會複製。
+    """
+    _require_owner(user)
+    db = get_supabase()
+    source = _get_module_or_404(db, str(module_id))
+    content = load_module_content(db, source)
+    title = pick_title(body.title if body else None, copy_title(source.get("title")))
+    module, skipped = create_module_from_content(db, content, title=title)
+    return copy_result(module, skipped, db)
 
 
 # ──────────────────────────────────────────

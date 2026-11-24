@@ -382,6 +382,20 @@ AS $$
     LIMIT GREATEST(1, LEAST(p_match_count, 20));
 $$;
 
+-- 機器人與模組的範本（migration 023，#89）：存成範本當時的完整內容，跟正式的機器人、模組分開；只給 service_role
+CREATE TABLE IF NOT EXISTS public.templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind TEXT NOT NULL CHECK (kind IN ('tool', 'module')),
+    title TEXT NOT NULL,
+    description TEXT,
+    content JSONB NOT NULL,                -- tool：機器人教學內容；module：模組資料與關卡清單（關卡指向現有的機器人）
+    source_id UUID,                        -- 從哪支機器人／哪個模組存的；不設外鍵，原本的被刪掉範本照樣留著
+    source_version INT,                    -- 機器人範本：存的是第幾版
+    created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS templates_kind_idx ON public.templates (kind, created_at);
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -476,6 +490,7 @@ ALTER TABLE public.chat_room_bots      ENABLE ROW LEVEL SECURITY;  -- 不建政�
 ALTER TABLE public.chat_messages       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.course_materials    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.material_chunks     ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.templates           ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取（migration 023）
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

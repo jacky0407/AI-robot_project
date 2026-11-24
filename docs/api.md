@@ -770,6 +770,47 @@
 
 > 誰可以修改目前是「建立者 + 教授」，待老師確認；要改只動 `can_edit_tool()`。
 
+### 已實作：複製與範本（#89，migration 023）
+
+實作在 `backend/core/templates.py`（規則）、`backend/api/templates.py`，複製端點在 `teacher.py`、`modules.py`。
+
+| 權限 | 方法與路徑 | 說明 |
+|------|-----------|------|
+| HOST、ASSISTANT | `POST /api/teacher/tools/:tool_id/copy` | 複製機器人；body 可帶 `title`（不填 =「原本名稱（複本）」），回 201 |
+| HOST | `POST /api/modules/:module_id/copy` | 複製模組；body 可帶 `title`，回 201 |
+| HOST、ASSISTANT | `GET /api/templates?kind=tool\|module` | 範本清單（新的在前），含 `content`，每個附 `can_delete` |
+| 見下 | `POST /api/templates` | 存成範本：`{ "kind": "tool" \| "module", "source_id": "…", "title"?, "description"? }`，回 201 |
+| 見下 | `POST /api/templates/:id/use` | 從範本建立；body 可帶 `title`，回 201，附 `kind` |
+| 建立者、HOST | `DELETE /api/templates/:id` | 刪除範本；用它建立過的機器人、模組不受影響 |
+
+**權限**：機器人範本 HOST、ASSISTANT 都能存、能用；模組範本只限 HOST（和模組本身一樣）。
+
+**規則：**
+- 新的機器人：第 1 版、`draft`、`created_by` 是操作的人（所以一定能改），並存下第 1 版到 `ai_tool_versions`
+- 新的模組：未發布；只複製**啟用中**的關卡，順序重編 1、2、3…；聊天室關卡連對話機器人（`chat_room_bots`）一起複製
+- 模組的關卡指向**原本的機器人**，不會連機器人一起複製；機器人已封存或已刪除的關卡會略過，回應的 `skipped_steps` 列出名稱
+- 學生作答、評分、教師判定、課程指派都**不會**被複製
+- 範本存的是當時內容的副本：原本的機器人或模組之後被修改、刪除，範本都不變
+
+**模組複製／從模組範本建立的回應：**
+```json
+{
+  "data": { "id": "…", "title": "學前 IEP（複本）", "is_published": false, "steps": [ … ] },
+  "skipped_steps": ["步驟4"],
+  "message": "已建立「學前 IEP（複本）」（未發布）；這些關卡的機器人已封存或刪除，沒有複製：步驟4"
+}
+```
+
+| 情況 | 回應 |
+|------|------|
+| 助教存或用模組範本、複製模組 | 403 `PERMISSION_DENIED` |
+| 刪除別人的範本（非 HOST） | 403 `PERMISSION_DENIED` |
+| 機器人／模組／範本不存在 | 404 |
+| 範本內容缺少必填欄位 | 400 `TEMPLATE_INVALID` |
+| 還沒跑 migration 023 | 503 `MIGRATION_REQUIRED` |
+
+> 尚未做（#89 的後半）：同一支機器人被多個模組使用時，模組可以「鎖定版本」不跟著更新。案例（`tool_cases`）目前沒有管理功能，等有了再加複製。
+
 ---
 
 ### `GET /api/tools`
