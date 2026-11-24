@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # 不打分數的對話功能用的較便宜模型（聊天室調度員、聊天機器人回覆、學習助教、不評分機器人的回饋）。
     # 不填就跟 GEMINI_MODEL 一樣；評分、錯誤偵測、提示、跨步驟檢核一律用 GEMINI_MODEL。
     gemini_light_model: str = ""
+
+    # 學習助教不直接給答案；同一個問題問到第幾次才可以直接給答案（老師 11/24 確認的規則，次數待老師定）
+    tutor_answer_after: int = 3
     # 學習助教（RAG，#67）切段與搜尋用的向量模型；維度固定 768（migration 021 的 vector(768)）
     gemini_embedding_model: str = "gemini-embedding-001"
 

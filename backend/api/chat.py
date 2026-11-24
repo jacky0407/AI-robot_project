@@ -44,7 +44,16 @@ from core.chat_room import (
     transcript_for_evaluation,
 )
 from core.learner_profile import refresh_learner_profile
-from core.materials import context_block, courses_for_module, own_attempt_lines, search_materials
+from core.config import get_settings
+from core.materials import (
+    answer_policy,
+    context_block,
+    count_same_question,
+    courses_for_module,
+    own_attempt_lines,
+    prior_questions_to,
+    search_materials,
+)
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
 from core.practice_session import ensure_session, parse_session_id
 from core.privacy import detect_pii
@@ -212,6 +221,12 @@ async def _reply(db, user, step, bots, mentioned, history_rows, content, session
         context, sources = await _tutor_context(db, user, step, content)
         routing["sources"] = sources
         yield practice._sse_event("materials_used", {"sources": sources})
+        # 不直接給答案；同一個問題問到第 N 次才給（老師 11/24 確認）
+        repeats = await count_same_question(content, prior_questions_to(history_rows, bot.tool_id))
+        mode, rule = answer_policy(repeats + 1, get_settings().tutor_answer_after)
+        routing["answer_mode"] = mode
+        routing["times_asked"] = repeats + 1
+        context = f"{rule}\n\n{context}"
     text = await chat_bot_agent.reply(bot, bots, turns, content, context)
     row = save_message(db, {
         "user_id": user.id, "module_id": step.get("module_id"), "step_id": step["id"],

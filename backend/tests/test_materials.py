@@ -276,3 +276,93 @@ class TestEmbeddings:
         monkeypatch.setattr(embeddings, "get_settings", lambda: type("S", (), {"gemini_api_key": "", "gemini_embedding_model": "m"})())
         with pytest.raises(ValueError):
             await embeddings.embed_texts(["x"])
+
+
+# ──────────────────────────────────────────
+# 不直接給答案，同一個問題問到第 N 次才給（老師 11/24 確認）
+# ──────────────────────────────────────────
+
+TUTOR = BOT_A
+
+
+def tutor_history(questions):
+    """每個問題後面接一則學習助教的回覆；另插一則問別的機器人的，不能算進去"""
+    rows = [{"role": "student", "content": "問家長的事"}, {"role": "bot", "tool_id": "other-bot", "content": "…"}]
+    for q in questions:
+        rows += [{"role": "student", "content": q}, {"role": "bot", "tool_id": TUTOR, "content": "你覺得呢？"}]
+    return rows
+
+
+def same_vectors(texts, **kw):
+    """全部回同一個方向的向量 → 都算同一個問題"""
+    return [[1.0, 0.0] for _ in texts]
+
+
+class TestAnswerPolicy:
+
+    def test_prior_questions_only_count_this_tutor(self):
+        assert materials.prior_questions_to(tutor_history(["長期目標怎麼寫", "那短期呢"]), TUTOR) == ["長期目標怎麼寫", "那短期呢"]
+
+    def test_guide_before_threshold_and_answer_at_threshold(self):
+        assert materials.answer_policy(1, 3)[0] == "guide"
+        assert materials.answer_policy(2, 3)[0] == "guide"
+        mode, rule = materials.answer_policy(3, 3)
+        assert mode == "answer" and "第 3 次" in rule
+
+    def test_guide_rule_never_tells_student_the_count(self):
+        assert "不要告訴學生問幾次之後會給答案" in materials.answer_policy(1, 3)[1]
+
+    @pytest.mark.asyncio
+    async def test_similar_questions_are_counted(self):
+        with patch.object(materials, "embed_texts", AsyncMock(side_effect=same_vectors)):
+            assert await materials.count_same_question("長期目標要怎麼寫", ["長期目標怎麼寫", "長期目標寫法"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_different_questions_are_not_counted(self):
+        vectors = AsyncMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+        with patch.object(materials, "embed_texts", vectors):
+            assert await materials.count_same_question("長期目標", ["家長溝通"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_embedding_failure_means_keep_guiding(self):
+        with patch.object(materials, "embed_texts", AsyncMock(side_effect=RuntimeError("down"))):
+            assert await materials.count_same_question("長期目標", ["長期目標"]) == 0
+
+
+class TestAnswerPolicyInChat:
+
+    def send_tutor(self, questions_before, monkeypatch, answer_after=3):
+        from core.config import get_settings
+        monkeypatch.setenv("TUTOR_ANSWER_AFTER", str(answer_after))
+        get_settings.cache_clear()
+        db = make_chat_db(bots=("a",))
+        db.tables["chat_room_bots"][0]["use_materials"] = True
+        history = []
+        for q in questions_before:
+            history += [{"id": f"s{len(history)}", "user_id": "student-1", "step_id": STEP, "role": "student", "content": q},
+                        {"id": f"b{len(history)}", "user_id": "student-1", "step_id": STEP, "role": "bot",
+                         "tool_id": TUTOR, "bot_name": "家長", "content": "你覺得呢？"}]
+        db.tables["chat_messages"] = history
+        reply = AsyncMock(return_value="好")
+        client = TestClient(main.app)
+        with patch.object(chat, "get_supabase", return_value=db), \
+             patch.object(chat.chat_bot_agent, "reply", reply), \
+             patch.object(materials, "embed_texts", AsyncMock(side_effect=same_vectors)), \
+             patch.object(materials, "embed_query", AsyncMock(return_value=[0.1] * 768)):
+            res = client.post(f"/api/chat/sessions/{SESSION}/steps/{STEP}/messages", json={"content": "長期目標怎麼寫"})
+        get_settings.cache_clear()
+        return reply.await_args.args[4], db.rows("chat_messages")[-1]["routing"]
+
+    def test_first_ask_is_guided(self, monkeypatch):
+        context, routing = self.send_tutor([], monkeypatch)
+        assert "不要直接給答案" in context
+        assert routing["answer_mode"] == "guide" and routing["times_asked"] == 1
+
+    def test_third_ask_of_same_question_gets_answer(self, monkeypatch):
+        context, routing = self.send_tutor(["長期目標怎麼寫", "長期目標到底怎麼寫"], monkeypatch)
+        assert "可以直接給出答案" in context
+        assert routing["answer_mode"] == "answer" and routing["times_asked"] == 3
+
+    def test_threshold_comes_from_settings(self, monkeypatch):
+        _, routing = self.send_tutor(["長期目標怎麼寫", "長期目標到底怎麼寫"], monkeypatch, answer_after=5)
+        assert routing["answer_mode"] == "guide"
