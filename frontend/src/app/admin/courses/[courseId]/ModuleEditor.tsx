@@ -31,6 +31,8 @@ type Step = {
   is_active: boolean;
   tool_title: string | null;
   tool_status: string | null;
+  // 停在機器人的第幾版（修改機器人時選的，#89）；null = 跟著最新版
+  tool_version?: number | null;
   attempt_count: number;
   can_delete: boolean;
 };
@@ -378,6 +380,11 @@ function StepRow({
         {step.step_type === "chat" && <span style={pill("#7dd3fc", "rgba(14,165,233,0.15)")}>聊天室</span>}
         {!step.is_active && <span style={pill("#94a3b8", "rgba(255,255,255,0.08)")}>已停用</span>}
         {step.tool_status && step.tool_status !== "published" && <span style={pill("#fbbf24", "rgba(245,158,11,0.15)")}>機器人未發布</span>}
+        {step.tool_version ? (
+          <span title="修改機器人時選擇讓這個模組停在舊版；要改用新版，請到機器人編輯頁再存一次並勾選這個模組" style={pill("#c4b5fd", "rgba(139,92,246,0.15)")}>
+            停在機器人第 {step.tool_version} 版
+          </span>
+        ) : null}
         <span style={{ fontSize: "11px", color: "#94a3b8" }}>{step.attempt_count} 筆學生作答</span>
         <span style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
           <button disabled={busy} onClick={() => onSave(step, { is_active: !step.is_active }, step.is_active ? "已停用，學生看不到這一關" : "已重新啟用")} style={{ ...smallBtn, color: step.is_active ? "#fbbf24" : "#4ade80" }}>

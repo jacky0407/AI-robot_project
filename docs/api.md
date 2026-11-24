@@ -737,7 +737,7 @@
 | 權限 | 方法與路徑 | 說明 |
 |------|-----------|------|
 | HOST、ASSISTANT | `GET /api/teacher/tools` | 全部機器人，每支附 `can_edit`（目前登入者能不能改） |
-| HOST、ASSISTANT | `GET /api/teacher/tools/:tool_id` | 單一機器人完整設定（編輯頁用），附 `can_edit`、`attempt_count`（已有幾筆作答用過它） |
+| HOST、ASSISTANT | `GET /api/teacher/tools/:tool_id` | 單一機器人完整設定（編輯頁用），附 `can_edit`、`attempt_count`（已有幾筆作答用過它）、`used_by`（哪些模組在用，見下方「模組停在舊版」） |
 | HOST、ASSISTANT | `POST /api/teacher/tools` | 建立（第 1 版），`created_by` 一律是登入者，回 201 |
 | 建立者、HOST | `PATCH /api/teacher/tools/:tool_id` | 修改，只送要改的欄位 |
 | HOST | `DELETE /api/teacher/tools/:tool_id` | 刪除；已排進關卡回 409 `TOOL_IN_USE` |
@@ -749,6 +749,7 @@
 - 每一版的完整內容存在 `ai_tool_versions`（只給後端），舊版不會被覆蓋
 - 每筆 `ai_evaluations.tool_version` 記評分當時的版本，研究時用 `(tool_id, version)` 查當時的規準
 - PATCH 可帶 `expected_version`（打開編輯頁時看到的版本）；之後別人已存新版 → 409 `VERSION_CONFLICT`
+- PATCH 可帶 `update_modules`（模組 id 陣列），見下方「模組停在舊版」
 
 **PATCH 回應：**
 ```json
@@ -756,7 +757,8 @@
   "data": { "id": "…", "version": 3, "...": "…" },
   "changed": true,
   "rubric_changed": true,
-  "attempt_count": 12
+  "attempt_count": 12,
+  "used_by": [ "…（有送 update_modules 或內容有改時才有）" ]
 }
 ```
 > `rubric_changed`：這次改了 `rubric_criteria` 或 `scale_type`。舊的評分**不會重算**；`attempt_count > 0` 時前端要提醒老師（編輯頁儲存前已會確認）。
@@ -809,7 +811,42 @@
 | 範本內容缺少必填欄位 | 400 `TEMPLATE_INVALID` |
 | 還沒跑 migration 023 | 503 `MIGRATION_REQUIRED` |
 
-> 尚未做（#89 的後半）：同一支機器人被多個模組使用時，模組可以「鎖定版本」不跟著更新。案例（`tool_cases`）目前沒有管理功能，等有了再加複製。
+> 案例（`tool_cases`）目前沒有管理功能，等有了再加複製。
+
+### 已實作：模組停在機器人的舊版（#89 後半，migration 024）
+
+同一支機器人被多個模組使用時，老師修改機器人可以**逐個模組**選要不要更新成新版。實作在 `backend/core/tool_lock.py`。
+
+- `module_steps.tool_version`、`chat_room_bots.tool_version`：`NULL` = 跟著最新版（原本的行為）；有值 = 停在這一版
+- 停在舊版的關卡：學生作答、提示、記憶設定、聊天室（評分機器人與對話機器人）、教師複核都用 `ai_tool_versions` 裡那一版的**教學內容**，`ai_evaluations.tool_version` 記那一版；機器人的**名稱與狀態**（發布、封存）仍以最新的為準
+- 找不到那一版的內容時退回最新版並留 log（不擋住學生）
+
+**`GET /api/teacher/tools/:id` 的 `used_by`：**
+```json
+[
+  {
+    "module_id": "…",
+    "title": "B 模組",
+    "is_published": true,
+    "steps": [{ "step_title": "B 的關卡", "kind": "step", "tool_version": 2 }],
+    "follows_latest": false,
+    "locked_versions": [2]
+  }
+]
+```
+> `kind`：`step` = 關卡本身的機器人（作答關卡、聊天室的評分機器人）；`chat_bot` = 聊天室裡的對話機器人。
+
+**`PATCH /api/teacher/tools/:id` 的 `update_modules`：**
+- 列在裡面的模組：改用新版（停在舊版的改回跟著最新版）
+- 沒列到的模組：跟著最新版的改成**停在修改前那一版**；已經停在更舊版本的不動
+- 不送 = 原本的行為（跟著最新版的都用新版，停在舊版的不動）
+- 內容沒改也會套用（可以只把某個模組改回跟著最新版），這時不升版、回 `changed: false`
+- 還沒跑 migration 024 時要讓模組停在舊版 → 503 `MIGRATION_REQUIRED`，機器人不會被修改
+
+**其他：**
+- 模組管理的關卡回傳 `tool_version`（前端顯示「停在機器人第 N 版」）
+- 關卡換機器人時清掉 `tool_version`；整份換掉聊天室機器人時，同一支機器人的 `tool_version` 會保留
+- 複製模組、存成模組範本時保留 `tool_version`（內容才會一樣）
 
 ---
 

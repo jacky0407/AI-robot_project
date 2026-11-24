@@ -3,6 +3,7 @@
 // 機器人表單：建立（/admin/tools/new）與編輯（/admin/tools/[id]/edit）共用
 // 後端：POST /api/teacher/tools、PATCH /api/teacher/tools/{id}（backend/api/teacher.py）
 // 每次修改後端會把版本 + 1，舊版內容保留；已有作答時改評分規準，舊的評分不會重算
+// 被多個模組使用時，儲存前逐個模組選「更新成新版」或「停在目前這一版」（#89，PATCH 的 update_modules）
 // 評分規準可以從其他機器人或機器人範本匯入（#89）：GET /api/teacher/tools、GET /api/templates?kind=tool
 
 import { useEffect, useState } from 'react'
@@ -50,6 +51,17 @@ export interface ToolData {
   version: number
   can_edit?: boolean
   attempt_count?: number
+  used_by?: ToolUsage[]
+}
+
+// 哪個模組在用這支機器人、目前跟著最新版還是停在哪一版（GET /api/teacher/tools/{id} 的 used_by）
+export interface ToolUsage {
+  module_id: string
+  title: string
+  is_published: boolean
+  steps: { step_title: string; kind: 'step' | 'chat_bot'; tool_version: number | null }[]
+  follows_latest: boolean
+  locked_versions: number[]
 }
 
 const SCALE_OPTIONS = [
@@ -185,6 +197,18 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
   const initialScale = initial?.scale_type || '4_point'
 
   const [submitting, setSubmitting] = useState(false)
+  const usedBy = initial?.used_by ?? []
+  // 預設維持現狀：跟著最新版的模組勾起來（會用新版）、停在舊版的不勾
+  const [updateModules, setUpdateModules] = useState<Set<string>>(
+    () => new Set(usedBy.filter((m) => m.follows_latest).map((m) => m.module_id)),
+  )
+  const toggleModule = (id: string, on: boolean) =>
+    setUpdateModules((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
   const [errorMsg, setErrorMsg] = useState('')
 
   const [title, setTitle] = useState(initial?.title ?? '')
@@ -309,7 +333,12 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
         // expected_version：打開編輯頁後別人先存了新版本，後端回 409，不會蓋掉別人的修改
         await apiFetch(`/api/teacher/tools/${initial.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ ...buildBody(), expected_version: initial.version }),
+          body: JSON.stringify({
+            ...buildBody(),
+            expected_version: initial.version,
+            // 沒有模組在用就不送，維持原本的行為
+            ...(usedBy.length ? { update_modules: [...updateModules] } : {}),
+          }),
         })
       } else {
         await apiFetch('/api/teacher/tools', { method: 'POST', body: JSON.stringify({ ...buildBody(), status: 'published' }) })
@@ -625,6 +654,39 @@ export default function ToolForm({ initial, courseId }: { initial?: ToolData; co
               <p style={hint}>次數越多，AI 看到的歷程越完整，但每次送出的內容也越長。建議 3 次。</p>
             </div>
           </section>
+
+          {editing && usedBy.length > 0 && (
+            <section style={panel}>
+              <SectionHead
+                title={`使用這支機器人的模組（${usedBy.length} 個）`}
+                desc="儲存後，勾選的模組改用新版；沒勾的模組停在目前這一版，學生作答、提示與評分都照舊。之後想改用新版，回來勾選再儲存就好。"
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {usedBy.map((m) => {
+                  const checked = updateModules.has(m.module_id)
+                  const where = m.steps.map((st) => (st.kind === 'chat_bot' ? `${st.step_title}（聊天室機器人）` : st.step_title)).join('、')
+                  return (
+                    <label key={m.module_id} style={{ ...item, ...check, alignItems: 'flex-start' }}>
+                      <input type="checkbox" checked={checked} onChange={(e) => toggleModule(m.module_id, e.target.checked)} style={{ marginTop: '3px' }} />
+                      <span style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span>
+                          <b>{m.title}</b>
+                          {!m.is_published && <span style={{ color: '#94a3b8' }}>（未發布）</span>}
+                          <span style={{ marginLeft: '8px', fontSize: '12px', color: checked ? '#86efac' : '#c4b5fd' }}>
+                            {checked ? '→ 改用新版' : `→ 停在第 ${m.locked_versions.length && !m.follows_latest ? m.locked_versions.join('、') : initial?.version} 版`}
+                          </span>
+                        </span>
+                        <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                          {where}
+                          {!m.follows_latest && m.locked_versions.length > 0 && `・目前停在第 ${m.locked_versions.join('、')} 版`}
+                        </span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            </section>
+          )}
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingBottom: '24px' }}>
             <Link href={backUrl} style={{ padding: '10px 18px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.2)', color: '#cbd5e1', fontSize: '13px', textDecoration: 'none' }}>

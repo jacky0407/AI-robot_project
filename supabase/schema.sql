@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS public.module_steps (
     is_active BOOLEAN NOT NULL DEFAULT true, -- false = 已停用：學生看不到、不能作答，作答保留（migration 010）
     pass_mode TEXT NOT NULL DEFAULT 'score' CHECK (pass_mode IN ('score', 'complete', 'teacher_review')), -- 怎麼算通過（migration 019）
     step_type TEXT NOT NULL DEFAULT 'answer' CHECK (step_type IN ('answer', 'chat')), -- 作答關卡／聊天室（migration 020）
+    tool_version INT,                      -- NULL = 跟著機器人最新版；有值 = 停在這一版，內容查 ai_tool_versions（migration 024）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(module_id, step_order)
 );
@@ -318,6 +319,7 @@ CREATE TABLE IF NOT EXISTS public.chat_room_bots (
     when_to_use TEXT NOT NULL DEFAULT '',  -- 給調度員看：學生說什麼時該它出場
     sort_order INT NOT NULL DEFAULT 0,
     use_materials BOOLEAN NOT NULL DEFAULT false,  -- 學習助教：回答前先查教材（migration 021）
+    tool_version INT,                      -- NULL = 跟著機器人最新版；有值 = 停在這一版（migration 024）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE (step_id, tool_id),
     UNIQUE (step_id, display_name)

@@ -387,3 +387,44 @@ class TestChatBotsConfig:
 
         assert res.status_code == 201
         assert res.json()["data"]["steps"][-1]["step_type"] == "chat"
+
+
+# ──────────────────────────────────────────
+# 停在機器人舊版（#89 後半，migration 024）
+# ──────────────────────────────────────────
+
+class TestLockedVersion:
+
+    OLD_RUBRIC = [{"dimension": "舊版構面", "max_score": 100, "description": "第 1 版"}]
+
+    def locked_db(self):
+        db = make_db(messages=list(HISTORY))
+        step = db.tables["module_steps"][0]
+        step["tool_version"] = 1
+        step["ai_tools"]["version"] = 2
+        db.tables["ai_tool_versions"] = [{
+            "id": "v1", "tool_id": EVAL_TOOL, "version": 1,
+            "snapshot": {**tool(EVAL_TOOL, "評分老師（舊名）", rubric=self.OLD_RUBRIC), "version": 1},
+        }]
+        return db
+
+    def test_locked_evaluator_scores_with_old_rubric(self):
+        db = self.locked_db()
+        mock_evaluator([dim("舊版構面", 4), json.dumps({"overall_feedback": "好", "confidence": 0.9})])
+        send(db, evaluate=True)
+
+        evaluation = db.rows("ai_evaluations")[0]
+        assert evaluation["tool_version"] == 1
+        assert "舊版構面" in json.dumps(evaluation["dimension_scores"], ensure_ascii=False)
+
+    def test_locked_chat_bot_uses_old_instructions(self):
+        from core.chat_room import load_bots
+
+        db = make_db()
+        db.tables["chat_room_bots"][0]["tool_version"] = 1
+        db.tables["chat_room_bots"][0]["ai_tools"]["version"] = 3
+        db.tables["ai_tool_versions"] = [{"id": "v1", "tool_id": BOT_A, "version": 1,
+                                          "snapshot": {"system_prompt": "你是第一版的家長", "role_instruction": "舊角色"}}]
+        bots = {b.tool_id: b for b in load_bots(db, STEP)}
+        assert bots[BOT_A].system_prompt == "你是第一版的家長"
+        assert bots[BOT_B].system_prompt == "你是IEP 小幫手"   # 沒停在舊版的照常

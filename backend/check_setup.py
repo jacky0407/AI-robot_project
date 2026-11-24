@@ -60,8 +60,8 @@ EXPECTED_COLUMNS = {
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
     "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
-    "module_steps": ["is_active", "pass_mode", "step_type"],  # 010 停用步驟；019 怎麼算通過；020 聊天室
-    "chat_room_bots": ["use_materials"],  # 021：學習助教查教材
+    "module_steps": ["is_active", "pass_mode", "step_type", "tool_version"],  # 010 停用步驟；019 怎麼算通過；020 聊天室；024 停在舊版
+    "chat_room_bots": ["use_materials", "tool_version"],  # 021：學習助教查教材；024 停在舊版
 }
 
 PLACEHOLDERS = {
