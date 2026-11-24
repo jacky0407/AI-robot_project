@@ -49,6 +49,8 @@ STEP_FIELDS = (
 STEP_FIELDS_019 = STEP_FIELDS + ", pass_mode"
 # migration 020：聊天室關卡
 STEP_FIELDS_020 = STEP_FIELDS_019 + ", step_type"
+# migration 024：停在機器人的第幾版（NULL = 跟著最新版，#89）
+STEP_FIELDS_024 = STEP_FIELDS_020 + ", tool_version"
 STEP_TYPES = ("answer", "chat")
 PASS_MODES = ("score", "complete", "teacher_review")
 
@@ -157,9 +159,13 @@ def _load_steps(db, module_id: str) -> list[dict]:
     def query(fields: str):
         return db.table("module_steps").select(fields).eq("module_id", module_id).order("step_order")
 
-    # 新欄位依 migration 逐層退回：沒跑 020 就不讀 step_type、沒跑 019 就不讀 pass_mode
+    # 新欄位依 migration 逐層退回：沒跑 024 就不讀 tool_version、沒跑 020 就不讀 step_type、沒跑 019 就不讀 pass_mode
     res = None
-    for fields, column in ((STEP_FIELDS_020, "step_type"), (STEP_FIELDS_019, "pass_mode")):
+    for fields, column in (
+        (STEP_FIELDS_024, "tool_version"),
+        (STEP_FIELDS_020, "step_type"),
+        (STEP_FIELDS_019, "pass_mode"),
+    ):
         try:
             res = query(fields).execute()
             break
@@ -211,6 +217,8 @@ def _step_output(step: dict, tools: dict[str, dict], counts: dict[str, int]) -> 
         "is_active": step.get("is_active", True),
         "pass_mode": step.get("pass_mode") if step.get("pass_mode") in PASS_MODES else "score",
         "step_type": step.get("step_type") if step.get("step_type") in STEP_TYPES else "answer",
+        # 停在機器人的第幾版（修改機器人時選的，#89）；None = 跟著最新版
+        "tool_version": step.get("tool_version"),
         "tool_title": tool.get("title"),
         "tool_status": tool.get("status"),
         "attempt_count": attempts,
@@ -458,6 +466,9 @@ async def update_step(
                     "這個步驟已有學生作答，不能更換機器人；請停用這一步，再新增一個步驟",
                 )
             _get_usable_tool(db, changes["tool_id"])
+            # 換了機器人：原本停在舊機器人第幾版的設定不適用了，改成跟著新機器人的最新版
+            if step.get("tool_version") is not None:
+                changes["tool_version"] = None
 
     try:
         _execute(db.table("module_steps").update(changes).eq("id", step_id))
@@ -560,6 +571,9 @@ async def replace_chat_bots(
         names.add(key)
         tool_ids.add(tool_id)
 
+    # 原本停在舊版的對話機器人（修改機器人時選的，#89），整份換掉時保留
+    locked = {r["tool_id"]: r["tool_version"] for r in _chat_bot_rows(db, step_id) if r.get("tool_version")}
+
     try:
         db.table("chat_room_bots").delete().eq("step_id", step_id).execute()
         if body.bots:
@@ -567,7 +581,8 @@ async def replace_chat_bots(
                 {"step_id": step_id, "tool_id": str(item.tool_id), "display_name": item.display_name,
                  "when_to_use": item.when_to_use, "sort_order": i + 1,
                  # 預設值不寫：還沒跑 021 的資料庫照樣能存
-                 **({"use_materials": True} if item.use_materials else {})}
+                 **({"use_materials": True} if item.use_materials else {}),
+                 **({"tool_version": locked[str(item.tool_id)]} if str(item.tool_id) in locked else {})}
                 for i, item in enumerate(body.bots)
             ]).execute()
     except APIError as e:

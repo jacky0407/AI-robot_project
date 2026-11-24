@@ -43,6 +43,7 @@ STEP_SETTING_FIELDS = (
     "require_teacher_review",
     "pass_mode",
     "step_type",
+    "tool_version",  # 停在機器人的第幾版（migration 024）；None 不寫
 )
 # 這兩個欄位是預設值時不寫進資料庫：還沒跑 019／020 的資料庫照樣能建立
 STEP_DEFAULTS = {"pass_mode": "score", "step_type": "answer"}
@@ -149,6 +150,7 @@ def module_content(module: dict, steps: list[dict], bots: list[dict]) -> dict:
             "display_name": b.get("display_name"),
             "when_to_use": b.get("when_to_use") or "",
             "use_materials": bool(b.get("use_materials")),
+            "tool_version": b.get("tool_version"),
         })
 
     active = [s for s in steps if s.get("is_active", True)]
@@ -216,6 +218,9 @@ def _step_row(module_id: str, order: int, step: dict) -> dict:
         value = step.get(field)
         if value and value != default:
             row[field] = value
+    # 原本停在舊版的關卡，複製出來也停在同一版（內容才會一樣）
+    if step.get("tool_version"):
+        row["tool_version"] = step["tool_version"]
     return row
 
 
@@ -254,6 +259,7 @@ def create_module(db, content: dict, *, title: str) -> tuple[dict, list[str]]:
                         "sort_order": i,
                         # 預設值不寫：還沒跑 021 的資料庫照樣能建立
                         **({"use_materials": True} if b.get("use_materials") else {}),
+                        **({"tool_version": b["tool_version"]} if b.get("tool_version") else {}),
                     }
                     for i, b in enumerate(step["chat_bots"], start=1)
                 ]).execute()

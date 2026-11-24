@@ -12,6 +12,8 @@
   - 每次修改內容 ai_tools.version + 1，每一版的完整內容存一列在 ai_tool_versions，不覆蓋
   - 評分時 practice.py 把當時的 version 記在 ai_evaluations.tool_version，研究時對得上
   - 改評分規準不會重算舊的評分；回應的 attempt_count 讓前端提醒老師
+  - 被多個模組使用時，修改可以逐個模組選「更新成新版」或「停在目前這一版」（update_modules，
+    migration 024，#89）；停在舊版的模組，學生作答、評分都用那一版的內容（core/tool_lock.py）
 """
 
 import logging
@@ -23,6 +25,13 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.auth import CurrentUser, require_staff
+from core.tool_lock import (
+    LockMigrationRequired,
+    apply_lock_changes,
+    load_tool_usages,
+    plan_lock_changes,
+    summarize_usages,
+)
 from core.templates import TOOL_CONTENT_FIELDS, copy_title, create_tool, pick_title, save_tool_version, tool_content
 from database.client import get_supabase
 
@@ -127,6 +136,9 @@ class ToolUpdate(_ToolValidators):
     error_taxonomy: list[dict[str, Any]] | None = Field(default=None, max_length=50)
     # 送出前看到的版本；別人在這之間改過就回 409，避免蓋掉別人的修改
     expected_version: int | None = None
+    # 要更新成新版的模組（GET 回傳的 used_by 裡的 module_id）；沒列到的模組停在目前這一版。
+    # 不送 = 原本的行為：跟著最新版的都用新版，已經停在舊版的不動
+    update_modules: list[str] | None = Field(default=None, max_length=500)
 
 
 # ── 共用 ────────────────────────────────────────────────────────────────────
@@ -185,7 +197,13 @@ async def get_ai_tool(tool_id: str, user: CurrentUser = Depends(require_staff)):
     """單一機器人的完整設定（編輯頁用），附 can_edit 與 attempt_count（已有幾筆作答用過它）"""
     db = get_supabase()
     tool = _get_tool(db, tool_id)
-    return {"data": {**tool, "can_edit": can_edit_tool(user, tool), "attempt_count": _count_attempts(db, tool_id)}}
+    return {"data": {
+        **tool,
+        "can_edit": can_edit_tool(user, tool),
+        "attempt_count": _count_attempts(db, tool_id),
+        # 哪些模組在用、各自跟著最新版還是停在第幾版；修改時讓老師逐個模組選要不要更新
+        "used_by": summarize_usages(db, load_tool_usages(db, tool_id)),
+    }}
 
 
 @router.post("/tools", status_code=status.HTTP_201_CREATED)
@@ -219,11 +237,31 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
                      f"這支機器人已經被修改過（目前第 {current_version} 版），請重新整理後再改")
 
     changes = {k: v for k, v in _dump(body, CONTENT_FIELDS).items() if v is not None and v != tool.get(k)}
-    if not changes:
-        return {"data": tool, "changed": False, "rubric_changed": False, "attempt_count": 0}
 
-    # 修改前先確認目前這一版有存檔（migration 022 之前建立、或上次存檔失敗的機器人）
-    _save_version(db, tool, tool.get("updated_by") or tool.get("created_by"))
+    if changes or body.update_modules is not None:
+        # 修改前先確認目前這一版有存檔（migration 022 之前建立、或上次存檔失敗的機器人）；
+        # 模組要停在這一版，也要有這一版的內容
+        _save_version(db, tool, tool.get("updated_by") or tool.get("created_by"))
+
+    # 老師選了哪些模組要更新：沒選的先停在目前這一版，再升版（先做這步，失敗就什麼都沒改）。
+    # 內容沒改也照樣套用：讓老師可以把先前停在舊版的模組改回跟著最新版
+    if body.update_modules is not None:
+        lock_changes = plan_lock_changes(load_tool_usages(db, tool_id), set(body.update_modules), current_version)
+        try:
+            apply_lock_changes(db, lock_changes)
+        except LockMigrationRequired:
+            raise _error(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "MIGRATION_REQUIRED",
+                "資料庫還沒更新，模組還不能停在舊版：請在 Supabase SQL Editor 執行 "
+                "supabase/migrations/024_tool_version_lock.sql",
+            )
+
+    if not changes:
+        result = {"data": tool, "changed": False, "rubric_changed": False, "attempt_count": 0}
+        if body.update_modules is not None:
+            result["used_by"] = summarize_usages(db, load_tool_usages(db, tool_id))
+        return result
 
     new_version = current_version + 1
     res = (
@@ -250,6 +288,7 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
         "changed": True,
         "rubric_changed": rubric_changed,
         "attempt_count": _count_attempts(db, tool_id) if rubric_changed else 0,
+        "used_by": summarize_usages(db, load_tool_usages(db, tool_id)),
     }
 
 
