@@ -51,5 +51,12 @@ async def embed_texts(texts: list[str], *, task_type: str = "RETRIEVAL_DOCUMENT"
     return vectors
 
 
+def cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
 async def embed_query(text: str) -> list[float]:
     return (await embed_texts([text], task_type="RETRIEVAL_QUERY"))[0]

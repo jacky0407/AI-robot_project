@@ -1181,6 +1181,7 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
   加上學生**自己**最近的作答與回饋（教師已發布的判定優先），回答時標出引用段落；找不到就說「教材裡沒有找到」
 - SSE 多一個 `materials_used`（`sources`：引用的段落），`bot_reply.message.sources` 同一份
 - 助教的回答不算評分，不寫 `ai_evaluations`
+- **不直接給答案**（老師 11/24 確認）：先用反問、提示、指出教材段落引導；同一個問題（和之前問助教的提問向量相似度 ≥ 0.85）問到第 `TUTOR_ANSWER_AFTER` 次（預設 3）才直接給答案並說明理由。`routing.answer_mode` = `guide` / `answer`、`routing.times_asked` 記在 `chat_messages`；相似度算不出來時一律繼續引導
 - 教材新增時先過個資檢查（命中 400 `PII_DETECTED`，整份不存）；向量用 `GEMINI_EMBEDDING_MODEL`（預設 `gemini-embedding-001`，768 維），一律用平台金鑰
 
 | 端點（限教師端） | 說明 |

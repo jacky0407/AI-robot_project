@@ -14,7 +14,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from core.ai.embeddings import embed_query, embed_texts
+from core.ai.embeddings import cosine, embed_query, embed_texts
 from core.privacy import detect_pii
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,56 @@ def own_attempt_lines(db, user_id: str, module_id: str, limit: int = OWN_ATTEMPT
             parts.append(f"回饋：{feedback.strip()[:120]}")
         lines.append("，".join(parts))
     return lines
+
+
+# ──────────────────────────────────────────
+# 不直接給答案，同一個問題問到第 N 次才給（老師 11/24 確認）
+# ──────────────────────────────────────────
+
+SAME_QUESTION_SIMILARITY = 0.85  # 兩則提問的向量相似度達到這個值，就當成「同一個問題」
+RECENT_QUESTIONS = 10            # 只比對最近幾次問助教的問題
+
+
+def prior_questions_to(history_rows: list[dict], tool_id: str) -> list[str]:
+    """之前問過這個助教的問題：學生訊息的下一則是這個助教回答的（舊 → 新，最多 RECENT_QUESTIONS 則）"""
+    questions = []
+    for current, following in zip(history_rows, history_rows[1:]):
+        if (current.get("role") == "student" and following.get("role") == "bot"
+                and str(following.get("tool_id")) == str(tool_id) and (current.get("content") or "").strip()):
+            questions.append(current["content"].strip())
+    return questions[-RECENT_QUESTIONS:]
+
+
+async def count_same_question(question: str, previous: list[str]) -> int:
+    """之前問過幾次「同一個問題」（向量相似度）。算不出來就回 0：寧可繼續引導，也不要提早給答案。"""
+    if not previous or not (question or "").strip():
+        return 0
+    try:
+        vectors = await embed_texts([question] + previous, task_type="SEMANTIC_SIMILARITY")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"比對重複提問失敗，當作第一次問：{e}")
+        return 0
+    target = vectors[0]
+    return sum(1 for v in vectors[1:] if cosine(target, v) >= SAME_QUESTION_SIMILARITY)
+
+
+def answer_policy(times_asked: int, answer_after: int) -> tuple[str, str]:
+    """
+    回傳 (模式, 放進 prompt 的規則)。times_asked = 包含這次在內，同一個問題問了幾次。
+      guide  ：不直接給答案，用提問、提示、指出教材段落引導
+      answer ：已經問了 answer_after 次以上，可以直接給答案並說明理由
+    """
+    if times_asked >= max(answer_after, 1):
+        return "answer", (
+            f"【回答方式】學生已經第 {times_asked} 次問同一個問題，引導後仍卡住。"
+            "這次可以直接給出答案（或完整的示範寫法），並說明為什麼這樣寫、對應教材哪一段，"
+            "最後請學生用自己的話再寫一次。"
+        )
+    return "guide", (
+        "【回答方式】不要直接給答案、不要替學生寫出可以直接交的內容。"
+        "用反問、提示重點、指出教材哪一段可以參考的方式，引導學生自己想出來。"
+        "不要告訴學生問幾次之後會給答案。"
+    )
 
 
 def context_block(chunks: list[RetrievedChunk], attempt_lines: list[str]) -> str:
