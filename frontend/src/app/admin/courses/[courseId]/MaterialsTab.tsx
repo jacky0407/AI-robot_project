@@ -2,16 +2,18 @@
 
 // 課程詳細頁：教材（學習助教 RAG，#67）
 // 老師放進來的教材會切段、建索引；聊天室裡勾了「學習助教」的機器人回答前會先查這門課的教材，並標出引用段落。
-// 目前可以貼上文字或選 .txt / .md 檔；pdf、docx、pptx 等 #66（檔案上傳）完成後接上。
-// 後端：/api/courses/{course_id}/materials（backend/api/materials.py）
+// 可以貼上文字、選 .txt / .md（先放進文字框再加入），或直接上傳 pdf、docx、pptx（後端取出文字，#66）。
+// 後端：/api/courses/{course_id}/materials、/materials/upload（backend/api/materials.py、core/file_text.py）
 
 import { useEffect, useState } from "react";
-import { ApiError, apiFetch } from "@/utils/api";
+import { ApiError, apiFetch, apiUpload } from "@/utils/api";
 
 type Material = { id: string; title: string; source_type: string; char_count: number; chunk_count: number; created_at: string };
 type Chunk = { chunk_index: number; content: string };
 
 const MAX_CHARS = 200_000;
+const MAX_FILE_MB = 20;
+const SOURCE_LABEL: Record<string, string> = { pdf: "PDF", docx: "Word", pptx: "PowerPoint", text: "文字" };
 const input: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "#0f172a", color: "#fff", fontSize: "13px", outline: "none" };
 const smallBtn: React.CSSProperties = { padding: "4px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "transparent", color: "#cbd5e1", cursor: "pointer" };
 
@@ -42,15 +44,45 @@ export default function MaterialsTab({ courseId }: { courseId: string }) {
     };
   }, [base, reloadKey]);
 
-  const readFile = async (file: File | undefined) => {
+  const errorText = (err: unknown, fallback: string) => {
+    const types = err instanceof ApiError ? ((err.detail as { detected_types?: string[] })?.detected_types ?? []) : [];
+    return `${err instanceof ApiError ? err.message : fallback}${types.length ? `（偵測到：${types.join("、")}）` : ""}`;
+  };
+
+  // .txt / .md：放進文字框，老師可以先改再加入；pdf、docx、pptx：直接上傳，由後端取出文字
+  const readFile = async (input: HTMLInputElement) => {
+    const file = input.files?.[0];
+    input.value = ""; // 同一個檔案再選一次也會觸發
     if (!file) return;
-    if (!/\.(txt|md)$/i.test(file.name)) {
-      setNotice({ ok: false, text: "目前只能選 .txt 或 .md；pdf、docx、pptx 請先另存成文字檔，或貼上內容" });
+    if (/\.(txt|md)$/i.test(file.name)) {
+      const text = await file.text();
+      setContent(text.slice(0, MAX_CHARS));
+      if (!title) setTitle(file.name.replace(/\.(txt|md)$/i, ""));
       return;
     }
-    const text = await file.text();
-    setContent(text.slice(0, MAX_CHARS));
-    if (!title) setTitle(file.name.replace(/\.(txt|md)$/i, ""));
+    if (!/\.(pdf|docx|pptx)$/i.test(file.name)) {
+      setNotice({ ok: false, text: "只支援 pdf、docx、pptx、txt、md；舊版 .doc / .ppt 請另存成新格式" });
+      return;
+    }
+    if (file.size > MAX_FILE_MB * 1024 * 1024) {
+      setNotice({ ok: false, text: `檔案太大（上限 ${MAX_FILE_MB} MB）` });
+      return;
+    }
+    setBusy(true);
+    setNotice({ ok: true, text: `正在讀取「${file.name}」並建立索引，頁數多的檔案要等一下…` });
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("title", title.trim());
+      const res = await apiUpload<{ data: Material }>(`${base}/upload`, form);
+      setTitle("");
+      setNotice({ ok: true, text: `已加入「${res.data.title}」（${res.data.chunk_count} 段），學習助教之後回答會參考它` });
+      load();
+    } catch (err) {
+      setNotice({ ok: false, text: errorText(err, "上傳失敗，請稍後再試") });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const add = async () => {
@@ -67,8 +99,7 @@ export default function MaterialsTab({ courseId }: { courseId: string }) {
       setNotice({ ok: true, text: "已加入教材，學習助教之後回答會參考它" });
       load();
     } catch (err) {
-      const types = err instanceof ApiError ? ((err.detail as { detected_types?: string[] })?.detected_types ?? []) : [];
-      setNotice({ ok: false, text: `${err instanceof ApiError ? err.message : "加入失敗，請稍後再試"}${types.length ? `（偵測到：${types.join("、")}）` : ""}` });
+      setNotice({ ok: false, text: errorText(err, "加入失敗，請稍後再試") });
     } finally {
       setBusy(false);
     }
@@ -105,9 +136,15 @@ export default function MaterialsTab({ courseId }: { courseId: string }) {
       <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "14px", borderRadius: "10px", border: "1px dashed rgba(255,255,255,0.2)" }}>
         <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: 0 }}>加入教材</h4>
         <input maxLength={100} placeholder="教材名稱，例如：IEP 撰寫指引" value={title} onChange={(e) => setTitle(e.target.value)} style={input} />
-        <textarea rows={8} maxLength={MAX_CHARS} placeholder="貼上教材文字，或在下面選 .txt / .md 檔。請勿包含真實個案的姓名、電話、身分證字號等個資。" value={content} onChange={(e) => setContent(e.target.value)} style={{ ...input, resize: "vertical", lineHeight: 1.6 }} />
+        <textarea rows={8} maxLength={MAX_CHARS} placeholder="貼上教材文字，或在下面選檔案（pdf、docx、pptx 直接上傳；txt、md 會先放進這裡）。請勿包含真實個案的姓名、電話、身分證字號等個資。" value={content} onChange={(e) => setContent(e.target.value)} style={{ ...input, resize: "vertical", lineHeight: 1.6 }} />
         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-          <input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(e) => readFile(e.target.files?.[0])} style={{ fontSize: "12px", color: "#cbd5e1" }} />
+          <input
+            type="file"
+            disabled={busy}
+            accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown"
+            onChange={(e) => readFile(e.currentTarget)}
+            style={{ fontSize: "12px", color: "#cbd5e1" }}
+          />
           <span style={{ fontSize: "11px", color: "#64748b" }}>{content.length.toLocaleString()} / {MAX_CHARS.toLocaleString()} 字</span>
           <button type="button" disabled={busy} onClick={add} style={{ ...smallBtn, marginLeft: "auto", backgroundColor: "#16a34a", color: "#fff", border: "none", opacity: busy ? 0.5 : 1 }}>
             {busy ? "處理中…" : "加入教材"}
@@ -125,7 +162,7 @@ export default function MaterialsTab({ courseId }: { courseId: string }) {
             <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
               <strong style={{ fontSize: "13px" }}>{m.title}</strong>
               <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                {m.char_count.toLocaleString()} 字・{m.chunk_count} 段・{new Date(m.created_at).toLocaleDateString("zh-TW")}
+                {SOURCE_LABEL[m.source_type] ?? m.source_type}・{m.char_count.toLocaleString()} 字・{m.chunk_count} 段・{new Date(m.created_at).toLocaleDateString("zh-TW")}
               </span>
               <span style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
                 <button type="button" onClick={() => togglePreview(m)} style={smallBtn}>{preview?.id === m.id ? "收起" : "看切段"}</button>

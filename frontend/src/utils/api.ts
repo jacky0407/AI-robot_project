@@ -68,6 +68,15 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 /**
+ * 上傳檔案（multipart/form-data）：不能設 Content-Type，讓瀏覽器自己帶 boundary。
+ */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, { method: 'POST', body: form, headers: await authHeader() })
+  if (!res.ok) throw await toApiError(res)
+  return (await res.json()) as T
+}
+
+/**
  * 下載檔案（例如 CSV 匯出）：帶 token 呼叫，回傳檔案內容與後端給的檔名。
  * 不能用 <a href> 直接下載，因為後端要 Authorization header。
  */
