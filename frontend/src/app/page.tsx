@@ -184,7 +184,8 @@ function HomeContent() {
         <span style={{ padding: "4px 12px", fontSize: "12px", borderRadius: "9999px", backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#a5b4fc" }}>
           {APP_NAME}
         </span>
-        <h1 style={{ fontSize: "32px", fontWeight: "bold", margin: "16px 0 8px 0", color: "#ffffff" }}>
+        {/* 手機上依螢幕寬度縮小字級，11 個字放得進一行，不會只剩「室」掉到第二行 */}
+        <h1 style={{ fontSize: "clamp(20px, 7vw, 32px)", fontWeight: "bold", margin: "16px 0 8px 0", color: "#ffffff", textWrap: "balance" }}>
           {APP_NAME_ZH}
         </h1>
         <p style={{ fontSize: "14px", color: "#94a3b8", margin: 0 }}>
