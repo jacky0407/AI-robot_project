@@ -72,11 +72,13 @@ CREATE TABLE IF NOT EXISTS public.course_members (
     UNIQUE(course_id, user_id)
 );
 
--- 自主探索者權限與每日額度表
+-- 自主探索者權限與每日額度表（一筆 = 一次申請）
+-- 申請的對象（migration 025，#86）：module_id 有值 = 申請模組（新的申請）；tool_id 有值 = 舊的申請機器人；
+-- 兩欄都是 NULL = 全部機器人（只能從後台設定）
 CREATE TABLE IF NOT EXISTS public.tool_permissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    tool_id UUID, -- NULL 表示全平台通用額度，或指定特定 tool_id
+    tool_id UUID, -- 舊的機器人申請；沒有外鍵
     daily_quota INT DEFAULT 10,
     used_today INT DEFAULT 0,
     used_date DATE,                        -- used_today 是哪一天（台灣時間）的次數；扣額度用 consume_tool_quota()，見 migrations/008
@@ -148,6 +150,12 @@ CREATE TABLE IF NOT EXISTS public.learning_modules (
     is_published BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
+
+-- 自主探索申請的模組（migration 025）：learning_modules 建好之後才能加外鍵，所以放在這裡
+-- 模組被刪除時申請一起刪：若 SET NULL 會變成「tool_id、module_id 都是 NULL = 全部機器人」
+ALTER TABLE public.tool_permissions
+    ADD COLUMN IF NOT EXISTS module_id UUID REFERENCES public.learning_modules(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS tool_permissions_user_status_idx ON public.tool_permissions (user_id, status);
 
 -- 模組步驟編排 (定義 1~9 步驟、前置解鎖與資料傳遞)
 CREATE TABLE IF NOT EXISTS public.module_steps (
@@ -452,7 +460,7 @@ CREATE TRIGGER on_auth_user_created
 -- ==============================================================================
 -- 8. 權限（RLS）：學生只看得到被指派的內容
 --
--- 這一節是 migrations 005、006、010、012、013、022 的「最終版本」，讓只跑 schema.sql 的新資料庫
+-- 這一節是 migrations 005、006、010、012、013、022、025 的「最終版本」，讓只跑 schema.sql 的新資料庫
 -- 也有完整的權限規則（docs/KNOWN_GAPS.md #9）。已經有資料庫的人照樣跑 migrations 即可，
 -- 兩邊內容相同、全部可重複執行。⚠️ 之後改權限規則，migration 和這裡要一起改。
 --
@@ -529,7 +537,8 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS
         SELECT 1 FROM public.tool_permissions tp
         WHERE tp.user_id = auth.uid()
           AND tp.status = 'approved'
-          AND (tp.tool_id = p_tool_id OR tp.tool_id IS NULL)
+          -- 兩欄都是 NULL 才是「全部機器人」；模組申請（module_id 有值）不算（migration 025）
+          AND (tp.tool_id = p_tool_id OR (tp.tool_id IS NULL AND tp.module_id IS NULL))
           AND (tp.start_date IS NULL OR tp.start_date <= public.today_taipei())
           AND (tp.expire_date IS NULL OR tp.expire_date >= public.today_taipei())
     );
@@ -538,16 +547,33 @@ $$;
 -- 以下三個函式把「跨表查詢」包進 SECURITY DEFINER，
 -- 避免 learning_modules ↔ module_steps 的政策互相查詢造成無限遞迴
 
--- 模組已發布，且其中有登入者被核准的機器人
+-- 有沒有被核准使用這個模組（自主探索申請模組，migration 025）
+CREATE OR REPLACE FUNCTION public.has_module_permission(p_module_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.tool_permissions tp
+        WHERE tp.user_id = auth.uid()
+          AND tp.status = 'approved'
+          AND tp.module_id = p_module_id
+          AND (tp.start_date IS NULL OR tp.start_date <= public.today_taipei())
+          AND (tp.expire_date IS NULL OR tp.expire_date >= public.today_taipei())
+    );
+$$;
+
+-- 模組已發布，且（被核准使用這個模組，或其中有被核准的機器人）
 CREATE OR REPLACE FUNCTION public.module_visible_via_permission(p_module_id uuid)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
     SELECT EXISTS (
-        SELECT 1
-        FROM public.learning_modules m
-        JOIN public.module_steps s ON s.module_id = m.id
+        SELECT 1 FROM public.learning_modules m
         WHERE m.id = p_module_id
           AND m.is_published
-          AND public.has_tool_permission(s.tool_id)
+          AND (
+              public.has_module_permission(m.id)
+              OR EXISTS (
+                  SELECT 1 FROM public.module_steps s
+                  WHERE s.module_id = m.id AND public.has_tool_permission(s.tool_id)
+              )
+          )
     );
 $$;
 
@@ -567,6 +593,18 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS
     );
 $$;
 
+-- 機器人是否出現在登入者被核准的模組裡（啟用中的關卡，migration 025）
+CREATE OR REPLACE FUNCTION public.tool_in_permitted_module(p_tool_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.module_steps s
+        WHERE s.tool_id = p_tool_id
+          AND s.is_active
+          AND public.module_is_published(s.module_id)
+          AND public.has_module_permission(s.module_id)
+    );
+$$;
+
 REVOKE EXECUTE ON FUNCTION public.today_taipei() FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.is_staff() FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.module_assigned_via_course(uuid) FROM PUBLIC, anon;
@@ -574,6 +612,8 @@ REVOKE EXECUTE ON FUNCTION public.has_tool_permission(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.module_visible_via_permission(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.module_is_published(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.tool_in_assigned_module(uuid) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.has_module_permission(uuid) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.tool_in_permitted_module(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.today_taipei() TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.is_staff() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.module_assigned_via_course(uuid) TO authenticated;
@@ -581,6 +621,8 @@ GRANT EXECUTE ON FUNCTION public.has_tool_permission(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.module_visible_via_permission(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.module_is_published(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.tool_in_assigned_module(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.has_module_permission(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.tool_in_permitted_module(uuid) TO authenticated;
 
 -- ── profiles：只能讀自己那一列，不能新增、修改、刪除（角色只能由後台或後端改；migration 006）──
 DROP POLICY IF EXISTS "users can read own profile" ON public.profiles;
@@ -594,7 +636,7 @@ CREATE POLICY "read course assignments" ON public.course_modules
     FOR SELECT TO authenticated
     USING (public.is_staff() OR public.module_assigned_via_course(module_id));
 
--- ── 模組步驟：課程指派的模組全部步驟，或有核准的機器人所在步驟；學生看不到停用的步驟（migration 010）──
+-- ── 模組步驟：課程指派的模組全部步驟、核准的模組（025）全部步驟，或有核准的機器人所在步驟；學生看不到停用的步驟（migration 010）──
 DROP POLICY IF EXISTS "read assigned steps" ON public.module_steps;
 CREATE POLICY "read assigned steps" ON public.module_steps
     FOR SELECT TO authenticated
@@ -605,6 +647,7 @@ CREATE POLICY "read assigned steps" ON public.module_steps
             AND (
                 public.module_assigned_via_course(module_id)
                 OR (public.has_tool_permission(tool_id) AND public.module_is_published(module_id))
+                OR (public.has_module_permission(module_id) AND public.module_is_published(module_id))
             )
         )
     );
@@ -619,7 +662,7 @@ CREATE POLICY "read assigned modules" ON public.learning_modules
         OR public.module_visible_via_permission(id)
     );
 
--- ── AI 機器人：已發布，且（逐位核准，或出現在課程指派的模組裡）──────────────────
+-- ── AI 機器人：已發布，且（逐位核准、出現在課程指派的模組裡，或在核准的模組裡）──────
 -- 新增、修改不開放前端，一律走後端 API（migration 022 拿掉了 005 的 "staff create tools"）
 DROP POLICY IF EXISTS "read assigned tools" ON public.ai_tools;
 CREATE POLICY "read assigned tools" ON public.ai_tools
@@ -631,6 +674,7 @@ CREATE POLICY "read assigned tools" ON public.ai_tools
             AND (
                 public.has_tool_permission(id)
                 OR public.tool_in_assigned_module(id)
+                OR public.tool_in_permitted_module(id)  -- 核准的模組裡的機器人（migration 025）
             )
         )
     );

@@ -54,7 +54,7 @@ SQL Editor → New query → 貼上 `supabase/schema.sql` 整份 → **Run** →
 接著跑 `supabase/migrations/005_rls_policies.sql`（全新資料庫也要跑，要在 `seed.sql` 之前）。學生只看得到老師指派的模組與機器人，兩種指派方式擇一：
 
 - **課程指派**：在 `course_modules` 加一筆（課程 ↔ 模組），該課程狀態為 active 的成員都看得到。
-- **逐位核准**：`tool_permissions` 中該學生 `status = 'approved'`，且在 `start_date`～`expire_date` 期間內（`tool_id` 留空代表全部機器人）。
+- **逐位核准**：`tool_permissions` 中該學生 `status = 'approved'`，且在 `start_date`～`expire_date` 期間內。`module_id` 有值 = 核准這個模組（migration 025）；`tool_id` 有值 = 以前核准的單支機器人；兩欄都留空 = 全部機器人。
 
 教師（owner／assistant）看得到全部。目前還沒有指派介面，要在 SQL Editor 或 Table Editor 操作。
 

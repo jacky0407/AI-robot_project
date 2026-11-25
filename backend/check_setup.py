@@ -59,7 +59,7 @@ EXPECTED_COLUMNS = {
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
-    "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
+    "tool_permissions": ["used_date", "module_id"],  # 008：自主模式每日額度；025：申請模組
     "module_steps": ["is_active", "pass_mode", "step_type", "tool_version"],  # 010 停用步驟；019 怎麼算通過；020 聊天室；024 停在舊版
     "chat_room_bots": ["use_materials", "tool_version"],  # 021：學習助教查教材；024 停在舊版
 }
