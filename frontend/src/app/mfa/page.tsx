@@ -6,7 +6,7 @@
 //   - 設定過：輸入 App 上當下的 6 位數
 // 完成後這次登入的等級變成 aal2，middleware 與後端（core/auth.py 的 require_staff）才會放行。
 // 使用 Supabase Auth 內建的兩步驟驗證（TOTP），密鑰存在 Supabase，不經過我們的後端。
-// 換手機或手機遺失：由管理者在 Supabase → Authentication → Users 刪掉那位老師的驗證設定，再重新設定。
+// 換手機：用驗證器 App 的「轉移帳戶」或雲端同步搬到新手機；手機遺失：由管理者重設（docs/SETUP.md「重設兩步驟驗證 SOP」）
 
 import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -101,16 +101,24 @@ function Mfa() {
     }
     setBusy(true)
     setErrorMsg('')
-    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code })
+    // 20 秒沒有回應就停下來讓老師重試，不要一直停在「驗證中」
+    const timeout = new Promise<{ error: Error }>((resolve) =>
+      setTimeout(() => resolve({ error: new Error('timeout') }), 20000),
+    )
+    const { error } = await Promise.race([supabase.auth.mfa.challengeAndVerify({ factorId, code }), timeout])
     if (error) {
-      setErrorMsg('驗證碼不正確或已過期，請輸入 App 上「目前」顯示的 6 位數字再試一次')
+      setErrorMsg(
+        error.message === 'timeout'
+          ? '驗證沒有回應，請重新整理頁面再試一次'
+          : '驗證碼不正確或已過期，請輸入 App 上「目前」顯示的 6 位數字再試一次',
+      )
       setCode('')
       setBusy(false)
       return
     }
-    // 這次登入已升級為 aal2；重新整理讓 middleware 讀到新的登入狀態
-    router.replace(next)
-    router.refresh()
+    // 這次登入已升級為 aal2。用整頁重新載入：
+    // 用 router.replace 的話，瀏覽器可能沿用剛才「進 /admin 被導到 /mfa」的暫存結果，又被帶回這頁
+    window.location.replace(next)
   }
 
   const handleSignOut = async () => {
@@ -192,7 +200,7 @@ function Mfa() {
         )}
 
         <p style={{ ...hint, marginTop: '16px', fontSize: '12px' }}>
-          換手機或手機遺失，請聯絡平台管理者重設。
+          換手機：用 App 的「轉移帳戶」搬到新手機。手機遺失：請聯絡平台管理者重設。
           <button onClick={handleSignOut} style={{ marginLeft: '8px', background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', fontSize: '12px', padding: 0 }}>
             登出
           </button>
