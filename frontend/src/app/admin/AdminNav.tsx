@@ -12,6 +12,7 @@ const PAGES: { href: string; label: string; also?: string[] }[] = [
   { href: "/admin/courses", label: "課程管理", also: ["/admin/review"] },
   { href: "/admin/tools", label: "建立機器人" },
   { href: "/admin/tool-requests", label: "自主探索申請" },
+  { href: "/admin/accounts", label: "帳號管理" },
 ];
 
 // 只有教授看得到（#90 操作紀錄；後端也只給 owner）

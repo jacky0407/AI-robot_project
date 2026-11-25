@@ -57,11 +57,20 @@ export async function middleware(request: NextRequest) {
   if (user) {
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role, registration_completed')
+      .select('role, registration_completed, is_active')
       .eq('id', user.id)
       .single()
 
     const isStaff = profile?.role === 'owner' || profile?.role === 'assistant'
+
+    // 0. 帳號已停用、去識別化或待刪除（#87）：登出並回到登入頁說明原因
+    //    Supabase 也封鎖了登入，但已經登入的人要等 token 過期，這裡讓他立刻離開
+    if (profile?.is_active === false) {
+      await supabase.auth.signOut()
+      const redirect = NextResponse.redirect(new URL('/?error=account_disabled', request.url))
+      response.cookies.getAll().forEach((c) => redirect.cookies.set(c))
+      return redirect
+    }
 
     if (pathname.startsWith('/onboarding')) {
       // 2. 已完成註冊的人不需要再填一次：回到原本要去的頁面，否則到系統選擇頁

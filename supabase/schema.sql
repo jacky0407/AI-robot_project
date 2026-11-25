@@ -24,6 +24,15 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     profession TEXT,                                   -- 職業 / 身分（/onboarding 填寫）
     registration_completed BOOLEAN NOT NULL DEFAULT false, -- 是否已完成 /onboarding；false 時 middleware 導回 /onboarding
     terms_accepted_at TIMESTAMPTZ,                     -- 同意服務條款與隱私權政策的時間
+    -- 帳號狀態（migration 027，#87）：active / disabled 停用 / deidentified 去識別化 / pending_deletion 待刪除（30 天回收期）
+    -- is_active 與它同步（account_status = 'active' 才是 true），後端 core/auth.py 看 is_active
+    account_status TEXT NOT NULL DEFAULT 'active'
+        CONSTRAINT profiles_account_status_check CHECK (account_status IN ('active', 'disabled', 'deidentified', 'pending_deletion')),
+    status_reason TEXT,                                -- 停用、去識別化、刪除的原因
+    status_changed_at TIMESTAMPTZ,
+    status_changed_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    deletion_scheduled_for TIMESTAMPTZ,                -- 待刪除：這個時間之後才能真正刪除
+    status_before_deletion TEXT,                       -- 申請刪除前的狀態，30 天內復原時回到這個狀態
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 -- complete_registration() 定義在 supabase/migrations/004_registration.sql
@@ -237,7 +246,8 @@ CREATE TABLE IF NOT EXISTS public.ai_evaluations (
 CREATE TABLE IF NOT EXISTS public.teacher_reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id UUID NOT NULL REFERENCES public.step_attempts(id) ON DELETE CASCADE,
-    teacher_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    -- 老師帳號被刪除時判定保留（migration 027 從 CASCADE 改成 SET NULL，避免連帶刪掉學生的研究資料）
+    teacher_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     decision TEXT CHECK (decision IN ('accept_ai', 'modify', 'override', 'request_retry')) NOT NULL,
     final_score INT,
     final_feedback TEXT,

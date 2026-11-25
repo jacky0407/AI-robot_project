@@ -251,6 +251,57 @@
 
 ## 二、帳號管理 (Users)
 
+### 已實作：帳號停用、去識別化與永久刪除（`/api/admin/accounts`，#87，migration 027）
+
+實作在 `backend/api/accounts.py`，規則在 `backend/core/accounts.py`。下方 `/api/users` 系列是早期規劃，以這一段為準。
+
+**帳號狀態**（`profiles.account_status`，`is_active` 與它同步）：
+
+| 狀態 | 能不能登入 | 資料 | 能不能復原 |
+|------|-----------|------|-----------|
+| `active` 使用中 | ✅ | — | — |
+| `disabled` 已停用 | ❌ | 全部保留 | ✅ 隨時恢復 |
+| `deidentified` 已去識別化 | ❌ | 姓名、Email 換成匿名研究編號；學習歷程保留給研究 | ❌ |
+| `pending_deletion` 待刪除 | ❌ | 30 天回收期內全部保留 | ✅ 30 天內復原；之後清除就真的刪除 |
+
+| 權限 | 方法與路徑 | Body | 說明 |
+|------|-----------|------|------|
+| HOST、ASSISTANT | `GET /api/admin/accounts?status=&role=&q=` | — | 帳號清單，每個附 `actions`（目前登入者可以做的操作）；教授另外看到 `due_for_purge`（可以清除的數量） |
+| HOST、ASSISTANT | `POST /api/admin/accounts/:id/disable` | `{reason}` | 停用；助理只能對學生 |
+| HOST、ASSISTANT | `POST /api/admin/accounts/:id/enable` | `{reason?}` | 恢復停用的帳號；助理只能對學生 |
+| HOST | `POST /api/admin/accounts/:id/deidentify` | `{reason, confirm: "去識別化"}` | 去識別化，只對學生 |
+| HOST | `POST /api/admin/accounts/:id/delete` | `{reason, confirm_email}` | 排定永久刪除（30 天回收期）；**要 5 分鐘內重新驗證** |
+| HOST | `POST /api/admin/accounts/:id/restore` | — | 回收期內復原，回到申請刪除前的狀態 |
+| HOST | `POST /api/admin/accounts/purge-due` | — | 清除回收期已過的帳號（真正刪除）；**要 5 分鐘內重新驗證** |
+
+**規則：**
+- 原因必填（恢復除外，2–500 字）；去識別化要輸入「去識別化」、永久刪除要輸入對方的 Email（不分大小寫）確認
+- 不能停用：Supabase Auth 也封鎖登入（`ban_duration`）；封鎖失敗就回 502，帳號狀態不變
+- 去識別化：`full_name` 換成匿名研究編號（`research_consents.anonymous_research_id`），`email` 換成 `<編號>@deidentified.invalid`，
+  Supabase Auth 的 Email 一起換掉；刪掉自備的 Gemini 金鑰；操作紀錄**不寫**原本的姓名與 Email
+- 永久刪除 = 這個人的帳號與**他自己的**資料（作答、評分、選課、同意書、聊天…）全部刪除；要保留研究資料請改用去識別化。
+  老師帳號被刪除時，他寫過的教師判定保留（`teacher_reviews.teacher_id` 改成 `ON DELETE SET NULL`）
+- 不能對自己操作（`CANNOT_MANAGE_SELF`）；最後一位使用中的教授不能被停用或刪除（`LAST_OWNER`）
+- 被停用的人：後端回 403 `ACCOUNT_DISABLED`；前端 middleware 立刻登出並回登入頁說明
+- 每個操作寫進操作紀錄：`account.disable` / `enable` / `deidentify` / `delete_request` / `restore` / `purge`
+
+**再次驗證**：`delete`、`purge-due` 要 token 裡最近一次輸入驗證碼（`amr` 的 totp 時間）在 5 分鐘內，否則 403 `REAUTH_REQUIRED`。
+前端在送出前請老師再輸入一次 6 位數（`supabase.auth.mfa.challengeAndVerify`），拿到新的 token 再送。
+
+| 情況 | 回應 |
+|------|------|
+| 權限不足（助理對教師、助理去識別化或刪除） | 403 `PERMISSION_DENIED` |
+| 對自己操作 | 403 `CANNOT_MANAGE_SELF` |
+| 沒有重新驗證 | 403 `REAUTH_REQUIRED` |
+| 確認文字或 Email 不對 | 400 `CONFIRM_MISMATCH` |
+| 教師帳號去識別化 | 400 `STAFF_CANNOT_BE_DEIDENTIFIED` |
+| 狀態不對（例如停用已停用的帳號） | 409 `INVALID_STATUS_TRANSITION` |
+| 最後一位教授 | 409 `LAST_OWNER` |
+| 帳號不存在 | 404 `ACCOUNT_NOT_FOUND` |
+| Supabase Auth 更新失敗 | 502 `AUTH_UPDATE_FAILED` |
+| 還沒跑 migration 027 | 503 `MIGRATION_REQUIRED` |
+
+
 ### `GET /api/users`
 **權限**：HOST, ASSISTANT
 

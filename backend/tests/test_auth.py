@@ -232,3 +232,19 @@ class TestRequireOwner:
         with pytest.raises(HTTPException) as excinfo:
             require_owner(CurrentUser(id="u1", role="assistant", aal="aal2"))
         assert error_of(excinfo) == (403, "PERMISSION_DENIED")
+
+
+class TestTokenMfaAt:
+    """#87：永久刪除帳號要 5 分鐘內重新驗證，時間從 token 的 amr 讀"""
+
+    def test_latest_totp_timestamp(self):
+        from core.auth import token_mfa_at
+        token = jwt_with({"amr": [{"method": "password", "timestamp": 100},
+                                  {"method": "totp", "timestamp": 200},
+                                  {"method": "totp", "timestamp": 300}]})
+        assert token_mfa_at(token) == 300
+
+    @pytest.mark.parametrize("claims", [{"amr": [{"method": "password", "timestamp": 100}]}, {}, {"amr": "bad"}])
+    def test_no_totp_is_none(self, claims):
+        from core.auth import token_mfa_at
+        assert token_mfa_at(jwt_with(claims)) is None
