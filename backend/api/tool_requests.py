@@ -27,6 +27,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from core.audit import record
 from core.auth import CurrentUser, get_current_user, require_staff
 from database.client import get_supabase
 
@@ -318,4 +319,13 @@ async def review_request(
 
     res = supabase.table("tool_permissions").update(changes).eq("id", str(request_id)).execute()
     row = res.data[0]
-    return {"data": _to_output(row, _titles(supabase, [row]), today), "message": message}
+    output = _to_output(row, _titles(supabase, [row]), today)
+    record(supabase, user, f"permission.{body.action}", target_type="permission", target_id=request_id, detail={
+        "student_id": row.get("user_id"),
+        "kind": output["kind"],
+        "module_id": row.get("module_id"),
+        "tool_id": row.get("tool_id"),
+        "from_status": current,
+        "changes": changes,
+    })
+    return {"data": output, "message": message}

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.audit import record
 from core.auth import CurrentUser, require_staff
 from core.templates import copy_title, module_content, pick_title
 from core.templates import create_module as create_module_from_content
@@ -297,6 +298,7 @@ async def create_module(body: CreateModuleRequest, user: CurrentUser = Depends(r
         "domain": body.domain,
         "is_published": False,
     }).execute()
+    record(db, user, "module.create", target_type="module", target_id=res.data[0]["id"], detail={"title": body.title})
     return {"data": {**res.data[0], "steps": []}, "message": "已建立模組，請新增步驟後再發布"}
 
 
@@ -325,6 +327,7 @@ async def update_module(module_id: UUID, body: UpdateModuleRequest, user: Curren
         _check_publishable(db, module_id)
 
     db.table("learning_modules").update(changes).eq("id", module_id).execute()
+    record(db, user, "module.update", target_type="module", target_id=module_id, detail=changes)
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -334,7 +337,7 @@ async def delete_module(module_id: UUID, user: CurrentUser = Depends(require_sta
     _require_owner(user)
     db = get_supabase()
     module_id = str(module_id)
-    _get_module_or_404(db, module_id)
+    module = _get_module_or_404(db, module_id)
 
     if _attempt_counts(db, module_id=module_id):
         raise _error(
@@ -346,6 +349,8 @@ async def delete_module(module_id: UUID, user: CurrentUser = Depends(require_sta
     assigned = db.table("course_modules").select("course_id").eq("module_id", module_id).execute().data or []
     db.table("learning_modules").delete().eq("id", module_id).execute()
     message = "已刪除模組" + (f"，並取消 {len(assigned)} 門課程的指派" if assigned else "")
+    record(db, user, "module.delete", target_type="module", target_id=module_id,
+           detail={"title": module.get("title"), "unassigned_courses": [a["course_id"] for a in assigned]})
     return {"success": True, "message": message}
 
 
@@ -394,6 +399,8 @@ async def copy_module(
     content = load_module_content(db, source)
     title = pick_title(body.title if body else None, copy_title(source.get("title")))
     module, skipped = create_module_from_content(db, content, title=title)
+    record(db, user, "module.copy", target_type="module", target_id=module["id"],
+           detail={"source_id": source["id"], "skipped_steps": skipped})
     return copy_result(module, skipped, db)
 
 
@@ -435,6 +442,8 @@ async def add_step(module_id: UUID, body: CreateStepRequest, user: CurrentUser =
             raise _migration_required("020_chat_rooms.sql")
         raise
 
+    record(db, user, "step.create", target_type="module", target_id=module_id,
+           detail={"step_title": body.step_title, "tool_id": tool_id, "step_order": next_order})
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -478,6 +487,8 @@ async def update_step(
         if "pass_mode" in changes:
             raise _migration_required("019_step_pass_mode.sql")
         raise
+    record(db, user, "step.update", target_type="step", target_id=step_id,
+           detail={"module_id": module_id, "changes": changes})
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -488,7 +499,7 @@ async def delete_step(module_id: UUID, step_id: UUID, user: CurrentUser = Depend
     db = get_supabase()
     module_id, step_id = str(module_id), str(step_id)
     _get_module_or_404(db, module_id)
-    _get_step_or_404(db, module_id, step_id)
+    step = _get_step_or_404(db, module_id, step_id)
 
     if _attempt_counts(db, module_id=module_id).get(step_id):
         raise _error(
@@ -499,6 +510,8 @@ async def delete_step(module_id: UUID, step_id: UUID, user: CurrentUser = Depend
 
     db.table("module_steps").delete().eq("id", step_id).execute()
     _compact_order(db, module_id)
+    record(db, user, "step.delete", target_type="step", target_id=step_id,
+           detail={"module_id": module_id, "step_title": step.get("step_title"), "tool_id": step.get("tool_id")})
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 

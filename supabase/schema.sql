@@ -406,6 +406,41 @@ CREATE TABLE IF NOT EXISTS public.templates (
 );
 CREATE INDEX IF NOT EXISTS templates_kind_idx ON public.templates (kind, created_at);
 
+-- 操作稽核紀錄（migration 026，#90）：教師端誰、在什麼時間、做了什麼（backend/core/audit.py）
+-- 只能新增：service_role 只有 SELECT / INSERT，觸發器再擋 UPDATE / DELETE / TRUNCATE；
+-- actor_id 不設外鍵（帳號刪除時不能去改舊紀錄）；detail 不放學生作答原文或個資
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id UUID,
+    actor_role TEXT,
+    action TEXT NOT NULL,                  -- 例如 tool.update、review.judge、export.research
+    target_type TEXT,
+    target_id TEXT,
+    detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON public.audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON public.audit_logs (actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_action_idx ON public.audit_logs (action, created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.audit_logs_append_only()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION '操作紀錄（audit_logs）只能新增，不能修改或刪除';
+END;
+$$;
+DROP TRIGGER IF EXISTS audit_logs_no_update_delete ON public.audit_logs;
+CREATE TRIGGER audit_logs_no_update_delete
+    BEFORE UPDATE OR DELETE ON public.audit_logs
+    FOR EACH ROW EXECUTE FUNCTION public.audit_logs_append_only();
+DROP TRIGGER IF EXISTS audit_logs_no_truncate ON public.audit_logs;
+CREATE TRIGGER audit_logs_no_truncate
+    BEFORE TRUNCATE ON public.audit_logs
+    FOR EACH STATEMENT EXECUTE FUNCTION public.audit_logs_append_only();
+-- 權限：只給 service_role 讀與新增（資料表權限其他都在 migrations/002，這張表例外寫在這裡）
+REVOKE ALL ON public.audit_logs FROM anon, authenticated, service_role;
+GRANT SELECT, INSERT ON public.audit_logs TO service_role;
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -501,6 +536,7 @@ ALTER TABLE public.chat_messages       ENABLE ROW LEVEL SECURITY;  -- 不建政�
 ALTER TABLE public.course_materials    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.material_chunks     ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.templates           ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取（migration 023）
+ALTER TABLE public.audit_logs          ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可讀與新增（migration 026）
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

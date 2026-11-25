@@ -652,6 +652,65 @@
 
 ---
 
+## 二之一、安全：兩步驟驗證與操作紀錄（#90，migration 026）
+
+### 兩步驟驗證
+
+- 所有用 `require_staff` 的教師端 API，除了角色是 owner / assistant，還要求這次登入完成兩步驟驗證：
+  Supabase access token 的 `aal` 必須是 `aal2`，否則回 **403 `MFA_REQUIRED`**
+- 前端：`middleware.ts` 在進 `/admin` 前檢查，沒完成就導到 `/mfa`（設定或輸入驗證碼）；`apiFetch` 收到 `MFA_REQUIRED` 也會導到 `/mfa`
+- 學生端 API 不受影響
+- 緊急關閉：後端環境變數 `STAFF_MFA_REQUIRED=false`（見 docs/SETUP.md）
+
+### 操作紀錄 `GET /api/admin/audit-logs`
+
+**權限**：只限 HOST（教授）；助理與學生回 403。
+
+| Query | 說明 |
+|-------|------|
+| `action` | 某一種操作，例如 `tool.update`；結尾是 `.` 代表前綴，例如 `tool.` = 機器人的全部操作 |
+| `actor_id` | 只看某位老師或助理 |
+| `date_from`、`date_to` | 台灣時間的日期（`YYYY-MM-DD`，含當天）；開始晚於結束回 400 `INVALID_DATE_RANGE` |
+| `limit`、`offset` | 分頁，`limit` 預設 50、最多 200 |
+
+**回應：**
+```json
+{
+  "data": [{
+    "id": "…", "created_at": "…",
+    "actor_id": "…", "actor_role": "assistant", "actor_name": "王助理", "actor_email": "…",
+    "action": "tool.update", "action_label": "修改機器人",
+    "target_type": "tool", "target_id": "…",
+    "detail": { "from_version": 2, "version": 3, "fields": ["rubric_criteria"], "rubric_changed": true }
+  }],
+  "has_more": true,
+  "actions": [{ "value": "tool.create", "label": "建立機器人" }]
+}
+```
+
+**會記錄的操作**（`backend/core/audit.py` 的 `ACTIONS`）：
+
+| action | 什麼時候 | detail |
+|--------|---------|--------|
+| `tool.create` / `tool.update` / `tool.copy` / `tool.delete` | 機器人 | 改了哪些欄位、版本從幾到幾、是否改了評分規準（內容本身在 `ai_tool_versions`） |
+| `module.create` / `module.update` / `module.copy` / `module.delete` | 模組（含發布、取消發布） | 改了什麼 |
+| `step.create` / `step.update` / `step.delete` | 關卡（含停用、換機器人） | 改了什麼 |
+| `review.judge` | 教師判定 | 判定、分數、是否發布 |
+| `export.research` / `export.teaching` | 匯出 | 筆數、是否含作答原文（`export_logs` 照舊保留） |
+| `permission.approve` / `permission.reject` | 自主探索申請的核准、拒絕、撤銷 | 學生、模組或機器人、期限與次數 |
+| `member.update` | 課程成員核准、拒絕、移出 | 學生、狀態從什麼到什麼 |
+| `invite_code.delete` | 刪除邀請碼（含移出學生） | 移出幾位學生 |
+
+規則：
+- 紀錄**只能新增**：沒有修改或刪除的 API，資料庫觸發器也擋掉 UPDATE / DELETE / TRUNCATE
+- `detail` 只放 id、欄位名稱、版本、數字；長字串截斷到 200 字，不放學生作答原文
+- 寫入失敗只記 log，不擋住操作本身
+- 被拒絕（403）或沒有實際改變的操作不記錄
+- 帳號已刪除的操作者顯示「（已刪除的帳號）」，紀錄本身不會被改
+- 還沒跑 migration 026 → 查詢回 503 `MIGRATION_REQUIRED`
+
+---
+
 ## 三之一、自主探索申請（申請模組，Module Requests）
 
 實作在 `backend/api/tool_requests.py`，資料存在 `tool_permissions`（一筆 = 一次申請），需要 migration 025。

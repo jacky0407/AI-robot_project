@@ -22,6 +22,7 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from core.tool_lock import apply_locked_version
+from core.audit import record
 from core.auth import CurrentUser, require_staff
 from core.learner_profile import refresh_learner_profile
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_review
@@ -307,6 +308,13 @@ async def judge_submission(
     if attempt.get("user_id") and attempt.get("module_id"):
         refresh_learner_profile(db, attempt["user_id"], attempt["module_id"], attempt_id)
 
+    record(db, user, "review.judge", target_type="attempt", target_id=attempt_id, detail={
+        "decision": body.decision,
+        "final_score": body.final_score,
+        "is_published": body.is_published,
+        "new_status": new_status,
+        "review_id": review_res.data[0].get("id"),
+    })
     return {"data": review_res.data[0]}
 
 

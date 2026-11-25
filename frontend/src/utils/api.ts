@@ -47,7 +47,14 @@ async function toApiError(res: Response): Promise<ApiError> {
     // 非 JSON 錯誤（例如後端沒開）就只回狀態碼
   }
   const detail = body && typeof body === 'object' && 'detail' in body ? (body as { detail: unknown }).detail : body
-  return new ApiError(res.status, detail)
+  const error = new ApiError(res.status, detail)
+  // 教師端還沒完成兩步驟驗證（#90，後端 core/auth.py）：帶到 /mfa，完成後回到目前這頁
+  if (error.code === 'MFA_REQUIRED' && typeof window !== 'undefined' && !window.location.pathname.startsWith('/mfa')) {
+    // 這裡不在 React 元件裡、拿不到 router；整頁重新載入也讓 middleware 重新檢查登入狀態
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.href = `/mfa?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
+  }
+  return error
 }
 
 // 後端用 Authorization: Bearer <token> 判斷是哪位使用者（backend/core/auth.py），
