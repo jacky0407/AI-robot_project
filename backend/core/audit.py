@@ -40,6 +40,12 @@ ACTIONS: dict[str, str] = {
     "permission.reject": "拒絕或撤銷自主探索申請",
     "member.update": "修改課程成員狀態",
     "invite_code.delete": "刪除邀請碼（含移除學生）",
+    "account.disable": "停用帳號",
+    "account.enable": "恢復帳號",
+    "account.deidentify": "帳號去識別化",
+    "account.delete_request": "申請永久刪除帳號（30 天回收期）",
+    "account.restore": "復原待刪除的帳號",
+    "account.purge": "永久刪除帳號（回收期已過）",
 }
 
 MAX_DETAIL_TEXT = 200

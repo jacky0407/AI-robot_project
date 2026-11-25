@@ -38,6 +38,7 @@ from api.chat import router as chat_router
 from api.materials import router as materials_router
 from api.templates import router as templates_router
 from api.audit_logs import router as audit_logs_router
+from api.accounts import router as accounts_router
 
 app.include_router(practice_router)
 # TODO: 等成員二實作後，在此加入其他 router
@@ -57,6 +58,7 @@ app.include_router(chat_router)
 app.include_router(materials_router)
 app.include_router(templates_router)
 app.include_router(audit_logs_router)
+app.include_router(accounts_router)
 
 
 @app.get("/")
