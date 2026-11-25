@@ -35,6 +35,7 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from core.access import today_taipei
+from core.audit import record
 from core.auth import CurrentUser, get_current_user, require_staff
 from core.user_api_keys import has_key
 from database.client import get_supabase
@@ -554,6 +555,8 @@ async def delete_invite_code(course_id: UUID, code_id: UUID, user: CurrentUser =
 
     removed = delete_invite_code_and_members(supabase, code_id)
     code = existing.data[0]["code"]
+    record(supabase, user, "invite_code.delete", target_type="course", target_id=course_id,
+           detail={"invite_code_id": code_id, "code": code, "removed_members": removed})
     message = f"已刪除邀請碼 {code}" + (f"，並將 {removed} 位用這組碼加入的學生移出課程" if removed else "")
     return {"success": True, "removed_members": removed, "message": message}
 
@@ -638,4 +641,10 @@ async def update_member(
         .eq("id", existing.data[0]["id"])
         .execute()
     )
+    record(supabase, user, "member.update", target_type="course", target_id=course_id, detail={
+        "student_id": str(user_id),
+        "action": body.action,
+        "from_status": current,
+        "to_status": new_status,
+    })
     return {"data": res.data[0], "message": "成員狀態已更新"}

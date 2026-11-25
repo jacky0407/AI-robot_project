@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from core.audit import record
 from core.auth import CurrentUser, require_staff
 from core.privacy import PII_PATTERNS
 from database.client import get_supabase
@@ -167,6 +168,11 @@ def _csv(columns: list[str], rows: list[dict]) -> bytes:
 
 
 def _audit(db, user: CurrentUser, kind: str, body: ExportRequest, row_count: int) -> None:
+    # 操作紀錄（#90）：跟其他教師端操作放在同一個地方查；export_logs 照舊保留
+    record(db, user, f"export.{kind}", target_type="course", target_id=body.course_id, detail={
+        "row_count": row_count,
+        "include_content": bool(getattr(body, "include_content", False)),
+    })
     try:
         db.table("export_logs").insert({
             "exported_by": user.id,

@@ -2,7 +2,7 @@
 測試用的記憶體版 Supabase：資料真的會被新增、修改、刪除，
 適合要驗證「操作後資料變成什麼樣子」的測試（模組與步驟管理、解鎖規則）。
 
-只支援測試用到的鏈式方法：select / insert / update / delete / eq / lt / in_ / order / limit / execute，
+只支援測試用到的鏈式方法：select / insert / update / delete / eq / lt / gte / like / in_ / order / limit / range / execute，
 以及 rpc()。select 一律回傳整列（不做欄位投影），巢狀關聯直接寫在列資料裡。
 
 模擬錯誤：db.errors[(table, op)] = Exception，該操作執行時拋出。
@@ -26,6 +26,7 @@ class _Query:
         self.filters: list = []
         self.order_by: list[tuple[str, bool]] = []
         self.limit_n: int | None = None
+        self.offset_n = 0
 
     def select(self, columns="*", **kwargs):
         self.op, self.selected = "select", columns
@@ -49,6 +50,23 @@ class _Query:
 
     def lt(self, column, value):
         self.filters.append(lambda r, c=column, v=value: r.get(c) is not None and r.get(c) < v)
+        return self
+
+    def gte(self, column, value):
+        self.filters.append(lambda r, c=column, v=value: r.get(c) is not None and r.get(c) >= v)
+        return self
+
+    def like(self, column, pattern):
+        # 只支援結尾 % 的前綴比對（測試用到的寫法）
+        prefix = pattern[:-1] if pattern.endswith("%") else pattern
+        exact = not pattern.endswith("%")
+        self.filters.append(
+            lambda r, c=column: isinstance(r.get(c), str) and (r[c] == prefix if exact else r[c].startswith(prefix))
+        )
+        return self
+
+    def range(self, start, end):
+        self.offset_n, self.limit_n = start, end - start + 1
         return self
 
     def in_(self, column, values):
@@ -78,6 +96,7 @@ class _Query:
             result = [dict(r) for r in rows if self._matches(r)]
             for column, desc in reversed(self.order_by):
                 result.sort(key=lambda r: (r.get(column) is None, r.get(column)), reverse=desc)
+            result = result[self.offset_n:]
             return FakeResult(result[: self.limit_n] if self.limit_n is not None else result)
 
         if self.op == "insert":

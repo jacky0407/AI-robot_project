@@ -241,6 +241,22 @@ Authentication → Emails → **SMTP Settings** 改用自己的寄信服務（�
 
 設定好後到 Authentication → **Rate Limits** 調高寄信上限。應用程式密碼只填在 Supabase 後台，不要寫進程式碼、`.env` 或文件。
 
+### 教師端兩步驟驗證（#90，每個 Supabase 專案確認一次）
+
+教授與助理進後台一定要完成兩步驟驗證（登入後再輸入手機驗證器 App 的 6 位數）。用 Supabase 內建的 TOTP，密鑰存在 Supabase。
+
+- **確認有開**：Authentication → **Multi-Factor**（多重要素驗證）→ TOTP 要是開啟（Supabase 預設開啟）
+- **老師第一次進後台**：會被帶到 `/mfa`，照畫面掃 QR code 設定；之後每次登入輸入 6 位數。每個人的 QR code 都是自己的，新的助理只要自己設定，其他人不受影響
+- **換手機、手機遺失**：Authentication → **Users** → 找到那位老師 → 刪掉他的 MFA factor（驗證設定）。他下次進後台就會重新看到 QR code。
+  不做成老師自己重設：那樣偷到密碼的人也能自己重設
+- **緊急關閉**（例如 Supabase 的兩步驟驗證故障，老師都進不了後台）：Render 環境變數設 `STAFF_MFA_REQUIRED=false` 後重新部署，後端就不檢查；
+  前端 `/admin` 仍會要求驗證，真的要全部關掉要另外改 `frontend/src/middleware.ts`。問題解決後記得改回來
+
+### 操作紀錄（#90）
+
+教授在後台「操作紀錄」頁查詢誰在什麼時間做了什麼（`audit_logs`，migration 026）。
+這張表**只能新增、不能修改或刪除**（資料庫觸發器擋住，連 SQL Editor 也改不了）；真的要清理，要由資料庫管理者先拿掉觸發器，不要隨便做。
+
 ### 注意
 
 - `render.yaml` 設了 `autoDeploy: false`：main 合併後**不會**自動更新，要到 Render 按 Manual Deploy

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # ⚠️ 換掉這把會讓已存的學生金鑰全部無法解開（學生要重新填）
     api_key_encryption_key: str = ""
 
+    # 教師端一律要完成兩步驟驗證（#90，core/auth.py 的 require_staff）。
+    # 只在緊急狀況（例如 Supabase 的兩步驟驗證故障，老師都進不了後台）才在 Render 設成 false 暫時關掉
+    staff_mfa_required: bool = True
+
     @property
     def light_model(self) -> str:
         """對話類功能實際用的模型：有設 GEMINI_LIGHT_MODEL 就用它，否則用 GEMINI_MODEL"""

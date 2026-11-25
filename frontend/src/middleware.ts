@@ -75,9 +75,19 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(new URL(withNext('/onboarding', here), request.url))
       }
 
-      // 4. /admin 後台只有 owner / assistant 可以進入
-      if (pathname.startsWith('/admin') && !isStaff) {
+      // 4. /admin 後台與兩步驟驗證頁只有 owner / assistant 可以進入
+      if ((pathname.startsWith('/admin') || pathname.startsWith('/mfa')) && !isStaff) {
         return NextResponse.redirect(new URL('/student/courses', request.url))
+      }
+
+      // 4-1. 教師端一律要完成兩步驟驗證（#90）：這次登入還沒輸入驗證碼（aal1）就先到 /mfa
+      //      還沒設定過的人會在 /mfa 看到 QR code 設定，設定過的人輸入 6 位數驗證碼。
+      //      後端 require_staff 也會檢查（core/auth.py），這裡只是讓老師直接看到該做什麼
+      if (pathname.startsWith('/admin') && isStaff) {
+        const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+        if (aal?.currentLevel !== 'aal2') {
+          return NextResponse.redirect(new URL(withNext('/mfa', here), request.url))
+        }
       }
 
       // 5. 教師不進學生練習頁填寫模組（開會紀錄 #49 第 2 項）：/student 一律導回後台的課程管理
@@ -92,5 +102,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   // /portal、/xr：兩系統共用登入整合方案 #3，沒登入或沒完成註冊的人進不去
-  matcher: ['/admin/:path*', '/student/:path*', '/onboarding', '/portal', '/xr', '/xr/:path*'],
+  // /mfa：教師端兩步驟驗證（#90）
+  matcher: ['/admin/:path*', '/student/:path*', '/onboarding', '/portal', '/xr', '/xr/:path*', '/mfa'],
 }

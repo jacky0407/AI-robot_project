@@ -70,7 +70,7 @@ Summer_project/
 ├── supabase/
 │   ├── schema.sql              21 張表 + 觸發器（已同步 migrations）
 │   ├── seed.sql                示範資料（只限本機）
-│   ├── migrations/             001–025（016 保留不用），可重複執行
+│   ├── migrations/             001–026（016 保留不用），可重複執行
 │   └── practice_repo.py        ⚠️ 已停用，沒有任何地方 import
 └── docs/
 ```

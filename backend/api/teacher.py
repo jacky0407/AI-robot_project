@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from core.audit import record
 from core.auth import CurrentUser, require_staff
 from core.tool_lock import (
     LockMigrationRequired,
@@ -216,6 +217,8 @@ async def create_ai_tool(body: ToolCreate, user: CurrentUser = Depends(require_s
         raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "CREATE_FAILED", "建立機器人失敗")
     tool = res.data[0]
     _save_version(db, tool, user.id)
+    record(db, user, "tool.create", target_type="tool", target_id=tool["id"],
+           detail={"title": tool.get("title"), "version": 1})
     return {"data": tool}
 
 
@@ -245,6 +248,7 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
 
     # 老師選了哪些模組要更新：沒選的先停在目前這一版，再升版（先做這步，失敗就什麼都沒改）。
     # 內容沒改也照樣套用：讓老師可以把先前停在舊版的模組改回跟著最新版
+    lock_changes: list = []
     if body.update_modules is not None:
         lock_changes = plan_lock_changes(load_tool_usages(db, tool_id), set(body.update_modules), current_version)
         try:
@@ -261,6 +265,9 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
         result = {"data": tool, "changed": False, "rubric_changed": False, "attempt_count": 0}
         if body.update_modules is not None:
             result["used_by"] = summarize_usages(db, load_tool_usages(db, tool_id))
+            if lock_changes:
+                record(db, user, "tool.update", target_type="tool", target_id=tool_id,
+                       detail={"version": current_version, "fields": [], "module_locks": len(lock_changes)})
         return result
 
     new_version = current_version + 1
@@ -283,6 +290,14 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
     _save_version(db, updated, user.id)
 
     rubric_changed = any(k in changes for k in RUBRIC_FIELDS)
+    # 改了哪些欄位、版本從幾到幾；內容本身已存在 ai_tool_versions，這裡不重複存
+    record(db, user, "tool.update", target_type="tool", target_id=tool_id, detail={
+        "from_version": current_version,
+        "version": new_version,
+        "fields": sorted(changes),
+        "rubric_changed": rubric_changed,
+        "module_locks": len(lock_changes),
+    })
     return {
         "data": updated,
         "changed": True,
@@ -308,6 +323,8 @@ async def copy_ai_tool(tool_id: str, body: CopyRequest | None = None, user: Curr
     source = _get_tool(db, tool_id)
     title = pick_title(body.title if body else None, copy_title(source.get("title")))
     tool = create_tool(db, tool_content(source), user_id=user.id, title=title)
+    record(db, user, "tool.copy", target_type="tool", target_id=tool["id"],
+           detail={"source_id": tool_id, "source_version": source.get("version")})
     return {"data": {**tool, "can_edit": True}, "message": f"已複製成「{tool['title']}」（草稿），請確認內容後再發布"}
 
 
@@ -343,4 +360,6 @@ async def delete_ai_tool(tool_id: str, user: CurrentUser = Depends(require_staff
             detail="找不到該 AI 機器人或已被刪除"
         )
 
+    record(supabase, user, "tool.delete", target_type="tool", target_id=tool_id,
+           detail={"title": (res.data[0] or {}).get("title")})
     return {"success": True, "message": "已成功刪除 AI 機器人"}
