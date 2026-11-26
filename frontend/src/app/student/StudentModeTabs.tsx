@@ -15,12 +15,12 @@ const MODES = [
 export default function StudentModeTabs() {
   const pathname = usePathname();
   return (
-    <nav style={{ display: "flex", alignItems: "center", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
+    <nav style={{ display: "flex", alignItems: "center", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "var(--t-surface-2)" }}>
       {/* 回到 /portal 選擇其他系統（例如 XR 訪談訓練） */}
       <Link
         href="/portal"
         title="回到系統選擇頁"
-        style={{ padding: "6px 10px", borderRadius: "8px", fontSize: "13px", textDecoration: "none", color: "#94a3b8", borderRight: "1px solid rgba(255,255,255,0.1)", marginRight: "4px" }}
+        style={{ padding: "6px 10px", borderRadius: "8px", fontSize: "13px", textDecoration: "none", color: "var(--t-text-muted)", borderRight: "1px solid var(--t-border)", marginRight: "4px" }}
       >
         ⌂ 選擇系統
       </Link>
@@ -37,8 +37,8 @@ export default function StudentModeTabs() {
               fontSize: "13px",
               fontWeight: "bold",
               textDecoration: "none",
-              backgroundColor: active ? "#2563eb" : "transparent",
-              color: active ? "#fff" : "#94a3b8",
+              backgroundColor: active ? "var(--t-primary)" : "transparent",
+              color: active ? "var(--t-on-primary)" : "var(--t-text-muted)",
             }}
           >
             {m.label}

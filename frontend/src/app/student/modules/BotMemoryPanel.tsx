@@ -73,58 +73,58 @@ export default function BotMemoryPanel({ stepId, refreshKey, panelStyle }: { ste
         style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", padding: 0, background: "none", border: "none", color: "inherit", font: "inherit", cursor: "pointer" }}
       >
         <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>AI 助教記得你</h3>
-        <span style={{ fontSize: "12px", color: "#64748b" }}>{open ? "收合 ▴" : "展開 ▾"}</span>
+        <span style={{ fontSize: "12px", color: "var(--t-text-faint)" }}>{open ? "收合 ▴" : "展開 ▾"}</span>
       </button>
 
       {open && (
         <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "13px" }}>
-          {state === null && <p style={{ margin: 0, color: "#94a3b8" }}>讀取中…</p>}
-          {state && "error" in state && <p style={{ margin: 0, color: "#64748b" }}>暫時讀不到記憶（{state.error}）。不影響作答與評分。</p>}
+          {state === null && <p style={{ margin: 0, color: "var(--t-text-muted)" }}>讀取中…</p>}
+          {state && "error" in state && <p style={{ margin: 0, color: "var(--t-text-faint)" }}>暫時讀不到記憶（{state.error}）。不影響作答與評分。</p>}
 
-          {memory && !memory.enabled && <p style={{ margin: 0, color: "#94a3b8" }}>老師沒有為這支 AI 助教開啟記憶，每次作答都會重新開始。</p>}
+          {memory && !memory.enabled && <p style={{ margin: 0, color: "var(--t-text-muted)" }}>老師沒有為這支 AI 助教開啟記憶，每次作答都會重新開始。</p>}
 
           {memory?.enabled && isEmpty && (
-            <p style={{ margin: 0, color: "#94a3b8" }}>這是你第一次練習這一關，AI 助教還沒有關於你的紀錄。送出作答後，它會記住你的進步與常犯的錯誤。</p>
+            <p style={{ margin: 0, color: "var(--t-text-muted)" }}>這是你第一次練習這一關，AI 助教還沒有關於你的紀錄。送出作答後，它會記住你的進步與常犯的錯誤。</p>
           )}
 
           {memory?.enabled && !isEmpty && (
             <>
               {/* 重複出現的錯誤：最值得注意，放最上面 */}
               {memory.recurring_errors.length > 0 && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "bold", color: "#fbbf24", marginBottom: "4px" }}>你最近常犯</div>
+                <div style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "var(--t-warning-soft)", border: "1px solid var(--t-warning-border)" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--t-warning)", marginBottom: "4px" }}>你最近常犯</div>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     {memory.recurring_errors.map((e) => (
-                      <span key={e} style={chip("#fde68a", "rgba(245,158,11,0.2)")}>
+                      <span key={e} style={chip("var(--t-warning)", "var(--t-warning-soft)")}>
                         {e}
                       </span>
                     ))}
                   </div>
-                  <div style={{ fontSize: "12px", color: "#fcd34d", marginTop: "6px" }}>這次寫的時候可以特別注意。</div>
+                  <div style={{ fontSize: "12px", color: "var(--t-warning)", marginTop: "6px" }}>這次寫的時候可以特別注意。</div>
                 </div>
               )}
 
               {/* 這一關最近幾次 */}
               {memory.attempts.length > 0 && (
                 <div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}>你在這一關最近 {memory.attempts.length} 次作答（新 → 舊）</div>
+                  <div style={{ fontSize: "12px", color: "var(--t-text-muted)", marginBottom: "6px" }}>你在這一關最近 {memory.attempts.length} 次作答（新 → 舊）</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {[...memory.attempts].reverse().map((a) => (
-                      <div key={a.attempt_number} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", padding: "8px 10px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)" }}>
+                      <div key={a.attempt_number} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", padding: "8px 10px", borderRadius: "8px", backgroundColor: "var(--t-surface-2)" }}>
                         <b style={{ flexShrink: 0 }}>第 {a.attempt_number} 次</b>
                         {/* 有已發布的老師分數就以老師為準，AI 初評放在括號裡 */}
                         {a.teacher_score != null ? (
-                          <span style={{ color: "#86efac" }}>
+                          <span style={{ color: "var(--t-success)" }}>
                             老師評 {a.teacher_score} 分
-                            {a.score != null && <span style={{ color: "#64748b" }}>（AI 初評 {Math.round(a.score)} 分）</span>}
+                            {a.score != null && <span style={{ color: "var(--t-text-faint)" }}>（AI 初評 {Math.round(a.score)} 分）</span>}
                           </span>
                         ) : a.score != null ? (
-                          <span style={{ color: "#e2e8f0" }}>AI 評 {Math.round(a.score)} 分</span>
+                          <span style={{ color: "var(--t-text)" }}>AI 評 {Math.round(a.score)} 分</span>
                         ) : (
-                          <span style={{ color: "#94a3b8" }}>沒有評分，先給了 {a.hints_given > 0 ? `${a.hints_given} 則` : ""}提示</span>
+                          <span style={{ color: "var(--t-text-muted)" }}>沒有評分，先給了 {a.hints_given > 0 ? `${a.hints_given} 則` : ""}提示</span>
                         )}
-                        {a.weakest_dimension && <span style={chip("#fca5a5", "rgba(239,68,68,0.12)")}>最需要加強：{a.weakest_dimension}</span>}
-                        {a.score != null && a.hints_given > 0 && <span style={chip("#c7d2fe", "rgba(129,140,248,0.15)")}>用了 {a.hints_given} 則提示</span>}
+                        {a.weakest_dimension && <span style={chip("var(--t-danger)", "var(--t-danger-soft)")}>最需要加強：{a.weakest_dimension}</span>}
+                        {a.score != null && a.hints_given > 0 && <span style={chip("var(--t-indigo)", "var(--t-indigo-soft)")}>用了 {a.hints_given} 則提示</span>}
                       </div>
                     ))}
                   </div>
@@ -134,10 +134,10 @@ export default function BotMemoryPanel({ stepId, refreshKey, panelStyle }: { ste
               {/* 前面步驟 */}
               {memory.prior_steps.length > 0 && (
                 <div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}>它也會參考你前面關卡的作答</div>
+                  <div style={{ fontSize: "12px", color: "var(--t-text-muted)", marginBottom: "6px" }}>它也會參考你前面關卡的作答</div>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     {memory.prior_steps.map((p) => (
-                      <span key={p.step_order} style={chip(p.passed ? "#86efac" : "#cbd5e1", p.passed ? "rgba(34,197,94,0.12)" : "rgba(255,255,255,0.08)")}>
+                      <span key={p.step_order} style={chip(p.passed ? "var(--t-success)" : "var(--t-text-2)", p.passed ? "var(--t-success-soft)" : "var(--t-surface-3)")}>
                         {stepLabel(p.step_order, p.step_title)}
                         {p.passed ? "（已通過）" : "（未通過）"}
                       </span>
@@ -149,7 +149,7 @@ export default function BotMemoryPanel({ stepId, refreshKey, panelStyle }: { ste
           )}
 
           {memory?.enabled && (
-            <p style={{ margin: 0, fontSize: "11px", color: "#64748b", lineHeight: 1.6 }}>
+            <p style={{ margin: 0, fontSize: "11px", color: "var(--t-text-faint)", lineHeight: 1.6 }}>
               ⓘ AI 助教會參考這些紀錄給你回饋和提示，但分數只看這次寫的內容，不會因為以前的作答被扣分。
             </p>
           )}

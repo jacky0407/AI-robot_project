@@ -118,10 +118,10 @@ export default function ChatRoom({
   const blocked = Boolean(disabledReason) || Boolean(busy);
 
   return (
-    <div style={{ backgroundColor: "#1e293b", borderRadius: "14px", padding: "16px", border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: "10px" }}>
+    <div style={{ backgroundColor: "var(--t-surface)", borderRadius: "14px", padding: "16px", border: "1px solid var(--t-border)", display: "flex", flexDirection: "column", gap: "10px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
         <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>聊天室</h3>
-        <span style={{ fontSize: "11px", color: "#94a3b8" }}>每則訊息只由一個機器人回答；打 @名稱 可以指定</span>
+        <span style={{ fontSize: "11px", color: "var(--t-text-muted)" }}>每則訊息只由一個機器人回答；打 @名稱 可以指定</span>
       </div>
 
       <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
@@ -139,7 +139,7 @@ export default function ChatRoom({
 
       <div ref={listRef} style={{ height: "360px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", padding: "4px 2px" }}>
         {messages.length === 0 && (
-          <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>
+          <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "var(--t-text-faint)" }}>
             還沒有對話。先打個招呼，或用 @ 找特定的機器人。
             <br />
             聊天室裡有：{everyone.join("、") || "（老師還沒設定機器人）"}
@@ -148,9 +148,9 @@ export default function ChatRoom({
         {messages.map((m, i) => (
           <div key={m.id ?? i} style={{ alignSelf: m.role === "student" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
             {m.role === "bot" && (
-              <div style={{ fontSize: "11px", color: m.routed_by === "evaluate" ? "#fbbf24" : "#7dd3fc", marginBottom: "2px" }}>
+              <div style={{ fontSize: "11px", color: m.routed_by === "evaluate" ? "var(--t-warning)" : "var(--t-link)", marginBottom: "2px" }}>
                 {m.bot_name ?? "機器人"}
-                {m.routed_by && ROUTED_LABEL[m.routed_by] ? <span style={{ color: "#64748b" }}>・{ROUTED_LABEL[m.routed_by]}</span> : null}
+                {m.routed_by && ROUTED_LABEL[m.routed_by] ? <span style={{ color: "var(--t-text-faint)" }}>・{ROUTED_LABEL[m.routed_by]}</span> : null}
               </div>
             )}
             <div
@@ -160,21 +160,21 @@ export default function ChatRoom({
                 fontSize: "13px",
                 lineHeight: 1.6,
                 whiteSpace: "pre-wrap",
-                color: "#f1f5f9",
-                backgroundColor: m.role === "student" ? "#2563eb" : m.routed_by === "evaluate" ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.06)",
+                color: "var(--t-text)",
+                backgroundColor: m.role === "student" ? "var(--t-primary)" : m.routed_by === "evaluate" ? "var(--t-warning-soft)" : "var(--t-surface-2)",
               }}
             >
               {m.content}
             </div>
             {m.sources && m.sources.length > 0 && (
-              <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "3px" }}>參考教材：{m.sources.join("、")}</div>
+              <div style={{ fontSize: "11px", color: "var(--t-text-muted)", marginTop: "3px" }}>參考教材：{m.sources.join("、")}</div>
             )}
           </div>
         ))}
-        {busy && <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>{busy}</p>}
+        {busy && <p style={{ margin: 0, fontSize: "12px", color: "var(--t-text-muted)" }}>{busy}</p>}
       </div>
 
-      {warning && <div style={{ padding: "8px 10px", borderRadius: "8px", fontSize: "12px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{warning}</div>}
+      {warning && <div style={{ padding: "8px 10px", borderRadius: "8px", fontSize: "12px", color: "var(--t-danger)", backgroundColor: "var(--t-danger-soft)" }}>{warning}</div>}
 
       <textarea
         value={text}
@@ -187,17 +187,17 @@ export default function ChatRoom({
           }
         }}
         placeholder="輸入訊息，Enter 送出、Shift+Enter 換行。請勿輸入真實姓名、電話、身分證字號等個資"
-        style={{ width: "100%", height: "80px", boxSizing: "border-box", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "13px", lineHeight: 1.5, resize: "vertical", outline: "none" }}
+        style={{ width: "100%", height: "80px", boxSizing: "border-box", padding: "10px", borderRadius: "8px", border: "1px solid var(--t-border-strong)", backgroundColor: "var(--t-field)", color: "var(--t-text)", fontSize: "13px", lineHeight: 1.5, resize: "vertical", outline: "none" }}
       />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "11px", color: "#64748b" }}>{disabledReason ?? `${text.length} / ${MAX_CHARS}・每則訊息扣一次今日次數`}</span>
+        <span style={{ fontSize: "11px", color: "var(--t-text-faint)" }}>{disabledReason ?? `${text.length} / ${MAX_CHARS}・每則訊息扣一次今日次數`}</span>
         <span style={{ display: "flex", gap: "8px" }}>
           {room.evaluator && (
-            <button type="button" disabled={blocked || messages.length === 0} onClick={() => send(true)} style={btn(blocked || messages.length === 0, "#b45309")}>
+            <button type="button" disabled={blocked || messages.length === 0} onClick={() => send(true)} style={btn(blocked || messages.length === 0, "var(--t-warning-strong)")}>
               送出評分
             </button>
           )}
-          <button type="button" disabled={blocked || !text.trim()} onClick={() => send(false)} style={btn(blocked || !text.trim(), "#2563eb")}>
+          <button type="button" disabled={blocked || !text.trim()} onClick={() => send(false)} style={btn(blocked || !text.trim(), "var(--t-primary)")}>
             送出訊息
           </button>
         </span>
@@ -211,9 +211,9 @@ function chip(evaluator: boolean): React.CSSProperties {
     padding: "3px 10px",
     fontSize: "12px",
     borderRadius: "9999px",
-    border: `1px solid ${evaluator ? "rgba(245,158,11,0.5)" : "rgba(125,211,252,0.4)"}`,
+    border: `1px solid ${evaluator ? "var(--t-warning-border)" : "var(--t-link-border)"}`,
     backgroundColor: "transparent",
-    color: evaluator ? "#fbbf24" : "#7dd3fc",
+    color: evaluator ? "var(--t-warning)" : "var(--t-link)",
     cursor: "pointer",
   };
 }
@@ -223,8 +223,8 @@ function btn(disabled: boolean, color: string): React.CSSProperties {
     padding: "8px 16px",
     borderRadius: "8px",
     border: "none",
-    backgroundColor: disabled ? "#475569" : color,
-    color: "#fff",
+    backgroundColor: disabled ? "var(--t-text-faint)" : color,
+    color: "var(--t-on-primary)",
     fontSize: "13px",
     fontWeight: "bold",
     cursor: disabled ? "not-allowed" : "pointer",

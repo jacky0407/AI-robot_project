@@ -1,0 +1,131 @@
+/*
+ * 共用色彩變數（#64 介面風格）
+ * 元件只用 var(--t-*)，不要再寫死色碼；換風格只改這個檔。
+ *   預設（沒有 data-theme，或 data-theme="dark"）：目前的深色
+ *   data-theme="b"：B 嫩芽溫暖
+ *   data-theme="f"：F 溫柔藍紫
+ * 目前只有作答區（/student/modules）改用這些變數，可用 ?theme=b、?theme=f 預覽
+ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --t-bg: #0f172a;
+  --t-surface: #1e293b;
+  --t-surface-2: rgba(255, 255, 255, 0.05);
+  --t-surface-3: rgba(255, 255, 255, 0.1);
+  --t-field: #0f172a;
+  --t-border: rgba(255, 255, 255, 0.1);
+  --t-border-strong: rgba(255, 255, 255, 0.2);
+  --t-text: #f8fafc;
+  --t-text-2: #cbd5e1;
+  --t-text-muted: #94a3b8;
+  --t-text-faint: #64748b;
+  --t-primary: #2563eb;
+  --t-on-primary: #ffffff;
+  --t-link: #38bdf8;
+  --t-link-soft: rgba(56, 189, 248, 0.12);
+  --t-link-border: rgba(125, 211, 252, 0.4);
+  --t-success: #4ade80;
+  --t-success-strong: #16a34a;
+  --t-success-soft: rgba(34, 197, 94, 0.12);
+  --t-success-border: rgba(34, 197, 94, 0.35);
+  --t-warning: #fbbf24;
+  --t-warning-soft: rgba(245, 158, 11, 0.15);
+  --t-warning-border: rgba(245, 158, 11, 0.4);
+  --t-danger: #f87171;
+  --t-danger-strong: #ef4444;
+  --t-danger-soft: rgba(239, 68, 68, 0.12);
+  --t-danger-border: rgba(239, 68, 68, 0.35);
+  --t-orange: #fdba74;
+  --t-orange-soft: rgba(249, 115, 22, 0.12);
+  --t-orange-border: rgba(249, 115, 22, 0.3);
+  --t-indigo: #a5b4fc;
+  --t-indigo-soft: rgba(129, 140, 248, 0.12);
+  --t-indigo-border: rgba(129, 140, 248, 0.3);
+  --t-indigo-strong: #4338ca;
+  --t-warning-strong: #b45309;
+  --t-overlay: rgba(2, 6, 23, 0.75);
+}
+
+/* B 嫩芽溫暖：米白底、嫩芽綠主色，溫和偏幼教感 */
+[data-theme="b"] {
+  color-scheme: light;
+  --t-bg: #fbfaf6;
+  --t-surface: #ffffff;
+  --t-surface-2: #f6f3ec;
+  --t-surface-3: #ece8dc;
+  --t-field: #ffffff;
+  --t-border: #e7e2d6;
+  --t-border-strong: #d3ccbb;
+  --t-text: #2c2a25;
+  --t-text-2: #48443b;
+  --t-text-muted: #6f6a5e;
+  --t-text-faint: #9a9385;
+  --t-primary: #2a9763;
+  --t-on-primary: #ffffff;
+  --t-link: #1f7a50;
+  --t-link-soft: #e3f3ea;
+  --t-link-border: #a9d9bb;
+  --t-success: #237a4b;
+  --t-success-strong: #2a9763;
+  --t-success-soft: #e3f4e9;
+  --t-success-border: #a9d9bb;
+  --t-warning: #8f5b00;
+  --t-warning-soft: #fdf1d8;
+  --t-warning-border: #ecc982;
+  --t-danger: #b3362b;
+  --t-danger-strong: #c8483c;
+  --t-danger-soft: #fbe6e3;
+  --t-danger-border: #ecb1a9;
+  --t-orange: #a9501a;
+  --t-orange-soft: #fcebdc;
+  --t-orange-border: #efc19c;
+  --t-indigo: #4a56a8;
+  --t-indigo-soft: #eceefa;
+  --t-indigo-border: #c3c8ec;
+  --t-indigo-strong: #5560b0;
+  --t-warning-strong: #a8620a;
+  --t-overlay: rgba(40, 36, 28, 0.45);
+}
+
+/* F 溫柔藍紫：淡藍灰底、藍紫主色，黃色點綴，像讀書夥伴 */
+[data-theme="f"] {
+  color-scheme: light;
+  --t-bg: #f6f7fb;
+  --t-surface: #ffffff;
+  --t-surface-2: #f3f4fa;
+  --t-surface-3: #e8ebf7;
+  --t-field: #ffffff;
+  --t-border: #e1e3ee;
+  --t-border-strong: #c9cfe8;
+  --t-text: #282d49;
+  --t-text-2: #3d4366;
+  --t-text-muted: #5a6075;
+  --t-text-faint: #8b8fa3;
+  --t-primary: #4257b2;
+  --t-on-primary: #ffffff;
+  --t-link: #4257b2;
+  --t-link-soft: #e8ebf7;
+  --t-link-border: #b9c2e8;
+  --t-success: #1e7a4c;
+  --t-success-strong: #23935a;
+  --t-success-soft: #e2f5ea;
+  --t-success-border: #a6dcbd;
+  --t-warning: #7a5a00;
+  --t-warning-soft: #fff7d6;
+  --t-warning-border: #f3d56b;
+  --t-danger: #b42f3c;
+  --t-danger-strong: #c63d4a;
+  --t-danger-soft: #fde8ea;
+  --t-danger-border: #f2b3ba;
+  --t-orange: #a8531a;
+  --t-orange-soft: #fdeedd;
+  --t-orange-border: #f0c49c;
+  --t-indigo: #4257b2;
+  --t-indigo-soft: #e8ebf7;
+  --t-indigo-border: #b9c2e8;
+  --t-indigo-strong: #5466c4;
+  --t-warning-strong: #9a6b00;
+  --t-overlay: rgba(20, 24, 50, 0.45);
+}
