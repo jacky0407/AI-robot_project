@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, apiFetch } from "@/utils/api";
+import { A } from "../../theme";
 import ChatRoom, { type ChatMessage, type ChatRoomInfo, type ChatStage } from "./ChatRoom";
 
 type Stage = ChatStage & {
@@ -82,9 +83,9 @@ export default function ModuleChatRoom({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moduleId, stepId, refreshKey, advanceFrom]);
 
-  if (error) return <div style={box}><p style={{ margin: 0, fontSize: "13px", color: "#fca5a5" }}>{error}</p></div>;
-  if (!data) return <div style={box}><p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>聊天室載入中…</p></div>;
-  if (!data.room) return <div style={box}><p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>這個模組還沒有任何階段。</p></div>;
+  if (error) return <div style={box}><p style={{ margin: 0, fontSize: "13px", color: "#a3361f" }}>{error}</p></div>;
+  if (!data) return <div style={box}><p style={{ margin: 0, fontSize: "13px", color: "#6b6255" }}>聊天室載入中…</p></div>;
+  if (!data.room) return <div style={box}><p style={{ margin: 0, fontSize: "13px", color: "#6b6255" }}>這個模組還沒有任何階段。</p></div>;
 
   const passedRequired = data.stages.filter((s) => s.is_required && s.passed).length;
   const required = data.stages.filter((s) => s.is_required).length;
@@ -110,7 +111,12 @@ export default function ModuleChatRoom({
           );
         })}
       </div>
-      <div style={{ fontSize: "12px", color: data.completed ? "#4ade80" : "#94a3b8" }}>
+      {required > 0 && (
+        <div style={{ height: "8px", borderRadius: "9999px", backgroundColor: A.line, overflow: "hidden" }}>
+          <div style={{ width: `${(passedRequired / required) * 100}%`, height: "100%", borderRadius: "9999px", backgroundColor: A.brand }} />
+        </div>
+      )}
+      <div style={{ fontSize: "12px", color: data.completed ? A.primary : A.muted }}>
         {data.completed
           ? "✓ 這個模組的必修階段都通過了"
           : `必修階段 ${passedRequired} / ${required} 通過`}
@@ -139,20 +145,22 @@ export default function ModuleChatRoom({
 }
 
 const box: React.CSSProperties = {
-  backgroundColor: "#1e293b",
-  borderRadius: "14px",
+  backgroundColor: "#fbf8f1",
+  borderRadius: "6px",
   padding: "16px",
-  border: "1px solid rgba(255,255,255,0.1)",
+  border: "1px solid #e4dccb",
 };
 
 function stageChip(current: boolean, passed: boolean, locked: boolean): React.CSSProperties {
+  // 方案 A 的階段條：目前＝主色淡底＋主色字；已通過＝主色字；鎖住＝停用色
   return {
-    padding: "4px 10px",
+    padding: "4px 12px",
     fontSize: "12px",
-    borderRadius: "9999px",
-    border: `1px solid ${current ? "#38bdf8" : passed ? "rgba(74,222,128,0.5)" : "rgba(255,255,255,0.15)"}`,
-    backgroundColor: current ? "rgba(56,189,248,0.15)" : "transparent",
-    color: locked ? "#64748b" : passed ? "#4ade80" : "#e2e8f0",
+    borderRadius: "6px",
+    border: `1px solid ${current ? A.primary : A.line}`,
+    backgroundColor: current ? A.primarySoft : A.page,
+    color: locked ? A.faint : passed || current ? A.primary : A.muted,
+    fontWeight: current ? 700 : 400,
     cursor: locked || current ? "default" : "pointer",
   };
 }

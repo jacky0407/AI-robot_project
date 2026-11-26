@@ -5,10 +5,13 @@
 // - @ 評分機器人或按「送出評分」：評分機器人評整段對話，結果顯示在左邊的「評分與回饋」
 // - 每日次數按每一則訊息計算
 // - 一個模組一個聊天室（#108）：傳入 stages 時，對話依階段畫出分隔線；訊息送到目前階段（room.step_id）
+// - 樣式：方案 A「溫暖專業」的聊天排版（docs/UI_STYLE.md）：學生訊息主色底白字、機器人訊息紙張色底加細框、
+//   評分結果淡琥珀底；標題用明體
 // 後端：GET /api/chat/steps/{step_id}、POST /api/chat/sessions/{session_id}/steps/{step_id}/messages（SSE）
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
+import { A, TITLE_FONT } from "../../theme";
 
 export type ChatRoomInfo = {
   chat: true;
@@ -144,10 +147,10 @@ export default function ChatRoom({
   const blocked = Boolean(disabledReason) || Boolean(busy);
 
   return (
-    <div style={{ backgroundColor: "#1e293b", borderRadius: "14px", padding: "16px", border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: "10px" }}>
+    <div style={{ backgroundColor: A.card, borderRadius: "6px", padding: "18px", border: `1px solid ${A.line}`, display: "flex", flexDirection: "column", gap: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
-        <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>{stages ? "模組聊天室" : "聊天室"}</h3>
-        <span style={{ fontSize: "11px", color: "#94a3b8" }}>每則訊息只由一個機器人回答；打 @名稱 可以指定</span>
+        <h3 style={{ fontFamily: TITLE_FONT, fontSize: "17px", fontWeight: 700, margin: 0 }}>{stages ? "模組聊天室" : "聊天室"}</h3>
+        <span style={{ fontSize: "12px", color: A.muted }}>每則訊息由一個機器人回答，打 @名稱 可以指定</span>
       </div>
 
       {header}
@@ -164,13 +167,13 @@ export default function ChatRoom({
           </button>
         )}
         {room.evaluator_chats && (
-          <span style={{ fontSize: "11px", color: "#94a3b8", alignSelf: "center" }}>這個階段直接打字就會由 {room.evaluator?.name} 回覆；@ 它代表送出評分</span>
+          <span style={{ fontSize: "11px", color: "#6b6255", alignSelf: "center" }}>這個階段直接打字就會由 {room.evaluator?.name} 回覆；@ 它代表送出評分</span>
         )}
       </div>
 
-      <div ref={listRef} style={{ height: "360px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", padding: "4px 2px" }}>
+      <div ref={listRef} style={{ height: "420px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "10px", padding: "4px 2px" }}>
         {messages.length === 0 && !showCurrentIntro && (
-          <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>
+          <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#7a6f60" }}>
             還沒有對話。先打個招呼，或用 @ 找特定的機器人。
             <br />
             聊天室裡有：{everyone.join("、") || "（老師還沒設定機器人）"}
@@ -179,37 +182,38 @@ export default function ChatRoom({
         {messages.map((m, i) => (
           <div key={m.id ?? i} style={{ display: "contents" }}>
           {stages && m.step_id && m.step_id !== messages[i - 1]?.step_id && <StageDivider stage={stageById.get(m.step_id)} showIntro={m.step_id === room.step_id} />}
-          <div style={{ alignSelf: m.role === "student" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
+          <div style={{ alignSelf: m.role === "student" ? "flex-end" : "flex-start", maxWidth: "78%" }}>
             {m.role === "bot" && (
-              <div style={{ fontSize: "11px", color: m.routed_by === "evaluate" ? "#fbbf24" : "#7dd3fc", marginBottom: "2px" }}>
-                {m.bot_name ?? "機器人"}
-                {m.routed_by && ROUTED_LABEL[m.routed_by] ? <span style={{ color: "#64748b" }}>・{ROUTED_LABEL[m.routed_by]}</span> : null}
+              <div style={{ fontSize: "11px", color: A.muted, marginBottom: "3px" }}>
+                <span style={{ color: m.routed_by === "evaluate" ? A.warn : A.ink, fontWeight: 500 }}>{m.bot_name ?? "機器人"}</span>
+                {m.routed_by && ROUTED_LABEL[m.routed_by] ? `・${ROUTED_LABEL[m.routed_by]}` : null}
               </div>
             )}
             <div
               style={{
-                padding: "9px 12px",
-                borderRadius: "10px",
+                padding: "9px 13px",
+                borderRadius: "12px",
                 fontSize: "13px",
-                lineHeight: 1.6,
+                lineHeight: 1.7,
                 whiteSpace: "pre-wrap",
-                color: "#f1f5f9",
-                backgroundColor: m.role === "student" ? "#2563eb" : m.routed_by === "evaluate" ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.06)",
+                color: m.role === "student" ? "#fff" : A.ink,
+                backgroundColor: m.role === "student" ? A.primary : m.routed_by === "evaluate" ? A.warnSoft : A.page,
+                border: m.role === "student" ? "none" : `1px solid ${m.routed_by === "evaluate" ? "#e3cf9f" : A.line}`,
               }}
             >
               {m.content}
+              {m.sources && m.sources.length > 0 && (
+                <div style={{ fontSize: "12px", color: A.muted, marginTop: "6px" }}>參考教材：{m.sources.join("、")}</div>
+              )}
             </div>
-            {m.sources && m.sources.length > 0 && (
-              <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "3px" }}>參考教材：{m.sources.join("、")}</div>
-            )}
           </div>
           </div>
         ))}
         {showCurrentIntro && <StageDivider stage={currentStage} showIntro />}
-        {busy && <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>{busy}</p>}
+        {busy && <p style={{ margin: 0, fontSize: "12px", color: A.muted }}>{busy}</p>}
       </div>
 
-      {warning && <div style={{ padding: "8px 10px", borderRadius: "8px", fontSize: "12px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{warning}</div>}
+      {warning && <div style={{ padding: "8px 12px", borderRadius: "6px", fontSize: "13px", color: A.ink, backgroundColor: A.badSoft, borderLeft: `3px solid ${A.bad}` }}>{warning}</div>}
 
       <textarea
         value={text}
@@ -222,17 +226,17 @@ export default function ChatRoom({
           }
         }}
         placeholder="輸入訊息，Enter 送出、Shift+Enter 換行。請勿輸入真實姓名、電話、身分證字號等個資"
-        style={{ width: "100%", height: "80px", boxSizing: "border-box", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "13px", lineHeight: 1.5, resize: "vertical", outline: "none" }}
+        style={{ width: "100%", height: "80px", boxSizing: "border-box", padding: "10px 12px", borderRadius: "8px", border: `1px solid ${A.line}`, backgroundColor: A.input, color: A.ink, fontSize: "14px", lineHeight: 1.6, resize: "vertical", outline: "none", fontFamily: "inherit" }}
       />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "11px", color: "#64748b" }}>{disabledReason ?? `${text.length} / ${MAX_CHARS}・每則訊息扣一次今日次數`}</span>
+        <span style={{ fontSize: "12px", color: A.muted }}>{disabledReason ?? `${text.length} / ${MAX_CHARS}・每則訊息扣一次今日次數`}</span>
         <span style={{ display: "flex", gap: "8px" }}>
           {room.evaluator && (
-            <button type="button" disabled={blocked || messages.length === 0} onClick={() => send(true)} style={btn(blocked || messages.length === 0, "#b45309")}>
+            <button type="button" disabled={blocked || messages.length === 0} onClick={() => send(true)} style={btn(blocked || messages.length === 0, false)}>
               送出評分
             </button>
           )}
-          <button type="button" disabled={blocked || !text.trim()} onClick={() => send(false)} style={btn(blocked || !text.trim(), "#2563eb")}>
+          <button type="button" disabled={blocked || !text.trim()} onClick={() => send(false)} style={btn(blocked || !text.trim(), true)}>
             送出訊息
           </button>
         </span>
@@ -246,13 +250,13 @@ function StageDivider({ stage, showIntro = false }: { stage?: ChatStage; showInt
   if (!stage) return null;
   return (
     <div style={{ alignSelf: "stretch", margin: "6px 0", textAlign: "center" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#94a3b8" }}>
-        <span style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.12)" }} />
-        階段 {stage.step_order}：{stage.step_title}
-        <span style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.12)" }} />
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", color: A.muted }}>
+        <span style={{ flex: 1, height: "1px", backgroundColor: A.line }} />
+        <span style={{ fontFamily: TITLE_FONT, fontWeight: 700, color: A.ink }}>階段 {stage.step_order}・{stage.step_title}</span>
+        <span style={{ flex: 1, height: "1px", backgroundColor: A.line }} />
       </div>
       {showIntro && stage.intro && (
-        <p style={{ margin: "6px auto 0", maxWidth: "85%", fontSize: "12px", lineHeight: 1.6, color: "#cbd5e1", whiteSpace: "pre-wrap" }}>{stage.intro}</p>
+        <p style={{ margin: "8px auto 0", maxWidth: "85%", fontFamily: TITLE_FONT, fontSize: "14px", lineHeight: 1.9, color: A.ink, whiteSpace: "pre-wrap" }}>{stage.intro}</p>
       )}
     </div>
   );
@@ -260,25 +264,27 @@ function StageDivider({ stage, showIntro = false }: { stage?: ChatStage; showInt
 
 function chip(evaluator: boolean): React.CSSProperties {
   return {
-    padding: "3px 10px",
+    padding: "3px 12px",
     fontSize: "12px",
     borderRadius: "9999px",
-    border: `1px solid ${evaluator ? "rgba(245,158,11,0.5)" : "rgba(125,211,252,0.4)"}`,
-    backgroundColor: "transparent",
-    color: evaluator ? "#fbbf24" : "#7dd3fc",
+    border: `1px solid ${A.line}`,
+    backgroundColor: A.card,
+    color: evaluator ? A.warn : A.primary,
     cursor: "pointer",
   };
 }
 
-function btn(disabled: boolean, color: string): React.CSSProperties {
+// 方案 A：一個畫面只有一個主要按鈕（送出訊息）；送出評分是次要按鈕
+function btn(disabled: boolean, primary: boolean): React.CSSProperties {
   return {
-    padding: "8px 16px",
+    padding: "9px 18px",
+    minHeight: "40px",
     borderRadius: "8px",
-    border: "none",
-    backgroundColor: disabled ? "#475569" : color,
-    color: "#fff",
+    border: primary ? "none" : `1px solid ${A.line}`,
+    backgroundColor: primary ? (disabled ? A.faint : A.primary) : A.card,
+    color: primary ? "#fff" : disabled ? A.faint : A.ink,
     fontSize: "13px",
-    fontWeight: "bold",
+    fontWeight: primary ? 700 : 500,
     cursor: disabled ? "not-allowed" : "pointer",
     whiteSpace: "nowrap",
   };
