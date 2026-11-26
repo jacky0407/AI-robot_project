@@ -103,8 +103,11 @@ export default function ChatRoom({
     const evaluating = evaluate || mentionsEvaluator;
     setBusy(evaluating ? `${room.evaluator?.name ?? "評分機器人"} 正在看整段對話…` : "思考中…");
     setWarning("");
+    // 按下送出就清空輸入框；送不出去時再把內容放回來
+    setText("");
     if (evaluating) onEvaluationStart();
     let evalAdded = false;
+    let saved = false;
     try {
       await streamSSE(
         `/api/chat/sessions/${sessionId}/steps/${room.step_id}/messages`,
@@ -112,7 +115,7 @@ export default function ChatRoom({
         (event, data) => {
           if (event === "message_saved" && data.message) {
             setItems((prev) => [...prev, { kind: "msg", message: data.message as ChatMessage }]);
-            setText("");
+            saved = true;
           } else if (event === "bot_selected") {
             setBusy(`${String(data.bot_name ?? "機器人")} 思考中…`);
           } else if (event === "materials_used") {
@@ -144,6 +147,8 @@ export default function ChatRoom({
         setWarning(err instanceof ApiError ? (err.status === 401 ? "登入已過期，請重新登入。" : err.message) : "連不到後端，請稍後再試。");
       }
     } finally {
+      // 訊息沒存進去（個資偵測、次數用完、連線失敗）：內容放回輸入框
+      if (content && !saved) setText((cur) => cur || content);
       if (evalAdded) updateEval((it) => ({ ...it, streaming: false }));
       setBusy("");
       onFinished();

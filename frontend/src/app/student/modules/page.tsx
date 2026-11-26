@@ -450,6 +450,9 @@ function StudentWorkspace() {
     // 對話裡先出現學生的作答，上一次的評分結果收進紀錄，這次的評分接在後面長出來
     setTimeline((prev) => [...prev, ...(run ? [{ kind: "result" as const, run }] : []), { kind: "answer", text: answer }]);
     setRun({ ...EMPTY_RUN });
+    // 像 ChatGPT：按下送出就清空輸入框；送不出去時再把內容放回來
+    setStudentAnswer("");
+    setLastAnswer(answer);
 
     try {
       await streamSSE(
@@ -466,16 +469,15 @@ function StudentWorkspace() {
         },
         handleEvent
       );
-      setLastAnswer(answer);
-      setStudentAnswer("");
     } catch (err) {
       // 顯示真正原因（個資偵測、未登入、沒被指派 403、次數用完 429…），不用假資料蓋掉
       if (err instanceof ApiError && err.code === "PII_DETECTED") {
         const types = (err.detail as { detected_types?: string[] })?.detected_types ?? [];
         setPiiWarning(`${err.message}${types.length ? `（偵測到：${types.join("、")}）` : ""}`);
-        // 被個資偵測擋下：沒有送出，把剛剛的作答氣泡拿掉，內容留在輸入框
+        // 被個資偵測擋下：沒有送出，把剛剛的作答氣泡拿掉，內容放回輸入框
         setTimeline((prev) => prev.slice(0, -1));
         setRun(null);
+        setStudentAnswer((cur) => cur || answer);
       } else {
         const message =
           err instanceof ApiError
@@ -485,6 +487,8 @@ function StudentWorkspace() {
             : "連不到後端，請確認 FastAPI 已啟動後再試一次。";
         if (!(err instanceof ApiError)) console.error("送出作答失敗：", err);
         setRun({ ...EMPTY_RUN, failure: message });
+        // 沒評分成功：內容放回輸入框，改一改或直接再送一次
+        setStudentAnswer((cur) => cur || answer);
       }
     } finally {
       setIsSubmitting(false);
