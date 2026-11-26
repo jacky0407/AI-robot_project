@@ -8,6 +8,7 @@ import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 import BotMemoryPanel from "./BotMemoryPanel";
 import ChatRoom, { loadChatRoom, type ChatRoomInfo } from "./ChatRoom";
 import ModuleChatRoom from "./ModuleChatRoom";
+import { A, BODY_FONT, MARK_STYLE, TITLE_FONT } from "../../theme";
 import ForwardedPanel from "./ForwardedPanel";
 
 // ─── 步驟與模組型別定義 ───
@@ -86,10 +87,10 @@ const DECISION_LABEL: Record<string, string> = {
 };
 
 const panel: React.CSSProperties = {
-  backgroundColor: "#1e293b",
-  borderRadius: "14px",
+  backgroundColor: "#fbf8f1",
+  borderRadius: "6px",
   padding: "20px",
-  border: "1px solid rgba(255,255,255,0.1)",
+  border: "1px solid #e4dccb",
 };
 
 function attemptScore(s: Submission): number | null {
@@ -111,10 +112,10 @@ type Quota = {
 type QuotaState = { quota: Quota } | { blocked: string } | null;
 
 const STATUS_LABEL: Record<AttemptStatus, { text: string; color: string; bg: string }> = {
-  draft: { text: "草稿", color: "#94a3b8", bg: "rgba(255,255,255,0.08)" },
-  submitted: { text: "評分中", color: "#fbbf24", bg: "rgba(245,158,11,0.15)" },
-  passed: { text: "已通過", color: "#4ade80", bg: "rgba(34,197,94,0.15)" },
-  revision_required: { text: "需修改", color: "#f87171", bg: "rgba(239,68,68,0.15)" },
+  draft: { text: "草稿", color: "#6b6255", bg: "#e4dccb" },
+  submitted: { text: "評分中", color: "#8a5a00", bg: "#f7ecd2" },
+  passed: { text: "已通過", color: "#1f6b47", bg: "#e6efe4" },
+  revision_required: { text: "需修改", color: "#a3361f", bg: "#f6e3dc" },
 };
 
 // useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
@@ -576,7 +577,7 @@ function StudentWorkspace() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#0f172a", color: "#f8fafc", fontFamily: "sans-serif" }}>
+    <div style={{ minHeight: "100vh", backgroundColor: A.page, color: A.ink, fontFamily: BODY_FONT }}>
       {/* 頂部導航 */}
       <header
         style={{
@@ -584,8 +585,8 @@ function StudentWorkspace() {
           justifyContent: "space-between",
           alignItems: "center",
           padding: "14px 28px",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
-          backgroundColor: "#1e293b",
+          borderBottom: "1px solid #e4dccb",
+          backgroundColor: "#fbf8f1",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -594,9 +595,9 @@ function StudentWorkspace() {
             style={{
               padding: "6px 12px",
               borderRadius: "6px",
-              backgroundColor: "rgba(255,255,255,0.08)",
+              backgroundColor: "#e4dccb",
               border: "none",
-              color: "#38bdf8",
+              color: "#1f6b47",
               cursor: "pointer",
               fontSize: "13px",
             }}
@@ -604,10 +605,10 @@ function StudentWorkspace() {
             {courseId ? "← 課程簡介與關卡" : "← 返回自主探索"}
           </button>
           <div>
-            <h1 style={{ fontSize: "16px", fontWeight: "bold", margin: 0 }}>
+            <h1 style={{ fontFamily: TITLE_FONT, fontSize: "16px", fontWeight: "bold", margin: 0 }}>
               學生實踐工作台・{currentMod?.title || "訓練模組"}
             </h1>
-            <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
+            <p style={{ fontSize: "12px", color: "#6b6255", margin: 0 }}>
               {courseName ? `課程：${courseName}・` : ""}依序完成每一關，送出後會得到逐項評分與回饋
             </p>
           </div>
@@ -617,9 +618,9 @@ function StudentWorkspace() {
           style={{
             padding: "6px 14px",
             borderRadius: "6px",
-            border: "1px solid rgba(255,255,255,0.2)",
+            border: "1px solid #e4dccb",
             backgroundColor: "transparent",
-            color: "#cbd5e1",
+            color: "#3d372e",
             fontSize: "12px",
             cursor: "pointer",
           }}
@@ -629,14 +630,14 @@ function StudentWorkspace() {
       </header>
 
       {(loading || modules.length === 0) && (
-        <div style={{ maxWidth: "640px", margin: "48px auto", padding: "24px", borderRadius: "14px", backgroundColor: "#1e293b", border: "1px solid rgba(255,255,255,0.1)", textAlign: "center" }}>
-          <p style={{ margin: 0, fontSize: "14px", color: loading ? "#94a3b8" : "#fbbf24", lineHeight: 1.6 }}>
+        <div style={{ maxWidth: "640px", margin: "48px auto", padding: "24px", borderRadius: "6px", backgroundColor: "#fbf8f1", border: "1px solid #e4dccb", textAlign: "center" }}>
+          <p style={{ margin: 0, fontSize: "14px", color: loading ? "#6b6255" : "#8a5a00", lineHeight: 1.6 }}>
             {loading ? "載入訓練模組中…" : errorMsg || "目前沒有可以練習的訓練模組。"}
           </p>
           {!loading && (
             <button
               onClick={() => router.push(backHref)}
-              style={{ marginTop: "16px", padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
+              style={{ marginTop: "16px", padding: "8px 16px", borderRadius: "8px", border: "none", backgroundColor: "#1f6b47", color: "#fff", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
             >
               {courseId ? "回到課程簡介" : "回到自主探索"}
             </button>
@@ -653,17 +654,17 @@ function StudentWorkspace() {
             {!chat && (
             <div style={panel}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
+                <h3 style={{ fontFamily: TITLE_FONT, fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
                 <button
                   onClick={handleRevealHint}
                   // 還沒送出過作答時提示無處記錄，先送出一次再索取
                   disabled={isLoadingHint || !hintStatus?.next_level_available || history.length === 0}
-                  style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "8px", border: "1px solid #38bdf8", background: "none", color: "#38bdf8", fontSize: "12px", fontWeight: "bold", cursor: "pointer", opacity: isLoadingHint || !hintStatus?.next_level_available || history.length === 0 ? 0.4 : 1 }}
+                  style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "8px", border: "1px solid #1f6b47", background: "none", color: "#1f6b47", fontSize: "12px", fontWeight: "bold", cursor: "pointer", opacity: isLoadingHint || !hintStatus?.next_level_available || history.length === 0 ? 0.4 : 1 }}
                 >
                   {isLoadingHint ? "取得中…" : "我需要提示"}
                 </button>
               </div>
-              <p style={{ fontSize: "12px", color: "#94a3b8", margin: "8px 0 0" }}>
+              <p style={{ fontSize: "12px", color: "#6b6255", margin: "8px 0 0" }}>
                 {hintStatus
                   ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
                   : hintStatusError
@@ -671,14 +672,14 @@ function StudentWorkspace() {
                     : "讀取提示狀態中…"}
                 {history.length === 0 && "・先送出一次作答後才能索取提示"}
               </p>
-              {hintMessage && <p style={{ fontSize: "12px", color: "#cbd5e1", margin: "8px 0 0" }}>{hintMessage}</p>}
+              {hintMessage && <p style={{ fontSize: "12px", color: "#3d372e", margin: "8px 0 0" }}>{hintMessage}</p>}
               {[...revealedHints, ...(run?.hint ? [run.hint] : [])].map((h, i) => (
-                <div key={`${h.level}-${i}`} style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "bold", color: "#a5b4fc" }}>
+                <div key={`${h.level}-${i}`} style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "#e6efe4", border: "1px solid #b9cfb6" }}>
+                  <div style={{ fontSize: "11px", fontWeight: "bold", color: "#1f6b47" }}>
                     第 {h.level} 層{h.source === "generated" ? "（AI 依評分結果生成）" : ""}
                   </div>
-                  <p style={{ fontSize: "13px", color: "#e0e7ff", margin: "4px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{h.content}</p>
-                  {h.warning && <p style={{ fontSize: "11px", color: "#c7d2fe", margin: "4px 0 0" }}>{h.warning}</p>}
+                  <p style={{ fontSize: "13px", color: "#1f6b47", margin: "4px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{h.content}</p>
+                  {h.warning && <p style={{ fontSize: "11px", color: "#1f6b47", margin: "4px 0 0" }}>{h.warning}</p>}
                 </div>
               ))}
             </div>
@@ -687,32 +688,32 @@ function StudentWorkspace() {
 
             {/* AI 評分回饋 */}
             <div style={{ ...panel, minHeight: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
-              <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+              <h3 style={{ fontFamily: TITLE_FONT, fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid #e4dccb" }}>
                 評分與回饋
               </h3>
 
               {!run && !isSubmitting && (
-                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>{chat ? "和機器人聊完後，按「送出評分」或 @ 評分機器人，評分結果會顯示在這裡。" : "尚未送出作答。完成撰寫後按「送出作答並評分」。"}</p>
+                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#7a6f60" }}>{chat ? "和機器人聊完後，按「送出評分」或 @ 評分機器人，評分結果會顯示在這裡。" : "尚未送出作答。完成撰寫後按「送出作答並評分」。"}</p>
               )}
 
               {run?.failure && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{run.failure}</div>
+                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#a3361f", backgroundColor: "#f6e3dc" }}>{run.failure}</div>
               )}
 
-              {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "#94a3b8" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
-              {run?.encouragement && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#86efac", backgroundColor: "rgba(34,197,94,0.12)" }}>{run.encouragement}</div>}
-              {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.12)" }}>{run.escalation}</div>}
-              {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "#a5b4fc" }}>AI 給了一則提示，請看上方「分層提示」。</p>}
+              {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "#6b6255" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
+              {run?.encouragement && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#1f6b47", backgroundColor: "#e6efe4" }}>{run.encouragement}</div>}
+              {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#8a5a00", backgroundColor: "#f7ecd2" }}>{run.escalation}</div>}
+              {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "#1f6b47" }}>AI 給了一則提示，請看上方「分層提示」。</p>}
 
               {run?.feedback && (
-                <div style={{ padding: "16px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)" }}>
-                  <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>這個關卡不評分，以下是 AI 的回饋</p>
-                  <p style={{ margin: "8px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{run.feedback}</p>
+                <div style={{ padding: "16px", borderRadius: "10px", backgroundColor: "#f4efe4", border: "1px solid #e4dccb" }}>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#6b6255" }}>這個關卡不評分，以下是 AI 的回饋</p>
+                  <p style={{ margin: "8px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#26221c", whiteSpace: "pre-wrap" }}>{run.feedback}</p>
                 </div>
               )}
 
               {run?.pass && run.pass.pass_mode !== "score" && (
-                <p style={{ margin: 0, fontSize: "13px", color: run.pass.passed ? "#4ade80" : "#fbbf24" }}>
+                <p style={{ margin: 0, fontSize: "13px", color: run.pass.passed ? "#1f6b47" : "#8a5a00" }}>
                   {run.pass.passed
                     ? "✓ 這個關卡送出作答即通過"
                     : run.pass.awaiting_teacher
@@ -726,15 +727,15 @@ function StudentWorkspace() {
                   style={{
                     padding: "16px",
                     borderRadius: "10px",
-                    backgroundColor: run.score.passed ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
-                    border: `1px solid ${run.score.passed ? "rgba(34,197,94,0.4)" : "rgba(239,68,68,0.4)"}`,
+                    backgroundColor: run.score.passed ? "#e6efe4" : "#f6e3dc",
+                    border: `1px solid ${run.score.passed ? "#b9cfb6" : "#e6b9ab"}`,
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: "26px", fontWeight: "bold", color: run.score.passed ? "#4ade80" : "#f87171" }}>
+                    <span style={{ fontSize: "26px", fontWeight: "bold", color: run.score.passed ? "#1f6b47" : "#a3361f" }}>
                       {Math.round(run.score.percentage ?? run.score.total_score)} 分
                     </span>
-                    <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "#fff", backgroundColor: run.score.passed ? "#22c55e" : "#ef4444" }}>
+                    <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "#fff", backgroundColor: run.score.passed ? "#1f6b47" : "#a3361f" }}>
                       {run.pass && run.pass.pass_mode !== "score"
                         ? "AI 分數僅供參考"
                         : run.score.passed
@@ -743,42 +744,42 @@ function StudentWorkspace() {
                     </span>
                   </div>
                   {run.score.overall_feedback && (
-                    <p style={{ margin: "10px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{run.score.overall_feedback}</p>
+                    <p style={{ margin: "10px 0 0", fontSize: "13px", lineHeight: 1.6, color: "#26221c", whiteSpace: "pre-wrap" }}>{run.score.overall_feedback}</p>
                   )}
-                  {run.score.needs_teacher_review && <p style={{ margin: "8px 0 0", fontSize: "12px", color: "#fbbf24" }}>這次 AI 評分較沒把握，老師會再複核。</p>}
+                  {run.score.needs_teacher_review && <p style={{ margin: "8px 0 0", fontSize: "12px", color: "#8a5a00" }}>這次 AI 評分較沒把握，老師會再複核。</p>}
                 </div>
               )}
 
               {run && run.dimensions.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   {run.dimensions.map((d) => (
-                    <div key={d.dimension} style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)", fontSize: "13px" }}>
+                    <div key={d.dimension} style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "#f4efe4", fontSize: "13px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
                         <span>{d.dimension}</span>
-                        <span style={{ color: "#38bdf8" }}>
+                        <span style={{ color: "#1f6b47" }}>
                           {d.score} / {d.max_score}
                         </span>
                       </div>
-                      {d.reason && <p style={{ margin: "4px 0 0", color: "#cbd5e1", lineHeight: 1.5 }}>{d.reason}</p>}
-                      {d.evidence && <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>引用：{d.evidence}</p>}
+                      {d.reason && <p style={{ margin: "4px 0 0", color: "#3d372e", lineHeight: 1.5 }}>{d.reason}</p>}
+                      {d.evidence && <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#6b6255" }}>引用：<mark style={MARK_STYLE}>{d.evidence}</mark></p>}
                     </div>
                   ))}
                 </div>
               )}
               {isSubmitting && (
-                <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>
+                <p style={{ margin: 0, fontSize: "12px", color: "#6b6255" }}>
                   AI 評分中{run?.totalDimensions ? `（${run.dimensions.length} / ${run.totalDimensions} 個構面）` : "…"}
                 </p>
               )}
 
               {run && run.errors.length > 0 && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fdba74", backgroundColor: "rgba(249,115,22,0.1)", border: "1px solid rgba(249,115,22,0.3)" }}>
+                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#8a5a00", backgroundColor: "#f7ecd2", border: "1px solid #e3cf9f" }}>
                   <div style={{ fontWeight: "bold", marginBottom: "4px" }}>需要留意的常見錯誤</div>
                   {run.errors.map((err) => (
                     <div key={err.code} style={{ marginTop: "6px" }}>
                       <b>{err.label}</b>
-                      {err.explanation && <span style={{ color: "#fed7aa" }}>：{err.explanation}</span>}
-                      {err.evidence && <div style={{ fontSize: "12px", fontStyle: "italic", color: "#fdba74" }}>原文：{err.evidence}</div>}
+                      {err.explanation && <span style={{ color: "#8a5a00" }}>：{err.explanation}</span>}
+                      {err.evidence && <div style={{ fontSize: "12px", fontStyle: "italic", color: "#8a5a00" }}>原文：{err.evidence}</div>}
                     </div>
                   ))}
                 </div>
@@ -790,22 +791,22 @@ function StudentWorkspace() {
         <div className="ws-col ws-mid" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
             {/* 本關任務與教學案例（從資料庫讀，不再寫死） */}
             <div style={panel}>
-              <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}>
+              <div style={{ fontSize: "12px", color: "#6b6255", marginBottom: "6px" }}>
                 關卡 {selectedStep?.step_order}：{selectedStep?.step_title}
                 {selectedStep?.ai_tools?.title && <span>・AI 助教：{selectedStep.ai_tools.title}</span>}
               </div>
               {selectedStep?.ai_tools?.target_competency && (
-                <div style={{ fontSize: "13px", color: "#cbd5e1", marginBottom: "12px" }}>練習能力：{selectedStep.ai_tools.target_competency}</div>
+                <div style={{ fontSize: "13px", color: "#3d372e", marginBottom: "12px" }}>練習能力：{selectedStep.ai_tools.target_competency}</div>
               )}
               {caseData ? (
                 <>
-                  <span style={{ fontSize: "12px", fontWeight: "bold", color: "#38bdf8", backgroundColor: "rgba(56,189,248,0.12)", padding: "4px 10px", borderRadius: "6px" }}>
+                  <span style={{ fontSize: "12px", fontWeight: "bold", color: "#1f6b47", backgroundColor: "#e6efe4", padding: "4px 10px", borderRadius: "6px" }}>
                     教學案例：{caseData.title}
                   </span>
-                  <p style={{ fontSize: "14px", lineHeight: 1.7, color: "#e2e8f0", margin: "10px 0 0", whiteSpace: "pre-wrap" }}>{caseData.case_background}</p>
+                  <p style={{ fontSize: "14px", lineHeight: 1.7, color: "#26221c", margin: "10px 0 0", whiteSpace: "pre-wrap" }}>{caseData.case_background}</p>
                 </>
               ) : (
-                <p style={{ fontSize: "13px", color: "#fbbf24", margin: 0 }}>讀不到教學案例，請聯絡老師確認案例已建立。</p>
+                <p style={{ fontSize: "13px", color: "#8a5a00", margin: 0 }}>讀不到教學案例，請聯絡老師確認案例已建立。</p>
               )}
             </div>
 
@@ -855,9 +856,9 @@ function StudentWorkspace() {
               />
             ) : (
             <div style={panel}>
-              <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>你的作答</h3>
+              <h3 style={{ fontFamily: TITLE_FONT, fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>你的作答</h3>
               {piiWarning && (
-                <div style={{ marginBottom: "10px", padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)" }}>
+                <div style={{ marginBottom: "10px", padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "#a3361f", backgroundColor: "#f6e3dc", border: "1px solid #e6b9ab" }}>
                   {piiWarning}
                 </div>
               )}
@@ -866,14 +867,14 @@ function StudentWorkspace() {
                 onChange={(e) => setStudentAnswer(e.target.value)}
                 maxLength={MAX_ANSWER_CHARS}
                 placeholder="請依案例情境完成本關卡的撰寫…"
-                style={{ width: "100%", height: "220px", boxSizing: "border-box", padding: "12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "14px", lineHeight: 1.6, resize: "vertical", outline: "none" }}
+                style={{ width: "100%", height: "220px", boxSizing: "border-box", padding: "12px", borderRadius: "8px", border: "1px solid #e4dccb", backgroundColor: "#fffdf8", color: "#26221c", fontSize: "14px", lineHeight: 1.6, resize: "vertical", outline: "none" }}
               />
-              <div style={{ fontSize: "11px", color: "#64748b", margin: "6px 0 12px" }}>
+              <div style={{ fontSize: "11px", color: "#7a6f60", margin: "6px 0 12px" }}>
                 字數：{studentAnswer.length} / {MAX_ANSWER_CHARS}・請勿輸入真實姓名、電話、身分證字號等個資
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                 {lockReason ? (
-                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>{lockReason}</span>
+                  <span style={{ fontSize: "12px", color: "#6b6255" }}>{lockReason}</span>
                 ) : (
                   <QuotaBadge state={quotaState} />
                 )}
@@ -887,7 +888,7 @@ function StudentWorkspace() {
                     padding: "10px 22px",
                     borderRadius: "8px",
                     border: "none",
-                    backgroundColor: submitDisabled ? "#475569" : "#2563eb",
+                    backgroundColor: submitDisabled ? "#cfc6b4" : "#1f6b47",
                     color: "#fff",
                     fontSize: "13px",
                     fontWeight: "bold",
@@ -922,11 +923,11 @@ function StudentWorkspace() {
             {history.length > 0 && (
               <div style={panel}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                  <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>作答紀錄</h3>
+                  <h3 style={{ fontFamily: TITLE_FONT, fontSize: "14px", fontWeight: "bold", margin: 0 }}>作答紀錄</h3>
                   {history.length >= 2 && (
                     <button
                       onClick={() => setShowCompare(true)}
-                      style={{ flexShrink: 0, padding: "5px 12px", borderRadius: "8px", border: "1px solid #38bdf8", background: "none", color: "#38bdf8", fontSize: "12px", fontWeight: "bold", cursor: "pointer" }}
+                      style={{ flexShrink: 0, padding: "5px 12px", borderRadius: "8px", border: "1px solid #1f6b47", background: "none", color: "#1f6b47", fontSize: "12px", fontWeight: "bold", cursor: "pointer" }}
                     >
                       ⇄ 比較版本
                     </button>
@@ -937,21 +938,21 @@ function StudentWorkspace() {
                     const status = STATUS_LABEL[sub.status as AttemptStatus];
                     const score = attemptScore(sub);
                     return (
-                      <details key={sub.id} style={{ padding: "8px 10px", borderRadius: "8px", backgroundColor: "rgba(255,255,255,0.04)", fontSize: "13px" }}>
+                      <details key={sub.id} style={{ padding: "8px 10px", borderRadius: "8px", backgroundColor: "#f4efe4", fontSize: "13px" }}>
                         <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                           <b>第 {sub.attempt_number} 次</b>
                           {status && (
                             <span style={{ fontSize: "11px", padding: "1px 8px", borderRadius: "9999px", color: status.color, backgroundColor: status.bg }}>{status.text}</span>
                           )}
-                          <span style={{ color: "#cbd5e1" }}>{score == null ? "未評分" : `${Math.round(score)} 分`}</span>
-                          <span style={{ fontSize: "11px", color: "#64748b" }}>{new Date(sub.created_at).toLocaleString()}</span>
+                          <span style={{ color: "#3d372e" }}>{score == null ? "未評分" : `${Math.round(score)} 分`}</span>
+                          <span style={{ fontSize: "11px", color: "#7a6f60" }}>{new Date(sub.created_at).toLocaleString()}</span>
                         </summary>
                         {sub.user_input_content && (
                           <div style={{ marginTop: "8px", display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                            <p style={{ flex: 1, margin: 0, whiteSpace: "pre-wrap", color: "#cbd5e1", lineHeight: 1.6 }}>{sub.user_input_content}</p>
+                            <p style={{ flex: 1, margin: 0, whiteSpace: "pre-wrap", color: "#3d372e", lineHeight: 1.6 }}>{sub.user_input_content}</p>
                             <button
                               onClick={() => setStudentAnswer(sub.user_input_content ?? "")}
-                              style={{ flexShrink: 0, padding: "4px 10px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", fontSize: "11px", cursor: "pointer" }}
+                              style={{ flexShrink: 0, padding: "4px 10px", borderRadius: "6px", border: "1px solid #e4dccb", background: "none", color: "#3d372e", fontSize: "11px", cursor: "pointer" }}
                             >
                               帶入修改
                             </button>
@@ -966,16 +967,16 @@ function StudentWorkspace() {
                     {/* 跨步驟一致性檢核區塊 */}
             <div
               style={{
-                backgroundColor: "#1e293b",
-                borderRadius: "14px",
+                backgroundColor: "#fbf8f1",
+                borderRadius: "6px",
                 padding: "18px",
-                border: "1px solid rgba(255,255,255,0.1)",
+                border: "1px solid #e4dccb",
               }}
             >
-              <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 6px 0", color: "#a5b4fc" }}>
+              <h3 style={{ fontFamily: TITLE_FONT, fontSize: "14px", fontWeight: "bold", margin: "0 0 6px 0", color: "#1f6b47" }}>
                 跨步驟一致性檢核
               </h3>
-              <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 12px 0", lineHeight: "1.5" }}>
+              <p style={{ fontSize: "12px", color: "#6b6255", margin: "0 0 12px 0", lineHeight: "1.5" }}>
                 當完成多個步驟後，AI 將比對你的前事處遇、替代行為與學期目標是否存在矛盾。
               </p>
               <button
@@ -986,7 +987,7 @@ function StudentWorkspace() {
                   padding: "8px 0",
                   borderRadius: "8px",
                   border: "none",
-                  backgroundColor: "#4338ca",
+                  backgroundColor: "#1f6b47",
                   color: "#fff",
                   fontSize: "13px",
                   fontWeight: "bold",
@@ -998,7 +999,7 @@ function StudentWorkspace() {
               </button>
 
               {typeof coherenceData === "string" && (
-                <p style={{ fontSize: "12px", color: "#cbd5e1", marginTop: "10px" }}>{coherenceData}</p>
+                <p style={{ fontSize: "12px", color: "#3d372e", marginTop: "10px" }}>{coherenceData}</p>
               )}
 
               {coherenceData && typeof coherenceData === "object" && (
@@ -1009,18 +1010,18 @@ function StudentWorkspace() {
                     borderRadius: "8px",
                     fontSize: "12px",
                     lineHeight: 1.5,
-                    backgroundColor: coherenceData.overall_coherent ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
-                    border: `1px solid ${coherenceData.overall_coherent ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+                    backgroundColor: coherenceData.overall_coherent ? "#e6efe4" : "#f6e3dc",
+                    border: `1px solid ${coherenceData.overall_coherent ? "#b9cfb6" : "#e6b9ab"}`,
                   }}
                 >
-                  <div style={{ fontWeight: "bold", color: coherenceData.overall_coherent ? "#4ade80" : "#fca5a5" }}>
+                  <div style={{ fontWeight: "bold", color: coherenceData.overall_coherent ? "#1f6b47" : "#a3361f" }}>
                     {coherenceData.summary}
                   </div>
                   {coherenceData.issues.map((iss, i) => (
-                    <div key={i} style={{ marginTop: "8px", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "6px" }}>
+                    <div key={i} style={{ marginTop: "8px", borderTop: "1px solid #e4dccb", paddingTop: "6px" }}>
                       <strong>{iss.check_name}</strong>（建議修改關卡 {iss.go_to_step_order}）
-                      <div style={{ color: "#cbd5e1" }}>{iss.problem}</div>
-                      <div style={{ color: "#38bdf8", marginTop: "2px" }}>建議：{iss.suggestion}</div>
+                      <div style={{ color: "#3d372e" }}>{iss.problem}</div>
+                      <div style={{ color: "#1f6b47", marginTop: "2px" }}>建議：{iss.suggestion}</div>
                     </div>
                   ))}
                 </div>
@@ -1056,19 +1057,19 @@ function StudentWorkspace() {
 // 沒有上限時（教師、沒有邀請碼的課程成員）顯示不限次數
 function QuotaBadge({ state }: { state: QuotaState }) {
   const base: React.CSSProperties = { fontSize: "12px", lineHeight: 1.5 };
-  if (!state) return <span style={{ ...base, color: "#64748b" }}>送出後，AI 會依評分規準逐項評分</span>;
-  if ("blocked" in state) return <span style={{ ...base, color: "#f87171" }}>{state.blocked}</span>;
+  if (!state) return <span style={{ ...base, color: "#7a6f60" }}>送出後，AI 會依評分規準逐項評分</span>;
+  if ("blocked" in state) return <span style={{ ...base, color: "#a3361f" }}>{state.blocked}</span>;
 
   const q = state.quota;
-  if (q.mode === "staff") return <span style={{ ...base, color: "#64748b" }}>教師帳號：不限次數</span>;
-  if (q.mode === "self_key") return <span style={{ ...base, color: "#64748b" }}>使用你自己的 Gemini 金鑰：不限次數</span>;
-  if (q.quota === null) return <span style={{ ...base, color: "#64748b" }}>正式課程：不限練習次數</span>;
+  if (q.mode === "staff") return <span style={{ ...base, color: "#7a6f60" }}>教師帳號：不限次數</span>;
+  if (q.mode === "self_key") return <span style={{ ...base, color: "#7a6f60" }}>使用你自己的 Gemini 金鑰：不限次數</span>;
+  if (q.quota === null) return <span style={{ ...base, color: "#7a6f60" }}>正式課程：不限練習次數</span>;
 
-  const color = q.remaining === 0 ? "#f87171" : (q.remaining ?? 0) <= 2 ? "#fbbf24" : "#86efac";
+  const color = q.remaining === 0 ? "#a3361f" : (q.remaining ?? 0) <= 2 ? "#8a5a00" : "#1f6b47";
   return (
     <span style={{ ...base, color }}>
       今天還可以作答 <b>{q.remaining}</b> / {q.quota} 次
-      <span style={{ color: "#64748b" }}>
+      <span style={{ color: "#7a6f60" }}>
         {q.expire_date ? `・可使用到 ${q.expire_date}` : "・不限期"}
         {q.mode === "permission" ? "・自主練習，AI 回饋僅供參考" : ""}
       </span>
@@ -1112,11 +1113,11 @@ function StepNav({
       <button
         onClick={() => prev && onGo(prev)}
         disabled={!prev}
-        style={{ ...btn, border: "1px solid rgba(255,255,255,0.2)", background: "none", color: "#cbd5e1", visibility: prev ? "visible" : "hidden" }}
+        style={{ ...btn, border: "1px solid #e4dccb", background: "none", color: "#3d372e", visibility: prev ? "visible" : "hidden" }}
       >
         ← 上一題
       </button>
-      <span style={{ fontSize: "12px", color: "#94a3b8" }}>
+      <span style={{ fontSize: "12px", color: "#6b6255" }}>
         {position > 0 ? `第 ${position} / ${total} 題` : ""}
       </span>
       {next ? (
@@ -1129,16 +1130,16 @@ function StepNav({
               ...btn,
               border: "none",
               color: "#fff",
-              backgroundColor: nextDisabled ? "#475569" : justPassed ? "#16a34a" : "#2563eb",
+              backgroundColor: nextDisabled ? "#cfc6b4" : justPassed ? "#1f6b47" : "#1f6b47",
               cursor: nextDisabled ? "not-allowed" : "pointer",
             }}
           >
             下一題 →
           </button>
-          {nextLockedReason && <span style={{ fontSize: "11px", color: "#94a3b8" }}>{nextLockedReason}</span>}
+          {nextLockedReason && <span style={{ fontSize: "11px", color: "#6b6255" }}>{nextLockedReason}</span>}
         </span>
       ) : (
-        <button onClick={onOverview} style={{ ...btn, border: "none", color: "#fff", backgroundColor: justPassed ? "#16a34a" : "#2563eb" }}>
+        <button onClick={onOverview} style={{ ...btn, border: "none", color: "#fff", backgroundColor: justPassed ? "#1f6b47" : "#1f6b47" }}>
           {overviewLabel}
         </button>
       )}
