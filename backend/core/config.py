@@ -20,6 +20,20 @@ class Settings(BaseSettings):
 
     # 學習助教不直接給答案；同一個問題問到第幾次才可以直接給答案（老師 11/24 確認的規則，次數待老師定）
     tutor_answer_after: int = 3
+
+    # AI 費用估算用的價目表（美元／每百萬 token；輸出含思考 token），#81。
+    # 價格以 Google 官方價目頁為準，調價時改 .env 的 MODEL_PRICES（JSON），不用改程式。
+    # 不在表裡的模型費用記 0，並在 log 提醒。
+    model_prices: dict[str, dict[str, float]] = {
+        "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
+        "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
+        "gemini-3.6-flash": {"input": 1.50, "output": 3.75},
+        "gemini-embedding-001": {"input": 0.15, "output": 0.0},
+    }
+    # 自主探索（不屬於任何課程）每月平台費用上限，美元；空白 = 不限（AI-002：預算緊張時先降這個）
+    autonomous_monthly_budget_usd: float | None = None
+    # 用到預算的幾成先提醒
+    budget_warn_ratio: float = 0.8
     # 學習助教（RAG，#67）切段與搜尋用的向量模型；維度固定 768（migration 021 的 vector(768)）
     gemini_embedding_model: str = "gemini-embedding-001"
 

@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS public.courses (
     require_approval BOOLEAN DEFAULT false, -- 加入是否需審核
     is_archived BOOLEAN DEFAULT false,
     created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    monthly_ai_budget_usd NUMERIC(10, 2)   -- 每月 AI 費用上限（美元，平台金鑰；空白 = 不限，migration 023）
 );
 
 -- 課程邀請碼：一門課多組，各自的可用日期與方案（migration 013）
@@ -382,6 +383,60 @@ AS $$
     LIMIT GREATEST(1, LEAST(p_match_count, 20));
 $$;
 
+-- AI 用量與費用（migration 023，#81）：每次 AI 呼叫一列；只給 service_role
+CREATE TABLE IF NOT EXISTS public.ai_usage_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    user_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    course_id UUID REFERENCES public.courses(id) ON DELETE SET NULL,      -- 自主探索時為 NULL
+    module_id UUID REFERENCES public.learning_modules(id) ON DELETE SET NULL,
+    step_id UUID REFERENCES public.module_steps(id) ON DELETE SET NULL,
+    tool_id UUID REFERENCES public.ai_tools(id) ON DELETE SET NULL,
+    access_mode TEXT,                       -- course / permission / self_key / staff / teacher
+    key_source TEXT NOT NULL DEFAULT 'platform' CHECK (key_source IN ('platform', 'student')),
+    feature TEXT NOT NULL,                  -- score_dimension / synthesize / chat_bot / embedding …
+    model TEXT,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,   -- 含思考 token
+    cost_usd NUMERIC(12, 6) NOT NULL DEFAULT 0,
+    latency_ms INT,
+    success BOOLEAN NOT NULL DEFAULT true,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ai_usage_logs_course_month_idx ON public.ai_usage_logs (course_id, created_at);
+CREATE INDEX IF NOT EXISTS ai_usage_logs_created_idx ON public.ai_usage_logs (created_at);
+
+-- 一段期間內平台金鑰的費用合計（course_id 為 NULL = 自主探索，不分課程）
+CREATE OR REPLACE FUNCTION public.ai_usage_total(p_course_id UUID, p_since TIMESTAMPTZ, p_autonomous BOOLEAN DEFAULT false)
+RETURNS NUMERIC
+LANGUAGE sql STABLE
+SET search_path = public
+AS $$
+    SELECT COALESCE(SUM(cost_usd), 0)
+    FROM public.ai_usage_logs
+    WHERE created_at >= p_since
+      AND key_source = 'platform'
+      AND (
+        (p_autonomous AND access_mode = 'permission')
+        OR (NOT p_autonomous AND course_id = p_course_id)
+      );
+$$;
+
+-- 用量明細：依日期、功能、模型、機器人、金鑰來源分組（老師後台的「AI 用量」）
+CREATE OR REPLACE FUNCTION public.ai_usage_summary(p_course_id UUID, p_since TIMESTAMPTZ, p_until TIMESTAMPTZ)
+RETURNS TABLE (day DATE, feature TEXT, model TEXT, tool_id UUID, key_source TEXT,
+               calls BIGINT, failed BIGINT, input_tokens BIGINT, output_tokens BIGINT, cost_usd NUMERIC)
+LANGUAGE sql STABLE
+SET search_path = public
+AS $$
+    SELECT (created_at AT TIME ZONE 'Asia/Taipei')::date, feature, model, tool_id, key_source,
+           COUNT(*), COUNT(*) FILTER (WHERE NOT success), SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+    FROM public.ai_usage_logs
+    WHERE course_id = p_course_id AND created_at >= p_since AND created_at < p_until
+    GROUP BY 1, 2, 3, 4, 5;
+$$;
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -476,6 +531,7 @@ ALTER TABLE public.chat_room_bots      ENABLE ROW LEVEL SECURITY;  -- 不建政�
 ALTER TABLE public.chat_messages       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.course_materials    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.material_chunks     ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.ai_usage_logs       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 

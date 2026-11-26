@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.ai.llm_keys import use_api_key
+from core.ai_usage import UsageContext, check_budget, course_for_access, track_usage
 from core.user_api_keys import load_decrypted_key
 from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.auth import CurrentUser, get_current_user
@@ -180,10 +181,14 @@ async def submit_answer(
         access = check_step_access(db, user, step_res.data)
         # 步驟停用或前面的必修步驟還沒通過 → 403（不建立 Session、不扣額度）
         check_step_unlocked(db, user, step_res.data)
+        # 這門課（或自主探索）本月 AI 預算用完 → 429，不建立作答、不扣次數（#81）
+        course_id = course_for_access(db, user.id, module_id, access)
+        budget = check_budget(db, course_id=course_id, access_mode=access.mode)
         linked_session_id = ensure_session(db, session_id, user.id)
         quota = consume_quota(db, access)
         # 自備金鑰方案：這次評分改用學生自己的金鑰（不扣平台次數）
         student_key = _student_api_key(db, user, access)
+        usage = _usage_context(db, user, access, course_id, step_res.data, student_key)
 
         tool = step_res.data["ai_tools"]
         rubric_criteria = tool.get("rubric_criteria", [])
@@ -267,7 +272,7 @@ async def submit_answer(
         # ── 呼叫 TutorAgent 並以 SSE 串流回傳 ──────────────────────
         async def event_generator() -> AsyncGenerator[str, None]:
             # use_api_key 只影響這次請求；None = 平台金鑰
-            with use_api_key(student_key):
+            with use_api_key(student_key), track_usage(usage):
                 async for event in _scoring_events():
                     yield event
 
@@ -282,6 +287,8 @@ async def submit_answer(
                     # 怎麼算通過、這個機器人會不會評分（前端依此決定要顯示分數還是只顯示回饋）
                     "pass_mode": pass_mode,
                     "scoring": scoring_enabled,
+                    # 本月 AI 預算快用完時提醒（level = warn）；沒設預算為 null
+                    "budget": budget,
                 })
 
                 if not scoring_enabled:
@@ -513,7 +520,11 @@ async def get_hint(
         tool.get("scale_type"),
     )
 
-    with use_api_key(_student_api_key(db, user, access)):
+    hint_key = _student_api_key(db, user, access)
+    hint_usage = _usage_context(
+        db, user, access, course_for_access(db, user.id, step_res.data.get("module_id"), access), step_res.data, hint_key
+    )
+    with use_api_key(hint_key), track_usage(hint_usage):
         hint = await hint_engine.next_hint(
             teaching_strategy=tool.get("teaching_strategy"),
             student_answer=(last_attempt or {}).get("user_input_content", ""),
@@ -717,10 +728,13 @@ async def check_module_coherence(module_id: str, user: CurrentUser = Depends(get
             detail="至少需要完成 2 個步驟才能進行一致性檢核"
         )
 
+    usage = UsageContext(db=db, user_id=user.id, module_id=module_id, access_mode="coherence")
+
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            async for chunk in coherence_agent.check_stream(step_answers):
-                yield _sse_event(chunk["type"], chunk["data"])
+            with track_usage(usage):
+                async for chunk in coherence_agent.check_stream(step_answers):
+                    yield _sse_event(chunk["type"], chunk["data"])
         except Exception as e:
             error_detail = traceback.format_exc()
             logger.error(f"CoherenceAgent error:\n{error_detail}")
@@ -902,3 +916,12 @@ def _pass_status(pass_mode: str, new_status: str | None) -> dict:
         "passed": status == "passed",
         "awaiting_teacher": status == "submitted" and pass_mode == "teacher_review",
     }
+
+
+def _usage_context(db, user, access, course_id, step: dict, student_key) -> UsageContext:
+    """這次請求的 AI 用量要記在誰、哪門課、哪一關名下（#81）；學生自備金鑰的費用不算進平台預算"""
+    return UsageContext(
+        db=db, user_id=user.id, course_id=course_id, module_id=step.get("module_id"),
+        step_id=step.get("id"), tool_id=step.get("tool_id"), access_mode=access.mode,
+        key_source="student" if student_key else "platform",
+    )

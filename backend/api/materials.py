@@ -19,6 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.ai.llm_keys import use_api_key
+from core.ai_usage import UsageContext, track_usage
 from core.auth import CurrentUser, require_staff
 from core.chat_room import migration_missing
 from core.file_text import MAX_FILE_BYTES, FileTextError, extract_text
@@ -109,7 +110,8 @@ async def upload_material(
 
 async def _save(db, course_id: str, title: str, text: str, user: CurrentUser, source_type: str) -> dict:
     try:
-        with use_api_key(None):  # 教材向量一律用平台金鑰
+        usage = UsageContext(db=db, user_id=user.id, course_id=course_id, access_mode="teacher")
+        with use_api_key(None), track_usage(usage):  # 教材向量一律用平台金鑰，費用算在這門課
             material = await add_material(
                 db, course_id=course_id, title=title, text=text, created_by=user.id, source_type=source_type
             )

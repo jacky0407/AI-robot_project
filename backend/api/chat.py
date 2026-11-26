@@ -29,6 +29,7 @@ from api import practice
 from core.access import check_step_access, consume_quota, quota_status, refund_quota
 from core.ai.agents.chat_agents import ChatBotAgent, RouterAgent
 from core.ai.llm_keys import use_api_key
+from core.ai_usage import check_budget, course_for_access, track_usage, usage_tool
 from core.ai.rubric_formatter import normalize_rubric
 from core.auth import CurrentUser, get_current_user
 from core.chat_room import (
@@ -168,8 +169,12 @@ async def send_message(
     if not wants_evaluation and not bots:
         raise _error(400, "NO_CHAT_BOTS", "這個聊天室還沒有可以對話的機器人，請老師到模組管理設定")
 
+    # 本月 AI 預算用完 → 429，不存訊息、不扣次數（#81）。送出評分不擋：讓已經聊完的學生能完成這一關
+    course_id = course_for_access(db, user.id, module_id, access)
+    budget = None if wants_evaluation else check_budget(db, course_id=course_id, access_mode=access.mode)
     quota = consume_quota(db, access)
     student_key = practice._student_api_key(db, user, access)
+    usage = practice._usage_context(db, user, access, course_id, step, student_key)
 
     student_row = None
     if content:
@@ -179,11 +184,12 @@ async def send_message(
         })
 
     async def events() -> AsyncGenerator[str, None]:
-        with use_api_key(student_key):
+        with use_api_key(student_key), track_usage(usage):
             try:
                 yield practice._sse_event("message_saved", {
                     "message": public_message(student_row) if student_row else None,
                     "quota": quota,
+                    "budget": budget,
                 })
                 if wants_evaluation:
                     async for event in _evaluate(db, user, step, evaluator, history_rows + ([student_row] if student_row else []),
@@ -227,7 +233,8 @@ async def _reply(db, user, step, bots, mentioned, history_rows, content, session
         routing["answer_mode"] = mode
         routing["times_asked"] = repeats + 1
         context = f"{rule}\n\n{context}"
-    text = await chat_bot_agent.reply(bot, bots, turns, content, context)
+    with usage_tool(bot.tool_id):  # 回覆的費用記在回答的機器人名下
+        text = await chat_bot_agent.reply(bot, bots, turns, content, context)
     row = save_message(db, {
         "user_id": user.id, "module_id": step.get("module_id"), "step_id": step["id"],
         "session_id": session_id, "role": "bot", "tool_id": bot.tool_id, "bot_name": bot.name,
