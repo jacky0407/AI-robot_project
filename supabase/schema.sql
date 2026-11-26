@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS public.courses (
     is_archived BOOLEAN DEFAULT false,
     created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
-    monthly_ai_budget_usd NUMERIC(10, 2)   -- 每月 AI 費用上限（美元，平台金鑰；空白 = 不限，migration 023）
+    monthly_ai_budget_usd NUMERIC(10, 2)   -- 每月 AI 費用上限（美元，平台金鑰；空白 = 不限，migration 028）
 );
 
 -- 課程邀請碼：一門課多組，各自的可用日期與方案（migration 013）
@@ -383,7 +383,7 @@ AS $$
     LIMIT GREATEST(1, LEAST(p_match_count, 20));
 $$;
 
--- AI 用量與費用（migration 023，#81）：每次 AI 呼叫一列；只給 service_role
+-- AI 用量與費用（migration 028，#81）：每次 AI 呼叫一列；只給 service_role
 CREATE TABLE IF NOT EXISTS public.ai_usage_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,

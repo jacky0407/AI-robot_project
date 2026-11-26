@@ -1,7 +1,7 @@
 """
 AI 用量與費用（#81，需求說明書 AI-001、AI-002、15.1）
 
-記錄：每一次 AI 呼叫寫一列 ai_usage_logs（migration 023）——模型、token、估計費用、延遲、成功與否、
+記錄：每一次 AI 呼叫寫一列 ai_usage_logs（migration 028）——模型、token、估計費用、延遲、成功與否、
       用平台金鑰還是學生自備金鑰。記錄由 llm_utils.invoke_with_retry 與 embeddings 自動呼叫 record()，
       API 端點只要用 track_usage() 包住這次請求，告訴它是誰、哪門課、哪一關。
       沒有包 track_usage() 的呼叫（例如單元測試）不記錄。記錄失敗只寫 log，不影響評分。
@@ -103,7 +103,7 @@ def record(feature: str, model, *, input_tokens: int = 0, output_tokens: int = 0
     try:
         ctx.db.table("ai_usage_logs").insert(row).execute()
     except Exception as e:  # noqa: BLE001 - 記錄失敗不能影響評分
-        logger.warning(f"AI 用量記錄失敗（是否尚未執行 migration 023？）：{e}")
+        logger.warning(f"AI 用量記錄失敗（是否尚未執行 migration 028？）：{e}")
 
 
 # ──────────────────────────────────────────

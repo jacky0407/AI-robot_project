@@ -1196,7 +1196,7 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 
 ---
 
-## 五之三、AI 用量與每月預算 ✅（#81，migration 023）
+## 五之三、AI 用量與每月預算 ✅（#81，migration 028）
 
 - 每一次 AI 呼叫寫一列 `ai_usage_logs`：功能（逐項評分、整體回饋、提示、錯誤偵測、跨步驟檢核、聊天調度、聊天回覆、向量）、模型、輸入／輸出 token、估計費用、延遲、成功與否、平台或學生自備金鑰
 - 費用依 `MODEL_PRICES` 價目表估算（預設值在 `core/config.py`），實際以 Google Cloud 帳單為準

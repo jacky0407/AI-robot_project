@@ -96,7 +96,7 @@ async def course_ai_usage(
         if migration_missing(e) or "ai_usage_summary" in str(e):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={
                 "code": "MIGRATION_REQUIRED",
-                "message": "資料庫還沒更新：請在 Supabase SQL Editor 執行 supabase/migrations/023_ai_usage.sql",
+                "message": "資料庫還沒更新：請在 Supabase SQL Editor 執行 supabase/migrations/028_ai_usage.sql",
             })
         raise
 
