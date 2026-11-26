@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { DEFAULT_AFTER_LOGIN, safeNext } from "@/utils/redirect";
 import { APP_NAME, APP_NAME_ZH } from "../brand";
+import { PrivacyNoticeBox } from "@/components/PrivacyNotice";
 
 // 職業選項（value 會存進 profiles.profession，可自行增減）
 const PROFESSIONS = [
@@ -47,6 +48,7 @@ function OnboardingForm() {
   const [profession, setProfession] = useState("preschool_teacher");
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [agreePrivacy, setAgreePrivacy] = useState(false);
+  const [agreeNoPii, setAgreeNoPii] = useState(false);
   const [ready, setReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -80,7 +82,7 @@ function OnboardingForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const canSubmit = fullName.trim().length > 0 && agreeTerms && agreePrivacy && !submitting;
+  const canSubmit = fullName.trim().length > 0 && agreeTerms && agreePrivacy && agreeNoPii && !submitting;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -163,6 +165,18 @@ function OnboardingForm() {
                 </option>
               ))}
             </select>
+          </label>
+
+          {/* 個資提醒（PRI-001）：註冊時完整說明，並要勾選才能完成註冊 */}
+          <PrivacyNoticeBox />
+          <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "13px", color: "#cbd5e1", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={agreeNoPii}
+              onChange={(e) => setAgreeNoPii(e.target.checked)}
+              style={{ marginTop: "3px" }}
+            />
+            我了解不可輸入或上傳可以認出個人的資料，描述案例時會使用化名
           </label>
 
           <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "13px", color: "#cbd5e1", cursor: "pointer" }}>

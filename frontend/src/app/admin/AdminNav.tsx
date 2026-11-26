@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
+import { FirstUsePrivacyDialog } from "@/components/PrivacyNotice";
 
 const PAGES: { href: string; label: string; also?: string[] }[] = [
   // 學習監控、待複核、成員、邀請碼、模組管理、資料匯出都在課程裡；複核詳情頁（/admin/review/[id]）也算在課程管理
@@ -38,6 +39,8 @@ export default function AdminNav() {
 
   return (
     <nav style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px", padding: "4px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.06)" }}>
+      {/* 個資提醒（PRI-001）：第一次進後台時說明一次 */}
+      <FirstUsePrivacyDialog scope="staff" />
       {/* 回到 /portal 選擇其他系統（例如 XR 訪談訓練） */}
       <Link
         href="/portal"

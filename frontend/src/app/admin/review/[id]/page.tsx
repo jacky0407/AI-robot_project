@@ -6,6 +6,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { apiFetch } from "@/utils/api";
 import ForwardReview, { type ForwardDetail } from "./ForwardReview";
+import { PrivacyHint } from "@/components/PrivacyNotice";
 import AdminNav from "../../AdminNav";
 
 type DimensionScore = { dimension: string; score: number; max_score: number; reason?: string; evidence?: string };
@@ -295,6 +296,7 @@ function ReviewDetail() {
                   onChange={(e) => setFinalFeedback(e.target.value)}
                   style={field}
                 />
+                <PrivacyHint />
               </label>
               <label style={{ fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
                 <input type="checkbox" checked={isPublished} onChange={(e) => setIsPublished(e.target.checked)} />

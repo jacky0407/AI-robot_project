@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { ApiError, apiFetch } from "@/utils/api";
+import { PrivacyHint } from "@/components/PrivacyNotice";
 
 export type ForwardDetail = {
   fields: { key: string; label: string; description: string; ai_value: string | null; teacher_value: string | null }[];
@@ -50,6 +51,7 @@ export default function ForwardReview({ submissionId, initial }: { submissionId:
         {detail.extracted_at ? "學生通過時 AI 依欄位整理。" : "這次作答還沒有 AI 整理（還沒通過，或整理失敗），可以直接由老師填寫。"}
         老師填寫的內容優先，留空就沿用 AI 整理的。
       </p>
+      <PrivacyHint style={{ marginBottom: "10px" }} />
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {detail.fields.map((f) => (
           <div key={f.key}>

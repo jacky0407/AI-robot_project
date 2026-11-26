@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, apiFetch, apiUpload } from "@/utils/api";
+import { PrivacyHint, UploadPrivacyCheck } from "@/components/PrivacyNotice";
 
 type Material = { id: string; title: string; source_type: string; char_count: number; chunk_count: number; created_at: string };
 type Chunk = { chunk_index: number; content: string };
@@ -22,6 +23,8 @@ export default function MaterialsTab({ courseId }: { courseId: string }) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [busy, setBusy] = useState(false);
+  // 上傳前要先勾選「已移除個資」（PRI-001）
+  const [uploadChecked, setUploadChecked] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [preview, setPreview] = useState<{ id: string; chunks: Chunk[] } | null>(null);
 
@@ -136,11 +139,14 @@ export default function MaterialsTab({ courseId }: { courseId: string }) {
       <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "14px", borderRadius: "10px", border: "1px dashed rgba(255,255,255,0.2)" }}>
         <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: 0 }}>加入教材</h4>
         <input maxLength={100} placeholder="教材名稱，例如：IEP 撰寫指引" value={title} onChange={(e) => setTitle(e.target.value)} style={input} />
-        <textarea rows={8} maxLength={MAX_CHARS} placeholder="貼上教材文字，或在下面選檔案（pdf、docx、pptx 直接上傳；txt、md 會先放進這裡）。請勿包含真實個案的姓名、電話、身分證字號等個資。" value={content} onChange={(e) => setContent(e.target.value)} style={{ ...input, resize: "vertical", lineHeight: 1.6 }} />
+        <textarea rows={8} maxLength={MAX_CHARS} placeholder="貼上教材文字，或在下面選檔案（pdf、docx、pptx 直接上傳；txt、md 會先放進這裡）" value={content} onChange={(e) => setContent(e.target.value)} style={{ ...input, resize: "vertical", lineHeight: 1.6 }} />
+        <PrivacyHint />
+        <UploadPrivacyCheck checked={uploadChecked} onChange={setUploadChecked} />
         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
           <input
             type="file"
-            disabled={busy}
+            disabled={busy || !uploadChecked}
+            title={uploadChecked ? undefined : "請先勾選上方的確認"}
             accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown"
             onChange={(e) => readFile(e.currentTarget)}
             style={{ fontSize: "12px", color: "#cbd5e1" }}

@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
+import { PrivacyHint } from "@/components/PrivacyNotice";
 
 export type ChatRoomInfo = {
   chat: true;
@@ -176,6 +177,7 @@ export default function ChatRoom({
 
       {warning && <div style={{ padding: "8px 10px", borderRadius: "8px", fontSize: "12px", color: "#fca5a5", backgroundColor: "rgba(239,68,68,0.12)" }}>{warning}</div>}
 
+      <PrivacyHint />
       <textarea
         value={text}
         maxLength={MAX_CHARS}
@@ -186,7 +188,7 @@ export default function ChatRoom({
             if (!blocked) send(false);
           }
         }}
-        placeholder="輸入訊息，Enter 送出、Shift+Enter 換行。請勿輸入真實姓名、電話、身分證字號等個資"
+        placeholder="輸入訊息，Enter 送出、Shift+Enter 換行"
         style={{ width: "100%", height: "80px", boxSizing: "border-box", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", backgroundColor: "#0f172a", color: "#f8fafc", fontSize: "13px", lineHeight: 1.5, resize: "vertical", outline: "none" }}
       />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
