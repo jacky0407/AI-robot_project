@@ -7,6 +7,7 @@ import { ApiError, apiFetch, streamSSE } from "@/utils/api";
 import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 import BotMemoryPanel from "./BotMemoryPanel";
 import ChatRoom, { loadChatRoom, type ChatRoomInfo } from "./ChatRoom";
+import ForwardedPanel from "./ForwardedPanel";
 
 // ─── 步驟與模組型別定義 ───
 
@@ -804,6 +805,9 @@ function StudentWorkspace() {
                 <p style={{ fontSize: "13px", color: "#fbbf24", margin: 0 }}>讀不到教學案例，請聯絡老師確認案例已建立。</p>
               )}
             </div>
+
+            {/* 前面關卡依老師設定的欄位傳來的重點（#84）；沒有就不顯示 */}
+            {selectedStep && <ForwardedPanel stepId={selectedStep.id} refreshKey={progressKey} />}
 
             {/* 作答：聊天室關卡改成聊天室 */}
             {chat ? (

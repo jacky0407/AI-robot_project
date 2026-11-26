@@ -36,6 +36,7 @@ from core.learner_profile import refresh_learner_profile
 from core.practice_session import ensure_session, parse_session_id
 from core.ai.rubric_formatter import normalize_rubric
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
+from core.step_forward import extract_and_save, load_forwarded
 from core.privacy import detect_pii
 from core.tool_lock import apply_locked_version
 from core.step_unlock import check_step_unlocked, load_active_steps, module_progress
@@ -367,6 +368,8 @@ async def submit_answer(
                     if new_status:
                         db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
                     yield _sse_event("pass_status", _pass_status(pass_mode, new_status))
+                    async for event in _forward_events(new_status):
+                        yield event
 
                     # 學習者側寫：評分寫入後重算一個新版本（失敗只記 log，不影響這次評分）
                     refresh_learner_profile(db, user.id, body.module_id, attempt_id)
@@ -377,6 +380,8 @@ async def submit_answer(
                     if new_status:
                         db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
                     yield _sse_event("pass_status", _pass_status(pass_mode, new_status))
+                    async for event in _forward_events(new_status):
+                        yield event
 
                 # 有構面因 AI 呼叫失敗而給了保底分數：不是學生的問題，退回這次額度
                 if final_data and _has_failed_dimension(final_data):
@@ -408,7 +413,17 @@ async def submit_answer(
             db.table("step_attempts").update(
                 {"structured_data": {"ai_feedback": feedback}}
             ).eq("id", attempt_id).execute()
+            async for event in _forward_events(new_status, {"ai_feedback": feedback}):
+                yield event
             refresh_learner_profile(db, user.id, module_id, attempt_id)
+
+        async def _forward_events(new_status, structured: dict | None = None) -> AsyncGenerator[str, None]:
+            """通過時依老師設定的欄位抽出結構化資料，傳給後面的關卡（#84）；失敗不影響通過"""
+            if new_status != "passed":
+                return
+            values = await extract_and_save(db, attempt_id, step_res.data, body.content, structured)
+            if values:
+                yield _sse_event("forward_extracted", {"fields": values})
 
         return StreamingResponse(
             event_generator(),
@@ -625,6 +640,23 @@ async def get_step_memory(step_id: str, user: CurrentUser = Depends(get_current_
     config = parse_memory_config(rows[0]["ai_tools"].get("teaching_strategy"))
     memory = load_bot_memory(db, user.id, rows[0])
     return {"data": {"enabled": config.enabled, **memory.to_event_data()}}
+
+
+@router.get("/steps/{step_id}/forwarded")
+async def get_forwarded_fields(step_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    前面關卡傳過來的結構化欄位（#84）：每個前面的關卡取通過（或最新）那次作答，
+    附上來源（第幾關、第幾次作答、AI 抽出或教師確認）。只讀，不呼叫 LLM、不扣額度。
+    """
+    db = get_supabase()
+    rows = (
+        db.table("module_steps").select("*, ai_tools(status)").eq("id", step_id).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Step not found")
+    check_step_access(db, user, rows[0])
+    forwarded = load_forwarded(db, user.id, rows[0].get("module_id"), rows[0].get("step_order") or 0)
+    return {"data": [f.to_dict() for f in forwarded]}
 
 
 @router.get("/sessions/{session_id}/history")

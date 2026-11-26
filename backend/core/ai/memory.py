@@ -62,8 +62,8 @@ ATTEMPT_SELECT = (
 # 「是否通過」與步驟解鎖用同一套規則（core/step_unlock.attempt_passed）：
 # 已發布的教師分數優先於 AI，所以要一起讀 teacher_reviews 與門檻 pass_score
 PRIOR_STEP_SELECT = (
-    "step_id, attempt_number, status, user_input_content, "
-    "module_steps(step_order, step_title, pass_score), "
+    "step_id, attempt_number, status, user_input_content, structured_data, "
+    "module_steps(step_order, step_title, pass_score, pass_forward_keys), "
     "teacher_reviews(final_score, is_published)"
 )
 
@@ -357,11 +357,31 @@ def _load_prior_steps(db, user_id: str, module_id: str | None, step_order: int) 
         prior.append(PriorStepMemory(
             step_order=step["step_order"],
             step_title=step.get("step_title") or "",
-            content=_truncate(row.get("user_input_content"), PRIOR_STEP_CHARS),
+            content=_prior_content(row, step),
             passed=_row_passed(row),
         ))
     prior.sort(key=lambda p: p.step_order)
     return prior
+
+
+def _prior_content(row: dict, step: dict) -> str:
+    """
+    前面這一關要給後面機器人看的內容（#84）：老師有設定「要傳給後面的欄位」、而且抽出過，
+    就用結構化欄位（標明第幾次作答、AI 抽出或教師確認）；否則退回作答全文的前段。
+    """
+    from core.step_forward import ForwardedStep, merged_fields, parse_fields
+
+    values, source = merged_fields(row.get("structured_data"))
+    if values:
+        labels = {f.key: f.label for f in parse_fields(step.get("pass_forward_keys"))}
+        labels.update({k: v for k, v in ((row.get("structured_data") or {}).get("forward") or {}).get("labels", {}).items() if k not in labels})
+        forwarded = ForwardedStep(
+            step_id=row.get("step_id"), step_order=step.get("step_order"), step_title=step.get("step_title") or "",
+            attempt_number=row.get("attempt_number") or 0, source=source,
+            fields=[{"key": k, "label": labels.get(k, k), "value": v} for k, v in values.items()],
+        )
+        return forwarded.to_prompt_text()
+    return _truncate(row.get("user_input_content"), PRIOR_STEP_CHARS)
 
 
 def _row_passed(row: dict) -> bool:
