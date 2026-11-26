@@ -120,7 +120,7 @@ export default function VersionCompare({ attempts, onClose }: { attempts: Histor
       aria-modal="true"
       aria-labelledby="compare-title"
       onClick={onClose}
-      style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "32px 16px", overflowY: "auto", backgroundColor: "var(--t-overlay)", colorScheme: "dark" }}
+      style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "32px 16px", overflowY: "auto", backgroundColor: "var(--t-overlay)" }}
     >
       <div
         onClick={(e) => e.stopPropagation()}

@@ -1,6 +1,6 @@
 "use client";
 
-// 對話底部的輸入框（像 ChatGPT）：固定在畫面底部，輸入框會隨內容長高
+// 對話底部的輸入框（像 ChatGPT）：固定在視窗正中間下方，不跟著對話內容移動；會隨內容長高
 // - 聊天室：Enter 送出、Shift+Enter 換行
 // - 一般作答：作答通常很長，Enter 換行、Ctrl／⌘+Enter 送出
 // 上方工具列放 @ 機器人、我需要提示等按鈕；右下是送出按鈕
@@ -43,7 +43,7 @@ export default function Composer({
   useEffect(() => {
     const el = boxRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => document.documentElement.style.setProperty("--composer-h", `${el.offsetHeight + 12}px`));
+    const ro = new ResizeObserver(() => document.documentElement.style.setProperty("--composer-h", `${el.offsetHeight + 16}px`));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -57,7 +57,11 @@ export default function Composer({
   }, [value, minHeight]);
 
   return (
-    <div ref={boxRef} style={{ position: "sticky", bottom: 0, zIndex: 5, padding: "12px 0 16px", backgroundColor: "var(--t-bg)" }}>
+    <>
+    {/* 佔位：和輸入框一樣高，對話最後一則才不會被固定的輸入框蓋住 */}
+    <div aria-hidden="true" style={{ height: "var(--composer-h, 200px)", flexShrink: 0 }} />
+    <div ref={boxRef} style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 20, display: "flex", justifyContent: "center", padding: "10px 16px 16px", backgroundColor: "var(--t-bg)", borderTop: "1px solid var(--t-border)" }}>
+     <div style={{ width: "100%", maxWidth: "820px" }}>
       {warning && (
         <div style={{ marginBottom: "8px", padding: "8px 12px", borderRadius: "10px", fontSize: "13px", color: "var(--t-danger)", backgroundColor: "var(--t-danger-soft)", border: "1px solid var(--t-danger-border)" }}>
           {warning}
@@ -121,7 +125,9 @@ export default function Composer({
           </span>
         </div>
       </div>
+     </div>
     </div>
+    </>
   );
 }
 

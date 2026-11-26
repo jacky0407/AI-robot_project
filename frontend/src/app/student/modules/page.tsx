@@ -156,6 +156,8 @@ function StudentWorkspace() {
   const [lastAnswer, setLastAnswer] = useState("");
   // 對話最底部：送出作答、評分逐項出來、取用提示時捲到這裡（像 ChatGPT）
   const threadEndRef = useRef<HTMLDivElement>(null);
+  // 右側抽屜（AI 助教記得你、作答紀錄、跨步驟檢核）：平常收起，按右上角的圖示才滑出
+  const [sideOpen, setSideOpen] = useState(false);
   const [hintMessage, setHintMessage] = useState("");
   const [history, setHistory] = useState<Submission[]>([]);
   const [showCompare, setShowCompare] = useState(false);
@@ -306,6 +308,14 @@ function StudentWorkspace() {
       active = false;
     };
   }, [supabase]);
+
+  // 抽屜開著時按 Esc 收起
+  useEffect(() => {
+    if (!sideOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSideOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sideOpen]);
 
   // 對話有新東西就捲到最下面；沒有新東西（剛進關卡）時不捲，讓學生先看關卡說明
   const runProgress = run ? run.dimensions.length + (run.score ? 1 : 0) + run.errors.length + (run.feedback ? 1 : 0) + (run.failure ? 1 : 0) : -1;
@@ -667,9 +677,10 @@ function StudentWorkspace() {
         </div>
       )}
 
-      {/* 主體：中間是 GPT 式對話（關卡說明 → 提示、作答、評分依時間排下來，輸入框固定在底部），右邊是記憶與作答紀錄 */}
+      {/* 主體：GPT 式對話（關卡說明 → 提示、作答、評分依時間排下來，輸入框固定在視窗底部中間）；
+          記憶與作答紀錄收在右側抽屜，按右上角的圖示才滑出 */}
       {!loading && modules.length > 0 && (
-      <main className="ws-grid" style={{ padding: "0 24px", display: "grid", gap: "24px", alignItems: "start" }}>
+      <main className="ws-grid" style={{ padding: "0 24px" }}>
         <section className="ws-chat" style={{ minWidth: 0, width: "100%", maxWidth: "820px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "22px", paddingTop: "20px" }}>
           {/* 題目切換 */}
           <StepNav
@@ -799,8 +810,87 @@ function StudentWorkspace() {
           )}
         </section>
 
-        {/* 右邊：AI 助教記得你、作答紀錄、跨步驟檢核 */}
-        <aside className="ws-side" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0, paddingTop: "20px" }}>
+        {/* 開抽屜的圖示：固定在右上角 */}
+        <button
+          type="button"
+          onClick={() => setSideOpen(true)}
+          aria-label="打開作答紀錄與 AI 記憶"
+          aria-expanded={sideOpen}
+          title="作答紀錄與 AI 記憶"
+          className="ws-side-toggle"
+          style={{
+            position: "fixed",
+            top: "88px",
+            right: "20px",
+            zIndex: 30,
+            width: "44px",
+            height: "44px",
+            borderRadius: "12px",
+            border: "1px solid var(--t-border-strong)",
+            backgroundColor: "var(--t-surface)",
+            color: "var(--t-text-2)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+          }}
+        >
+          {/* 側欄圖示（線條） */}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M15 4v16" />
+            <path d="M18 9h0.01M18 12h0.01" />
+          </svg>
+          {history.length > 0 && (
+            <span style={{ position: "absolute", top: "-6px", right: "-6px", minWidth: "18px", height: "18px", padding: "0 5px", boxSizing: "border-box", borderRadius: "9999px", fontSize: "11px", fontWeight: "bold", lineHeight: "18px", textAlign: "center", color: "var(--t-on-primary)", backgroundColor: "var(--t-primary)" }}>
+              {history.length}
+            </span>
+          )}
+        </button>
+
+        {/* 抽屜外的半透明底：點一下收起 */}
+        <div
+          aria-hidden="true"
+          onClick={() => setSideOpen(false)}
+          style={{ position: "fixed", inset: 0, zIndex: 39, backgroundColor: "var(--t-overlay)", opacity: sideOpen ? 1 : 0, pointerEvents: sideOpen ? "auto" : "none", transition: "opacity 0.2s" }}
+        />
+
+        {/* 右側抽屜：AI 助教記得你、作答紀錄、跨步驟檢核（一直掛著，收起時移到畫面外，記憶與紀錄照常更新） */}
+        <aside
+          className="ws-side"
+          aria-label="作答紀錄與 AI 記憶"
+          aria-hidden={!sideOpen}
+          inert={!sideOpen}
+          style={{
+            position: "fixed",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 40,
+            width: "min(380px, 92vw)",
+            boxSizing: "border-box",
+            overflowY: "auto",
+            padding: "16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "16px",
+            backgroundColor: "var(--t-bg)",
+            borderLeft: "1px solid var(--t-border)",
+            transform: sideOpen ? "translateX(0)" : "translateX(100%)",
+            transition: "transform 0.25s ease",
+          }}
+        >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>作答紀錄與 AI 記憶</h2>
+              <button
+                type="button"
+                onClick={() => setSideOpen(false)}
+                aria-label="收起"
+                style={{ padding: "4px 10px", borderRadius: "8px", border: "1px solid var(--t-border-strong)", background: "none", color: "var(--t-text-2)", fontSize: "13px", cursor: "pointer" }}
+              >
+                收起 →
+              </button>
+            </div>
             {/* 機器人記憶：送出後（progressKey 變動）重新讀 */}
             {selectedStep && <BotMemoryPanel stepId={selectedStep.id} refreshKey={progressKey} panelStyle={panel} />}
 
@@ -917,12 +1007,8 @@ function StudentWorkspace() {
       )}
 
       <style>{`
-        /* 寬螢幕：對話＋右側欄；筆電以下右側欄移到對話下方 */
-        .ws-grid { grid-template-columns: minmax(0, 1fr) 340px; }
-        @media (max-width: 1100px) {
-          .ws-grid { grid-template-columns: minmax(0, 1fr); }
-          .ws-side { padding-bottom: 32px; }
-        }
+        @media (prefers-reduced-motion: reduce) { .ws-side { transition: none !important; } }
+        .ws-side-toggle:hover { border-color: var(--t-primary) !important; color: var(--t-primary) !important; }
         .chat-dots { display: inline-flex; gap: 3px; }
         .chat-dots i { width: 6px; height: 6px; border-radius: 9999px; background: var(--t-text-faint); animation: chatdot 1s infinite ease-in-out; }
         .chat-dots i:nth-child(2) { animation-delay: 0.15s; }
@@ -934,6 +1020,7 @@ function StudentWorkspace() {
           .ws-header { padding: 12px 16px !important; }
           .ws-header-actions { width: 100%; justify-content: flex-end; }
           .ws-grid { padding: 0 12px !important; }
+          .ws-side-toggle { top: auto !important; bottom: calc(var(--composer-h, 200px) + 8px); right: 12px !important; }
         }
       `}</style>
 
