@@ -251,6 +251,57 @@
 
 ## 二、帳號管理 (Users)
 
+### 已實作：帳號停用、去識別化與永久刪除（`/api/admin/accounts`，#87，migration 027）
+
+實作在 `backend/api/accounts.py`，規則在 `backend/core/accounts.py`。下方 `/api/users` 系列是早期規劃，以這一段為準。
+
+**帳號狀態**（`profiles.account_status`，`is_active` 與它同步）：
+
+| 狀態 | 能不能登入 | 資料 | 能不能復原 |
+|------|-----------|------|-----------|
+| `active` 使用中 | ✅ | — | — |
+| `disabled` 已停用 | ❌ | 全部保留 | ✅ 隨時恢復 |
+| `deidentified` 已去識別化 | ❌ | 姓名、Email 換成匿名研究編號；學習歷程保留給研究 | ❌ |
+| `pending_deletion` 待刪除 | ❌ | 30 天回收期內全部保留 | ✅ 30 天內復原；之後清除就真的刪除 |
+
+| 權限 | 方法與路徑 | Body | 說明 |
+|------|-----------|------|------|
+| HOST、ASSISTANT | `GET /api/admin/accounts?status=&role=&q=` | — | 帳號清單，每個附 `actions`（目前登入者可以做的操作）；教授另外看到 `due_for_purge`（可以清除的數量） |
+| HOST、ASSISTANT | `POST /api/admin/accounts/:id/disable` | `{reason}` | 停用；助理只能對學生 |
+| HOST、ASSISTANT | `POST /api/admin/accounts/:id/enable` | `{reason?}` | 恢復停用的帳號；助理只能對學生 |
+| HOST | `POST /api/admin/accounts/:id/deidentify` | `{reason, confirm: "去識別化"}` | 去識別化，只對學生 |
+| HOST | `POST /api/admin/accounts/:id/delete` | `{reason, confirm_email}` | 排定永久刪除（30 天回收期）；**要 5 分鐘內重新驗證** |
+| HOST | `POST /api/admin/accounts/:id/restore` | — | 回收期內復原，回到申請刪除前的狀態 |
+| HOST | `POST /api/admin/accounts/purge-due` | — | 清除回收期已過的帳號（真正刪除）；**要 5 分鐘內重新驗證** |
+
+**規則：**
+- 原因必填（恢復除外，2–500 字）；去識別化要輸入「去識別化」、永久刪除要輸入對方的 Email（不分大小寫）確認
+- 不能停用：Supabase Auth 也封鎖登入（`ban_duration`）；封鎖失敗就回 502，帳號狀態不變
+- 去識別化：`full_name` 換成匿名研究編號（`research_consents.anonymous_research_id`），`email` 換成 `<編號>@deidentified.invalid`，
+  Supabase Auth 的 Email 一起換掉；刪掉自備的 Gemini 金鑰；操作紀錄**不寫**原本的姓名與 Email
+- 永久刪除 = 這個人的帳號與**他自己的**資料（作答、評分、選課、同意書、聊天…）全部刪除；要保留研究資料請改用去識別化。
+  老師帳號被刪除時，他寫過的教師判定保留（`teacher_reviews.teacher_id` 改成 `ON DELETE SET NULL`）
+- 不能對自己操作（`CANNOT_MANAGE_SELF`）；最後一位使用中的教授不能被停用或刪除（`LAST_OWNER`）
+- 被停用的人：後端回 403 `ACCOUNT_DISABLED`；前端 middleware 立刻登出並回登入頁說明
+- 每個操作寫進操作紀錄：`account.disable` / `enable` / `deidentify` / `delete_request` / `restore` / `purge`
+
+**再次驗證**：`delete`、`purge-due` 要 token 裡最近一次輸入驗證碼（`amr` 的 totp 時間）在 5 分鐘內，否則 403 `REAUTH_REQUIRED`。
+前端在送出前請老師再輸入一次 6 位數（`supabase.auth.mfa.challengeAndVerify`），拿到新的 token 再送。
+
+| 情況 | 回應 |
+|------|------|
+| 權限不足（助理對教師、助理去識別化或刪除） | 403 `PERMISSION_DENIED` |
+| 對自己操作 | 403 `CANNOT_MANAGE_SELF` |
+| 沒有重新驗證 | 403 `REAUTH_REQUIRED` |
+| 確認文字或 Email 不對 | 400 `CONFIRM_MISMATCH` |
+| 教師帳號去識別化 | 400 `STAFF_CANNOT_BE_DEIDENTIFIED` |
+| 狀態不對（例如停用已停用的帳號） | 409 `INVALID_STATUS_TRANSITION` |
+| 最後一位教授 | 409 `LAST_OWNER` |
+| 帳號不存在 | 404 `ACCOUNT_NOT_FOUND` |
+| Supabase Auth 更新失敗 | 502 `AUTH_UPDATE_FAILED` |
+| 還沒跑 migration 027 | 503 `MIGRATION_REQUIRED` |
+
+
 ### `GET /api/users`
 **權限**：HOST, ASSISTANT
 
@@ -652,29 +703,100 @@
 
 ---
 
-## 三之一、機器人申請 (Tool Requests)
+## 二之一、安全：兩步驟驗證與操作紀錄（#90，migration 026）
 
-實作在 `backend/api/tool_requests.py`，資料存在 `tool_permissions`（一筆 = 一次申請）。
+### 兩步驟驗證
+
+- 所有用 `require_staff` 的教師端 API，除了角色是 owner / assistant，還要求這次登入完成兩步驟驗證：
+  Supabase access token 的 `aal` 必須是 `aal2`，否則回 **403 `MFA_REQUIRED`**
+- 前端：`middleware.ts` 在進 `/admin` 前檢查，沒完成就導到 `/mfa`（設定或輸入驗證碼）；`apiFetch` 收到 `MFA_REQUIRED` 也會導到 `/mfa`
+- 學生端 API 不受影響
+- 緊急關閉：後端環境變數 `STAFF_MFA_REQUIRED=false`（見 docs/SETUP.md）
+
+### 操作紀錄 `GET /api/admin/audit-logs`
+
+**權限**：只限 HOST（教授）；助理與學生回 403。
+
+| Query | 說明 |
+|-------|------|
+| `action` | 某一種操作，例如 `tool.update`；結尾是 `.` 代表前綴，例如 `tool.` = 機器人的全部操作 |
+| `actor_id` | 只看某位老師或助理 |
+| `date_from`、`date_to` | 台灣時間的日期（`YYYY-MM-DD`，含當天）；開始晚於結束回 400 `INVALID_DATE_RANGE` |
+| `limit`、`offset` | 分頁，`limit` 預設 50、最多 200 |
+
+**回應：**
+```json
+{
+  "data": [{
+    "id": "…", "created_at": "…",
+    "actor_id": "…", "actor_role": "assistant", "actor_name": "王助理", "actor_email": "…",
+    "action": "tool.update", "action_label": "修改機器人",
+    "target_type": "tool", "target_id": "…",
+    "detail": { "from_version": 2, "version": 3, "fields": ["rubric_criteria"], "rubric_changed": true }
+  }],
+  "has_more": true,
+  "actions": [{ "value": "tool.create", "label": "建立機器人" }]
+}
+```
+
+**會記錄的操作**（`backend/core/audit.py` 的 `ACTIONS`）：
+
+| action | 什麼時候 | detail |
+|--------|---------|--------|
+| `tool.create` / `tool.update` / `tool.copy` / `tool.delete` | 機器人 | 改了哪些欄位、版本從幾到幾、是否改了評分規準（內容本身在 `ai_tool_versions`） |
+| `module.create` / `module.update` / `module.copy` / `module.delete` | 模組（含發布、取消發布） | 改了什麼 |
+| `step.create` / `step.update` / `step.delete` | 關卡（含停用、換機器人） | 改了什麼 |
+| `review.judge` | 教師判定 | 判定、分數、是否發布 |
+| `export.research` / `export.teaching` | 匯出 | 筆數、是否含作答原文（`export_logs` 照舊保留） |
+| `permission.approve` / `permission.reject` | 自主探索申請的核准、拒絕、撤銷 | 學生、模組或機器人、期限與次數 |
+| `member.update` | 課程成員核准、拒絕、移出 | 學生、狀態從什麼到什麼 |
+| `invite_code.delete` | 刪除邀請碼（含移出學生） | 移出幾位學生 |
+
+規則：
+- 紀錄**只能新增**：沒有修改或刪除的 API，資料庫觸發器也擋掉 UPDATE / DELETE / TRUNCATE
+- `detail` 只放 id、欄位名稱、版本、數字；長字串截斷到 200 字，不放學生作答原文
+- 寫入失敗只記 log，不擋住操作本身
+- 被拒絕（403）或沒有實際改變的操作不記錄
+- 帳號已刪除的操作者顯示「（已刪除的帳號）」，紀錄本身不會被改
+- 還沒跑 migration 026 → 查詢回 503 `MIGRATION_REQUIRED`
+
+---
+
+## 三之一、自主探索申請（申請模組，Module Requests）
+
+實作在 `backend/api/tool_requests.py`，資料存在 `tool_permissions`（一筆 = 一次申請），需要 migration 025。
+路徑沿用 `/api/tool-requests`；**#86 起學生申請的是「模組」**，核准後可以做模組裡所有已發布、啟用中的關卡。
 登入方式與錯誤格式同「課程管理」第一版。
+
+申請的對象（`kind`）：
+
+| `kind` | 資料 | 說明 |
+|--------|------|------|
+| `module` | `module_id` 有值 | 申請模組；新的申請一律是這種 |
+| `tool` | `tool_id` 有值 | 以前的「申請機器人」，**照常有效到原本的到期日**，不轉換、不刪除；不能再新增這種申請 |
+| `all` | 兩欄都是 `null` | 全部機器人（只能從後台設定） |
+
+> ⚠️ 模組申請的 `tool_id` 也是 `null`，所以「全部機器人」的判斷是**兩欄都是 `null`**（`core/access.py`、migration 025 的 `has_tool_permission()`）。
 
 狀態：`pending`（待審核）、`approved`（已核准）、`rejected`（已拒絕或被撤銷）、`expired`（已過期）。
 `expired` 是算出來的：已核准但到期日（台灣時間）已過，API 一律回傳 `expired`，到期日當天仍可使用。
 
 | 權限 | 方法與路徑 | Request | 成功回應 `data` |
 |------|-----------|---------|----------------|
-| 登入者 | `POST /api/tool-requests` | `{tool_id}` | 申請（`status: "pending"`），201 |
-| 登入者 | `GET /api/tool-requests/tools` | — | 可申請的機器人（已發布）：`[{id, title, domain, target_competency}]`，不含 system_prompt、rubric 等教學內容。學生核准前讀不到 `ai_tools`（RLS），由此端點列出 |
-| 登入者 | `GET /api/tool-requests/mine` | — | 我的申請陣列（新的在前） |
+| 登入者 | `POST /api/tool-requests` | `{module_id}` | 申請（`status: "pending"`），201 |
+| 登入者 | `GET /api/tool-requests/modules` | — | 可申請的模組：已發布、至少有一個可以練習的關卡：`[{id, title, description, domain, step_count}]`，不含機器人的教學內容。學生核准前讀不到模組（RLS），由此端點列出 |
+| 登入者 | `GET /api/tool-requests/mine` | — | 我的申請陣列（新的在前，含以前的機器人申請） |
 | 教師 | `GET /api/tool-requests?status=pending` | — | 申請陣列，每筆多 `user_id`、`full_name`、`email` |
 | 教師 | `PATCH /api/tool-requests/:request_id` | `{action: "approve" \| "reject", expire_date?, daily_quota?}` | 更新後的申請 |
 
-每筆申請的欄位：`{id, tool_id, tool_title, status, daily_quota, start_date, expire_date, created_at}`。
-`tool_id` 為 `null` 代表全部機器人（目前只能從後台設定），`tool_title` 會是「全部機器人」。
+每筆申請的欄位：`{id, kind, module_id, tool_id, title, status, daily_quota, start_date, expire_date, created_at}`。
+`title` 是模組名稱、以前申請的機器人名稱，或「全部機器人」；模組已被刪除時是「（已刪除的模組）」。
 
-`POST` 的錯誤代碼：`TOOL_NOT_FOUND`（404，不存在或未發布）、`ALREADY_PENDING` / `ALREADY_APPROVED`（409）。
-被拒絕或過期後可以再申請，會新增一筆，舊紀錄保留。
+`POST` 的錯誤代碼：`MODULE_NOT_FOUND`（404，不存在或未發布）、`MODULE_EMPTY`（400，沒有可以練習的關卡）、
+`ALREADY_PENDING` / `ALREADY_APPROVED`（409；「全部機器人」的有效核准也算）、`MIGRATION_REQUIRED`（503，還沒跑 025）。
+送 `{tool_id}`（舊的申請機器人）回 422。被拒絕或過期後可以再申請，會新增一筆，舊紀錄保留。
 
-`PATCH` 規則：
+`PATCH` 規則（模組申請與以前的機器人申請都一樣）：
 - `approve`：任何狀態都可以（也用來延長期限、改次數）。沒傳的欄位都沿用原值：
   - `expire_date`：格式 `YYYY-MM-DD`，不可早於今天（400 `INVALID_EXPIRE_DATE`）。
     **沒傳 → 保留原本的到期日；傳 `null` → 改成不限期**。
@@ -683,7 +805,8 @@
   - 例：只改次數送 `{action: "approve", daily_quota: 20}`，到期日不變
 - `reject`：只能用在 `pending`（拒絕）或 `approved`（撤銷），其他回 409 `INVALID_STATUS_TRANSITION`
 
-扣次數與每日歸零由 practice API 處理，這裡只設定 `daily_quota`。
+扣次數與每日歸零由 practice / chat API 處理，這裡只設定 `daily_quota`；聊天室關卡每則訊息扣一次。
+同一個關卡同時有多筆適用的核准時，優先順序：核准這個模組 > 以前核准這支機器人 > 全部機器人。
 
 ---
 
@@ -737,7 +860,7 @@
 | 權限 | 方法與路徑 | 說明 |
 |------|-----------|------|
 | HOST、ASSISTANT | `GET /api/teacher/tools` | 全部機器人，每支附 `can_edit`（目前登入者能不能改） |
-| HOST、ASSISTANT | `GET /api/teacher/tools/:tool_id` | 單一機器人完整設定（編輯頁用），附 `can_edit`、`attempt_count`（已有幾筆作答用過它） |
+| HOST、ASSISTANT | `GET /api/teacher/tools/:tool_id` | 單一機器人完整設定（編輯頁用），附 `can_edit`、`attempt_count`（已有幾筆作答用過它）、`used_by`（哪些模組在用，見下方「模組停在舊版」） |
 | HOST、ASSISTANT | `POST /api/teacher/tools` | 建立（第 1 版），`created_by` 一律是登入者，回 201 |
 | 建立者、HOST | `PATCH /api/teacher/tools/:tool_id` | 修改，只送要改的欄位 |
 | HOST | `DELETE /api/teacher/tools/:tool_id` | 刪除；已排進關卡回 409 `TOOL_IN_USE` |
@@ -749,6 +872,7 @@
 - 每一版的完整內容存在 `ai_tool_versions`（只給後端），舊版不會被覆蓋
 - 每筆 `ai_evaluations.tool_version` 記評分當時的版本，研究時用 `(tool_id, version)` 查當時的規準
 - PATCH 可帶 `expected_version`（打開編輯頁時看到的版本）；之後別人已存新版 → 409 `VERSION_CONFLICT`
+- PATCH 可帶 `update_modules`（模組 id 陣列），見下方「模組停在舊版」
 
 **PATCH 回應：**
 ```json
@@ -756,7 +880,8 @@
   "data": { "id": "…", "version": 3, "...": "…" },
   "changed": true,
   "rubric_changed": true,
-  "attempt_count": 12
+  "attempt_count": 12,
+  "used_by": [ "…（有送 update_modules 或內容有改時才有）" ]
 }
 ```
 > `rubric_changed`：這次改了 `rubric_criteria` 或 `scale_type`。舊的評分**不會重算**；`attempt_count > 0` 時前端要提醒老師（編輯頁儲存前已會確認）。
@@ -769,6 +894,82 @@
 | 欄位空白、規準名稱空白或重複、級距不合法 | 422 |
 
 > 誰可以修改目前是「建立者 + 教授」，待老師確認；要改只動 `can_edit_tool()`。
+
+### 已實作：複製與範本（#89，migration 023）
+
+實作在 `backend/core/templates.py`（規則）、`backend/api/templates.py`，複製端點在 `teacher.py`、`modules.py`。
+
+| 權限 | 方法與路徑 | 說明 |
+|------|-----------|------|
+| HOST、ASSISTANT | `POST /api/teacher/tools/:tool_id/copy` | 複製機器人；body 可帶 `title`（不填 =「原本名稱（複本）」），回 201 |
+| HOST | `POST /api/modules/:module_id/copy` | 複製模組；body 可帶 `title`，回 201 |
+| HOST、ASSISTANT | `GET /api/templates?kind=tool\|module` | 範本清單（新的在前），含 `content`，每個附 `can_delete` |
+| 見下 | `POST /api/templates` | 存成範本：`{ "kind": "tool" \| "module", "source_id": "…", "title"?, "description"? }`，回 201 |
+| 見下 | `POST /api/templates/:id/use` | 從範本建立；body 可帶 `title`，回 201，附 `kind` |
+| 建立者、HOST | `DELETE /api/templates/:id` | 刪除範本；用它建立過的機器人、模組不受影響 |
+
+**權限**：機器人範本 HOST、ASSISTANT 都能存、能用；模組範本只限 HOST（和模組本身一樣）。
+
+**規則：**
+- 新的機器人：第 1 版、`draft`、`created_by` 是操作的人（所以一定能改），並存下第 1 版到 `ai_tool_versions`
+- 新的模組：未發布；只複製**啟用中**的關卡，順序重編 1、2、3…；聊天室關卡連對話機器人（`chat_room_bots`）一起複製
+- 模組的關卡指向**原本的機器人**，不會連機器人一起複製；機器人已封存或已刪除的關卡會略過，回應的 `skipped_steps` 列出名稱
+- 學生作答、評分、教師判定、課程指派都**不會**被複製
+- 範本存的是當時內容的副本：原本的機器人或模組之後被修改、刪除，範本都不變
+
+**模組複製／從模組範本建立的回應：**
+```json
+{
+  "data": { "id": "…", "title": "學前 IEP（複本）", "is_published": false, "steps": [ … ] },
+  "skipped_steps": ["步驟4"],
+  "message": "已建立「學前 IEP（複本）」（未發布）；這些關卡的機器人已封存或刪除，沒有複製：步驟4"
+}
+```
+
+| 情況 | 回應 |
+|------|------|
+| 助教存或用模組範本、複製模組 | 403 `PERMISSION_DENIED` |
+| 刪除別人的範本（非 HOST） | 403 `PERMISSION_DENIED` |
+| 機器人／模組／範本不存在 | 404 |
+| 範本內容缺少必填欄位 | 400 `TEMPLATE_INVALID` |
+| 還沒跑 migration 023 | 503 `MIGRATION_REQUIRED` |
+
+> 案例（`tool_cases`）目前沒有管理功能，等有了再加複製。
+
+### 已實作：模組停在機器人的舊版（#89 後半，migration 024）
+
+同一支機器人被多個模組使用時，老師修改機器人可以**逐個模組**選要不要更新成新版。實作在 `backend/core/tool_lock.py`。
+
+- `module_steps.tool_version`、`chat_room_bots.tool_version`：`NULL` = 跟著最新版（原本的行為）；有值 = 停在這一版
+- 停在舊版的關卡：學生作答、提示、記憶設定、聊天室（評分機器人與對話機器人）、教師複核都用 `ai_tool_versions` 裡那一版的**教學內容**，`ai_evaluations.tool_version` 記那一版；機器人的**名稱與狀態**（發布、封存）仍以最新的為準
+- 找不到那一版的內容時退回最新版並留 log（不擋住學生）
+
+**`GET /api/teacher/tools/:id` 的 `used_by`：**
+```json
+[
+  {
+    "module_id": "…",
+    "title": "B 模組",
+    "is_published": true,
+    "steps": [{ "step_title": "B 的關卡", "kind": "step", "tool_version": 2 }],
+    "follows_latest": false,
+    "locked_versions": [2]
+  }
+]
+```
+> `kind`：`step` = 關卡本身的機器人（作答關卡、聊天室的評分機器人）；`chat_bot` = 聊天室裡的對話機器人。
+
+**`PATCH /api/teacher/tools/:id` 的 `update_modules`：**
+- 列在裡面的模組：改用新版（停在舊版的改回跟著最新版）
+- 沒列到的模組：跟著最新版的改成**停在修改前那一版**；已經停在更舊版本的不動
+- 不送 = 原本的行為（跟著最新版的都用新版，停在舊版的不動）
+- 內容沒改也會套用（可以只把某個模組改回跟著最新版），這時不升版、回 `changed: false`
+- 還沒跑 migration 024 時要讓模組停在舊版 → 503 `MIGRATION_REQUIRED`，機器人不會被修改
+
+**其他：**
+- 模組管理的關卡回傳 `tool_version`（前端顯示「停在機器人第 N 版」）
+- 關卡換機器人時清掉 `tool_version`；整份換掉聊天室機器人時，同一支機器人的 `tool_version` 會保留
+- 複製模組、存成模組範本時保留 `tool_version`（內容才會一樣）
 
 ---
 

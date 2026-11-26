@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
+from core.tool_lock import apply_locked_version
+from core.audit import record
 from core.auth import CurrentUser, require_staff
 from core.learner_profile import refresh_learner_profile
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_review
@@ -112,13 +114,14 @@ async def get_pending_reviews(
         res = query(PENDING_SELECT.replace(" tutor_action,", ""))
 
     data = []
+    lock_cache: dict = {}  # 停在舊版的機器人內容（migration 024），同一次列表只查一次
     for attempt in res.data or []:
         evaluations = _as_list(attempt.get("ai_evaluations"))
         reviews = _as_list(attempt.get("teacher_reviews"))
 
         escalated = attempt.get("tutor_action") == "escalate"
 
-        step = attempt.get("module_steps") or {}
+        step = apply_locked_version(db, attempt.get("module_steps") or {}, cache=lock_cache)
         tool = step.get("ai_tools") or {}
         pass_mode = effective_pass_mode(step, has_rubric(tool.get("rubric_criteria")))
         # 「教師複核後通過」的關卡：送出後停在 submitted 等老師，不一定有 AI 初評（#65）
@@ -206,7 +209,7 @@ async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(req
         .execute()
     )
 
-    step = attempt.get("module_steps") or {}
+    step = apply_locked_version(db, attempt.get("module_steps") or {})
     tool = step.get("ai_tools") or {}
     scoring = has_rubric(tool.get("rubric_criteria"))
     structured = attempt.get("structured_data") if isinstance(attempt.get("structured_data"), dict) else {}
@@ -293,7 +296,7 @@ async def judge_submission(
         raise HTTPException(status_code=500, detail="Failed to save review")
 
     # 要求重寫 → revision_required；「教師複核後通過」的關卡，其他判定由老師決定通過與否（core/pass_mode.py）
-    step = attempt.get("module_steps") or {}
+    step = apply_locked_version(db, attempt.get("module_steps") or {})
     pass_mode = effective_pass_mode(step, has_rubric((step.get("ai_tools") or {}).get("rubric_criteria")))
     new_status = status_after_review(
         pass_mode, body.decision, body.final_score, step.get("pass_score") or DEFAULT_PASS_SCORE
@@ -305,6 +308,13 @@ async def judge_submission(
     if attempt.get("user_id") and attempt.get("module_id"):
         refresh_learner_profile(db, attempt["user_id"], attempt["module_id"], attempt_id)
 
+    record(db, user, "review.judge", target_type="attempt", target_id=attempt_id, detail={
+        "decision": body.decision,
+        "final_score": body.final_score,
+        "is_published": body.is_published,
+        "new_status": new_status,
+        "review_id": review_res.data[0].get("id"),
+    })
     return {"data": review_res.data[0]}
 
 

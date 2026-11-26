@@ -48,7 +48,7 @@ Summer_project/
 │   │   ├── courses.py          課程、邀請碼加入、成員審核
 │   │   ├── course_modules.py   模組指派給課程
 │   │   ├── modules.py          模組與步驟管理（建立、排序、停用、發布）
-│   │   ├── tool_requests.py    學生申請機器人、教師核准（期限、每日次數）
+│   │   ├── tool_requests.py    自主探索：學生申請模組、教師核准（期限、每日次數；#86）
 │   │   ├── me.py               學生自備 Gemini 金鑰（/api/me/api-key，加密儲存）
 │   │   ├── export.py           研究用／教學用 CSV 匯出
 │   │   └── privacy.py          個資偵測
@@ -70,7 +70,7 @@ Summer_project/
 ├── supabase/
 │   ├── schema.sql              21 張表 + 觸發器（已同步 migrations）
 │   ├── seed.sql                示範資料（只限本機）
-│   ├── migrations/             001–022（016 保留不用），可重複執行
+│   ├── migrations/             001–027（016 保留不用），可重複執行
 │   └── practice_repo.py        ⚠️ 已停用，沒有任何地方 import
 └── docs/
 ```
@@ -158,7 +158,7 @@ SSE 事件欄位見 [LLM_SYSTEM.md 第 5 節](./LLM_SYSTEM.md)。
 | `/portal` | 系統選擇頁（本平台 / XR 系統） |
 | `/student/courses` | 我的課程、輸入邀請碼加入 |
 | `/student/courses/[courseId]` | 課程簡介與關卡列表（完成進度、解鎖狀態），點關卡進作答區 |
-| `/student/explore` | 自主探索：申請機器人、查看申請狀態 |
+| `/student/explore` | 自主探索：申請模組、查看申請狀態 |
 | `/student/modules` | 作答區：`?course=&step=` 開指定關卡；左提示與評分、中題目與作答、右記憶與作答紀錄；上一題／下一題 |
 | `/admin/courses` | 課程管理：課程卡片、建立課程 |
 | `/admin/courses/[courseId]` | 單一課程，左側分頁：學習監控、待複核、成員清單、邀請碼清單、模組管理（指派、建立模組、編輯關卡）、資料匯出 |

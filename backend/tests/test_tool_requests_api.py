@@ -1,5 +1,5 @@
 """
-單元測試：機器人申請 API (api/tool_requests.py)
+單元測試：自主探索的申請 API (api/tool_requests.py)：申請模組（#86，migration 025），舊的機器人申請照常顯示
 
 用 MagicMock 取代 Supabase，不連線、不寫入。
 「今天」固定為 2026-10-21（台灣時間），到期判斷才不會隨執行日期改變。
@@ -20,14 +20,18 @@ STUDENT = CurrentUser(id="student-1", role="student")
 
 TODAY = date(2026, 10, 21)
 TOOL_ID = "11111111-1111-1111-1111-111111111111"
+MODULE_ID = "33333333-3333-3333-3333-333333333333"
 REQ_ID = "22222222-2222-2222-2222-222222222222"
 
-TOOL = {"id": TOOL_ID, "title": "功能性現況撰寫教練", "status": "published"}
+MODULE = {"id": MODULE_ID, "title": "學前 IEP 逐步撰寫", "is_published": True}
+# 模組裡可以練習的關卡（啟用中、機器人已發布）
+STEPS = [{"module_id": MODULE_ID, "is_active": True, "ai_tools": {"status": "published"}}]
+MODULE_TITLES = [{"id": MODULE_ID, "title": "學前 IEP 逐步撰寫"}]
 
 
 def request_row(**overrides) -> dict:
     row = {
-        "id": REQ_ID, "user_id": "student-1", "tool_id": TOOL_ID, "status": "pending",
+        "id": REQ_ID, "user_id": "student-1", "tool_id": None, "module_id": MODULE_ID, "status": "pending",
         "daily_quota": 10, "start_date": "2026-10-20", "expire_date": None,
         "created_at": "2026-10-20T08:00:00Z",
     }
@@ -100,95 +104,144 @@ class TestEffectiveStatus:
 
 class TestCreateRequest:
 
-    def test_student_requests_published_tool(self, as_user):
+    def test_student_requests_published_module(self, as_user):
         as_user(STUDENT)
-        db = fake_db([TOOL], [], [request_row()])
-        res = call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
+        db = fake_db([MODULE], STEPS, [], [request_row()])
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
 
         assert res.status_code == 201
         data = res.json()["data"]
         assert data["status"] == "pending"
-        assert data["tool_title"] == "功能性現況撰寫教練"
-        assert written(db, "insert") == {"user_id": "student-1", "tool_id": TOOL_ID, "status": "pending"}
+        assert data["kind"] == "module"
+        assert data["title"] == "學前 IEP 逐步撰寫"
+        assert written(db, "insert") == {"user_id": "student-1", "module_id": MODULE_ID, "status": "pending"}
 
-    def test_existing_check_includes_all_tools_permission(self, as_user):
-        """tool_id 為 NULL 的核准代表全部機器人，也要算進去"""
+    def test_existing_check_includes_all_tools_permission_but_not_other_modules(self, as_user):
+        """全部機器人（兩欄都是 NULL）的核准也算；別的模組的申請（tool_id 也是 NULL）不算"""
         as_user(STUDENT)
-        db = fake_db([TOOL], [], [request_row()])
-        call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
+        db = fake_db([MODULE], STEPS, [], [request_row()])
+        call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
 
-        db.table.return_value.or_.assert_called_once_with(f"tool_id.eq.{TOOL_ID},tool_id.is.null")
+        db.table.return_value.or_.assert_called_once_with(
+            f"module_id.eq.{MODULE_ID},and(tool_id.is.null,module_id.is.null)"
+        )
 
-    @pytest.mark.parametrize("tool", [[], [{**TOOL, "status": "draft"}]])
-    def test_missing_or_unpublished_tool_is_404(self, as_user, tool):
+    @pytest.mark.parametrize("module", [[], [{**MODULE, "is_published": False}]])
+    def test_missing_or_unpublished_module_is_404(self, as_user, module):
         as_user(STUDENT)
-        db = fake_db(tool)
-        res = call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
+        db = fake_db(module)
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
 
         assert res.status_code == 404
-        assert res.json()["detail"]["code"] == "TOOL_NOT_FOUND"
+        assert res.json()["detail"]["code"] == "MODULE_NOT_FOUND"
+        db.table.return_value.insert.assert_not_called()
+
+    @pytest.mark.parametrize("steps", [
+        [],
+        [{"module_id": MODULE_ID, "is_active": False, "ai_tools": {"status": "published"}}],
+        [{"module_id": MODULE_ID, "is_active": True, "ai_tools": {"status": "draft"}}],
+    ])
+    def test_module_without_usable_steps_is_400(self, as_user, steps):
+        as_user(STUDENT)
+        db = fake_db([MODULE], steps)
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
+
+        assert res.status_code == 400
+        assert res.json()["detail"]["code"] == "MODULE_EMPTY"
         db.table.return_value.insert.assert_not_called()
 
     def test_pending_request_blocks_duplicate(self, as_user):
         as_user(STUDENT)
-        db = fake_db([TOOL], [{"status": "pending", "expire_date": None}])
-        res = call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
+        db = fake_db([MODULE], STEPS, [{"status": "pending", "expire_date": None}])
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
 
         assert res.status_code == 409
         assert res.json()["detail"]["code"] == "ALREADY_PENDING"
 
     def test_valid_approval_blocks_duplicate(self, as_user):
         as_user(STUDENT)
-        db = fake_db([TOOL], [{"status": "approved", "expire_date": "2026-11-06"}])
-        res = call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
+        db = fake_db([MODULE], STEPS, [{"status": "approved", "expire_date": "2026-11-06"}])
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
 
         assert res.json()["detail"]["code"] == "ALREADY_APPROVED"
 
     def test_can_request_again_after_expiry(self, as_user):
         as_user(STUDENT)
-        db = fake_db([TOOL], [{"status": "approved", "expire_date": "2026-10-01"}], [request_row()])
-        res = call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
+        db = fake_db([MODULE], STEPS, [{"status": "approved", "expire_date": "2026-10-01"}], [request_row()])
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
 
         assert res.status_code == 201
 
-    def test_non_uuid_tool_id_is_422_and_never_reaches_filter(self, as_user):
-        """tool_id 會放進 .or_() 篩選字串，必須先擋掉非 UUID 的內容"""
+    def test_old_tool_request_body_is_rejected(self, as_user):
+        """不能再申請單支機器人"""
         as_user(STUDENT)
         db = fake_db()
-        res = call("POST", "/api/tool-requests", db, json={"tool_id": "x,user_id.neq.0"})
+        res = call("POST", "/api/tool-requests", db, json={"tool_id": TOOL_ID})
 
         assert res.status_code == 422
         db.table.assert_not_called()
 
+    def test_non_uuid_module_id_is_422_and_never_reaches_filter(self, as_user):
+        """module_id 會放進 .or_() 篩選字串，必須先擋掉非 UUID 的內容"""
+        as_user(STUDENT)
+        db = fake_db()
+        res = call("POST", "/api/tool-requests", db, json={"module_id": "x,user_id.neq.0"})
+
+        assert res.status_code == 422
+        db.table.assert_not_called()
+
+    def test_missing_migration_is_503(self, as_user):
+        as_user(STUDENT)
+        db = fake_db([MODULE], STEPS)
+        err = Exception("column tool_permissions.module_id does not exist")
+        err.code = "42703"
+        db.table.return_value.execute.side_effect = [MagicMock(data=[MODULE]), MagicMock(data=STEPS), err]
+        res = call("POST", "/api/tool-requests", db, json={"module_id": MODULE_ID})
+
+        assert res.status_code == 503
+        assert "025_module_requests.sql" in res.json()["detail"]["message"]
+
     def test_not_logged_in_is_401(self):
-        res = call("POST", "/api/tool-requests", fake_db(), json={"tool_id": TOOL_ID})
+        res = call("POST", "/api/tool-requests", fake_db(), json={"module_id": MODULE_ID})
         assert res.status_code == 401
 
 
-class TestRequestableTools:
+class TestRequestableModules:
 
-    def test_student_sees_only_published_tools_public_fields(self, as_user):
+    def test_student_sees_published_modules_with_usable_steps(self, as_user):
         as_user(STUDENT)
-        catalog = [{"id": TOOL_ID, "title": "功能性現況撰寫教練", "domain": "學前IEP", "target_competency": "現況描述"}]
-        db = fake_db(catalog)
-        res = call("GET", "/api/tool-requests/tools", db)
+        other = "44444444-4444-4444-4444-444444444444"
+        catalog = [
+            {"id": MODULE_ID, "title": "學前 IEP 逐步撰寫", "description": "說明", "domain": "學前IEP", "created_at": "x"},
+            {"id": other, "title": "還沒有關卡", "description": None, "domain": "學前IEP", "created_at": "y"},
+        ]
+        steps = STEPS + [{"module_id": MODULE_ID, "is_active": True, "ai_tools": {"status": "published"}}]
+        db = fake_db(catalog, steps)
+        res = call("GET", "/api/tool-requests/modules", db)
 
         assert res.status_code == 200
-        assert res.json() == {"data": catalog}
-        db.table.assert_called_once_with("ai_tools")
-        db.table.return_value.eq.assert_called_once_with("status", "published")
+        data = res.json()["data"]
+        assert [m["id"] for m in data] == [MODULE_ID]       # 沒有可練習關卡的模組不列
+        assert data[0]["step_count"] == 2
+        db.table.return_value.eq.assert_called_once_with("is_published", True)
 
     def test_does_not_select_teaching_content(self, as_user):
         as_user(STUDENT)
-        db = fake_db([])
-        call("GET", "/api/tool-requests/tools", db)
+        db = fake_db([], [])
+        call("GET", "/api/tool-requests/modules", db)
 
-        selected = db.table.return_value.select.call_args.args[0]
-        for secret in ("system_prompt", "rubric_criteria", "role_instruction", "teaching_strategy", "error_taxonomy"):
-            assert secret not in selected
+        for call_args in db.table.return_value.select.call_args_list:
+            selected = call_args.args[0]
+            for secret in ("system_prompt", "rubric_criteria", "role_instruction", "teaching_strategy", "error_taxonomy"):
+                assert secret not in selected
+
+    def test_old_tools_catalog_is_gone(self, as_user):
+        as_user(STUDENT)
+        res = call("GET", "/api/tool-requests/tools", fake_db())
+        assert res.status_code in (404, 405)
 
     def test_not_logged_in_is_401(self):
-        res = call("GET", "/api/tool-requests/tools", fake_db())
+        res = call("GET", "/api/tool-requests/modules", fake_db())
         assert res.status_code == 401
 
 
@@ -196,23 +249,43 @@ class TestMyRequests:
 
     def test_lists_own_requests_with_expired_status(self, as_user):
         as_user(STUDENT)
-        db = fake_db(
-            [request_row(status="approved", expire_date="2026-10-01")],
-            [{"id": TOOL_ID, "title": "功能性現況撰寫教練"}],
-        )
+        db = fake_db([request_row(status="approved", expire_date="2026-10-01")], MODULE_TITLES)
         res = call("GET", "/api/tool-requests/mine", db)
 
         item = res.json()["data"][0]
         assert item["status"] == "expired"
-        assert item["tool_title"] == "功能性現況撰寫教練"
+        assert item["title"] == "學前 IEP 逐步撰寫"
+        assert item["kind"] == "module"
         db.table.return_value.eq.assert_called_once_with("user_id", "student-1")
+
+    def test_old_tool_request_still_listed(self, as_user):
+        """舊的「申請機器人」照常顯示（照常有效到原本的到期日）"""
+        as_user(STUDENT)
+        db = fake_db(
+            [request_row(id="new"), request_row(id="old", module_id=None, tool_id=TOOL_ID, status="approved")],
+            MODULE_TITLES,
+            [{"id": TOOL_ID, "title": "功能性現況撰寫教練"}],
+        )
+        res = call("GET", "/api/tool-requests/mine", db)
+
+        by_id = {r["id"]: r for r in res.json()["data"]}
+        assert (by_id["new"]["kind"], by_id["new"]["title"]) == ("module", "學前 IEP 逐步撰寫")
+        assert (by_id["old"]["kind"], by_id["old"]["title"]) == ("tool", "功能性現況撰寫教練")
 
     def test_all_tools_permission_has_readable_title(self, as_user):
         as_user(STUDENT)
-        db = fake_db([request_row(tool_id=None, status="approved")])
+        db = fake_db([request_row(module_id=None, status="approved")])
         res = call("GET", "/api/tool-requests/mine", db)
 
-        assert res.json()["data"][0]["tool_title"] == "全部機器人"
+        item = res.json()["data"][0]
+        assert (item["kind"], item["title"]) == ("all", "全部機器人")
+
+    def test_deleted_module_has_placeholder_title(self, as_user):
+        as_user(STUDENT)
+        db = fake_db([request_row()], [])
+        res = call("GET", "/api/tool-requests/mine", db)
+
+        assert res.json()["data"][0]["title"] == "（已刪除的模組）"
 
     def test_empty(self, as_user):
         as_user(STUDENT)
@@ -236,7 +309,7 @@ class TestListRequests:
 
     def test_pending_filter_includes_student_info(self, as_user):
         as_user(TEACHER)
-        db = fake_db(self.rows(), [{"id": TOOL_ID, "title": "教練"}])
+        db = fake_db(self.rows(), MODULE_TITLES)
         res = call("GET", "/api/tool-requests?status=pending", db)
 
         data = res.json()["data"]
@@ -246,7 +319,7 @@ class TestListRequests:
 
     def test_expired_filter_uses_computed_status(self, as_user):
         as_user(TEACHER)
-        db = fake_db(self.rows(), [{"id": TOOL_ID, "title": "教練"}])
+        db = fake_db(self.rows(), MODULE_TITLES)
         res = call("GET", "/api/tool-requests?status=expired", db)
 
         assert [r["id"] for r in res.json()["data"]] == ["r2"]
@@ -269,7 +342,7 @@ class TestReviewRequest:
         db = fake_db(
             [request_row()],
             [request_row(status="approved", expire_date="2026-11-06", daily_quota=5)],
-            [{"id": TOOL_ID, "title": "教練"}],
+            MODULE_TITLES,
         )
         res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db,
                    json={"action": "approve", "expire_date": "2026-11-06", "daily_quota": 5})
@@ -281,7 +354,7 @@ class TestReviewRequest:
     def test_approve_without_settings_keeps_quota_and_expiry(self, as_user):
         """沒傳的欄位都不覆寫：每日次數沿用原值（預設 10）、到期日沿用原值"""
         as_user(TEACHER)
-        db = fake_db([request_row()], [request_row(status="approved")], [{"id": TOOL_ID, "title": "教練"}])
+        db = fake_db([request_row()], [request_row(status="approved")], MODULE_TITLES)
         call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve"})
 
         assert written(db, "update") == {"status": "approved"}
@@ -295,7 +368,7 @@ class TestReviewRequest:
         db = fake_db(
             [request_row(status="approved", expire_date="2026-11-30")],
             [request_row(status="approved", expire_date="2026-11-30", daily_quota=20)],
-            [{"id": TOOL_ID, "title": "教練"}],
+            MODULE_TITLES,
         )
         res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db,
                    json={"action": "approve", "daily_quota": 20})
@@ -309,7 +382,7 @@ class TestReviewRequest:
         db = fake_db(
             [request_row(status="approved", expire_date="2026-11-30")],
             [request_row(status="approved")],
-            [{"id": TOOL_ID, "title": "教練"}],
+            MODULE_TITLES,
         )
         call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve", "expire_date": None})
 
@@ -331,7 +404,7 @@ class TestReviewRequest:
         db = fake_db(
             [request_row(status="approved", expire_date="2026-10-01")],
             [request_row(status="approved")],
-            [{"id": TOOL_ID, "title": "教練"}],
+            MODULE_TITLES,
         )
         res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve", "expire_date": None})
 
@@ -340,7 +413,7 @@ class TestReviewRequest:
     def test_approve_does_not_touch_start_date(self, as_user):
         """start_date 改成台灣的今天會比資料庫 CURRENT_DATE（UTC）多一天，學生半夜會暫時看不到機器人"""
         as_user(TEACHER)
-        db = fake_db([request_row()], [request_row(status="approved")], [{"id": TOOL_ID, "title": "教練"}])
+        db = fake_db([request_row()], [request_row(status="approved")], MODULE_TITLES)
         call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "approve"})
 
         assert "start_date" not in written(db, "update")
@@ -350,7 +423,7 @@ class TestReviewRequest:
         db = fake_db(
             [request_row(status="approved", expire_date="2026-10-01")],
             [request_row(status="approved", expire_date="2026-12-31")],
-            [{"id": TOOL_ID, "title": "教練"}],
+            MODULE_TITLES,
         )
         res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db,
                    json={"action": "approve", "expire_date": "2026-12-31"})
@@ -377,7 +450,7 @@ class TestReviewRequest:
     def test_reject_pending_or_revoke_approved(self, as_user, before, message):
         as_user(TEACHER)
         db = fake_db([request_row(status=before)], [request_row(status="rejected")],
-                     [{"id": TOOL_ID, "title": "教練"}])
+                     MODULE_TITLES)
         res = call("PATCH", f"/api/tool-requests/{REQ_ID}", db, json={"action": "reject"})
 
         assert res.json()["message"] == message

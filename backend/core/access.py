@@ -3,7 +3,8 @@
 
 指派規則與 supabase/migrations/005_rls_policies.sql 一致，兩種任一成立即可：
     course      課程指派：模組指派給課程，學生是該課程 active 成員，課程未封存
-    permission  逐位核准：tool_permissions 核准使用這支機器人（tool_id 為 NULL 代表全部），
+    permission  逐位核准（自主探索）：tool_permissions 核准使用這個模組（module_id，#86，migration 025），
+                或舊的「申請機器人」核准使用這支機器人（tool_id），或全部機器人（兩欄都是 NULL），
                 且今天（台灣時間）在 start_date ~ expire_date 之間
 兩種都要求模組已發布、機器人為 published。教師端（owner / assistant）不檢查。
 
@@ -40,6 +41,9 @@ TAIPEI = timezone(timedelta(hours=8))
 AccessMode = Literal["staff", "course", "permission", "self_key"]
 
 PERMISSION_FIELDS = "id, tool_id, start_date, expire_date, daily_quota, used_today, used_date"
+# migration 025：申請模組
+PERMISSION_FIELDS_025 = PERMISSION_FIELDS.replace("tool_id,", "tool_id, module_id,")
+UNDEFINED_COLUMN = "42703"
 
 # course_members 同時連到 courses 與 course_invite_codes，embed 要指定外鍵（見 api/courses.py 檔頭）
 MEMBERSHIP_FIELDS = (
@@ -73,7 +77,7 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
 
 
 def _not_assigned() -> HTTPException:
-    return _error(status.HTTP_403_FORBIDDEN, "NOT_ASSIGNED", "您尚未被指派這個練習，請先加入課程或申請使用這支機器人")
+    return _error(status.HTTP_403_FORBIDDEN, "NOT_ASSIGNED", "您尚未被指派這個練習，請先加入課程，或在自主探索申請這個模組")
 
 
 def _parse_date(value) -> Optional[date]:
@@ -125,29 +129,58 @@ def _membership_for_module(db, user_id: str, module_id: str, today: date) -> Cou
     return CourseMembership(usable=usable, expired=expired, needs_api_key=self_key)
 
 
-def _find_permission(db, user_id: str, tool_id: str, today: date) -> tuple[Optional[dict], bool]:
+def _permission_rank(row: dict, tool_id: str, module_id: Optional[str]) -> Optional[int]:
+    """
+    這筆核准適不適用於這個關卡，越小越優先：0 = 核准這個模組、1 = 核准這支機器人（舊的申請）、2 = 全部機器人。
+    不適用回 None。module_id 有值的核准「只」適用那個模組（tool_id 是 NULL，但不是全部機器人）。
+    """
+    if row.get("module_id"):
+        return 0 if module_id and row["module_id"] == module_id else None
+    if row.get("tool_id"):
+        return 1 if row["tool_id"] == tool_id else None
+    return 2
+
+
+def _find_permission(db, user_id: str, tool_id: str, today: date, module_id: Optional[str] = None) -> tuple[Optional[dict], bool]:
     """
     回傳 (今天有效的核准, 是否有已過期的核准)。
-    同時有「指定這支機器人」與「全部機器人」的核准時，優先用指定的那筆。
+    同時有多筆適用時，優先順序：核准這個模組 > 核准這支機器人 > 全部機器人。
     """
-    res = (
-        db.table("tool_permissions")
-        .select(PERMISSION_FIELDS)
-        .eq("user_id", user_id)
-        .eq("status", "approved")
-        # tool_id 來自資料庫的 module_steps（UUID），不是使用者輸入
-        .or_(f"tool_id.eq.{tool_id},tool_id.is.null")
-        .execute()
-    )
+    def query(fields: str, condition: str):
+        return (
+            db.table("tool_permissions")
+            .select(fields)
+            .eq("user_id", user_id)
+            .eq("status", "approved")
+            .or_(condition)
+            .execute()
+        )
+
+    # tool_id、module_id 都來自資料庫的 module_steps（UUID），不是使用者輸入
+    try:
+        if module_id:
+            res = query(PERMISSION_FIELDS_025,
+                        f"module_id.eq.{module_id},tool_id.eq.{tool_id},and(tool_id.is.null,module_id.is.null)")
+        else:
+            res = query(PERMISSION_FIELDS_025, f"tool_id.eq.{tool_id},and(tool_id.is.null,module_id.is.null)")
+    except Exception as e:  # noqa: BLE001
+        # 還沒跑 migration 025：沒有 module_id，只有舊的機器人核准
+        if getattr(e, "code", None) != UNDEFINED_COLUMN:
+            raise
+        res = query(PERMISSION_FIELDS, f"tool_id.eq.{tool_id},tool_id.is.null")
+
     valid, expired = [], False
     for row in res.data or []:
+        rank = _permission_rank(row, tool_id, module_id)
+        if rank is None:
+            continue
         start, expire = _parse_date(row.get("start_date")), _parse_date(row.get("expire_date"))
         if expire is not None and expire < today:
             expired = True
         elif start is None or start <= today:
             valid.append(row)
 
-    valid.sort(key=lambda row: row.get("tool_id") is None)
+    valid.sort(key=lambda row: _permission_rank(row, tool_id, module_id))
     return (valid[0] if valid else None), expired
 
 
@@ -181,7 +214,7 @@ def check_step_access(db, user: CurrentUser, step: dict, today: Optional[date] =
             return StepAccess(mode="course", member_id=member["id"], member=member)
         return StepAccess(mode="course")
 
-    permission, expired = _find_permission(db, user.id, step["tool_id"], today)
+    permission, expired = _find_permission(db, user.id, step["tool_id"], today, step.get("module_id"))
     if permission:
         return StepAccess(mode="permission", permission_id=permission["id"], permission=permission)
     if membership.needs_api_key:
@@ -195,7 +228,7 @@ def check_step_access(db, user: CurrentUser, step: dict, today: Optional[date] =
     if membership.expired:
         raise _error(status.HTTP_403_FORBIDDEN, "ACCESS_EXPIRED", "這門課的可用日期已過，請向老師索取新的邀請碼")
     if expired:
-        raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_EXPIRED", "這支機器人的使用期限已過，請重新申請")
+        raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_EXPIRED", "使用期限已過，請在自主探索重新申請這個模組")
     raise _not_assigned()
 
 

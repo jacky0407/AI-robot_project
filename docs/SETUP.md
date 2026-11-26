@@ -54,7 +54,7 @@ SQL Editor → New query → 貼上 `supabase/schema.sql` 整份 → **Run** →
 接著跑 `supabase/migrations/005_rls_policies.sql`（全新資料庫也要跑，要在 `seed.sql` 之前）。學生只看得到老師指派的模組與機器人，兩種指派方式擇一：
 
 - **課程指派**：在 `course_modules` 加一筆（課程 ↔ 模組），該課程狀態為 active 的成員都看得到。
-- **逐位核准**：`tool_permissions` 中該學生 `status = 'approved'`，且在 `start_date`～`expire_date` 期間內（`tool_id` 留空代表全部機器人）。
+- **逐位核准**：`tool_permissions` 中該學生 `status = 'approved'`，且在 `start_date`～`expire_date` 期間內。`module_id` 有值 = 核准這個模組（migration 025）；`tool_id` 有值 = 以前核准的單支機器人；兩欄都留空 = 全部機器人。
 
 教師（owner／assistant）看得到全部。目前還沒有指派介面，要在 SQL Editor 或 Table Editor 操作。
 
@@ -240,6 +240,57 @@ Authentication → Emails → **SMTP Settings** 改用自己的寄信服務（�
 | Sender email / name | 同一個 Gmail / 平台名稱 |
 
 設定好後到 Authentication → **Rate Limits** 調高寄信上限。應用程式密碼只填在 Supabase 後台，不要寫進程式碼、`.env` 或文件。
+
+### 教師端兩步驟驗證（#90，每個 Supabase 專案確認一次）
+
+教授與助理進後台一定要完成兩步驟驗證（登入後再輸入手機驗證器 App 的 6 位數）。用 Supabase 內建的 TOTP，密鑰存在 Supabase。
+
+- **確認有開**：Authentication → **Multi-Factor**（多重要素驗證）→ TOTP 要是開啟（Supabase 預設開啟）
+- **老師第一次進後台**：會被帶到 `/mfa`，照畫面掃 QR code 設定；之後每次登入輸入 6 位數。每個人的 QR code 都是自己的，新的助理只要自己設定，其他人不受影響
+- **換手機（舊手機還在）**：老師自己用驗證器 App 搬過去，不用找管理者：
+  Google Authenticator →「轉移帳戶」→「匯出帳戶」，用新手機掃；或開啟 App 的雲端同步／備份（Microsoft Authenticator 也有）
+- **手機遺失、舊手機壞了、App 被刪掉**：照下方「重設兩步驟驗證 SOP」由管理者重設。
+  不做成老師自己重設：那樣偷到密碼的人也能自己重設
+
+#### 重設兩步驟驗證 SOP（平台管理者）
+
+1. **確認是本人**：用電話、視訊或當面確認，不要只憑 Email 或訊息就重設（冒名的人可能已經拿到密碼）
+2. 到 Supabase → **SQL Editor**，先查這位老師目前的驗證設定（把信箱換成老師的）：
+   ```sql
+   select f.id, f.factor_type, f.status, f.friendly_name, f.created_at
+   from auth.mfa_factors f
+   join auth.users u on u.id = f.user_id
+   where u.email = 'teacher@example.com';
+   ```
+   確認查到的是這位老師（通常是一筆 `totp`、`verified`）
+3. 刪掉他的驗證設定：
+   ```sql
+   delete from auth.mfa_factors
+   where user_id = (select id from auth.users where email = 'teacher@example.com');
+   ```
+4. **手機是遺失的**：再讓他目前所有的登入失效，並請老師改密碼（撿到手機的人可能也登入過）：
+   ```sql
+   delete from auth.sessions
+   where user_id = (select id from auth.users where email = 'teacher@example.com');
+   ```
+5. 通知老師：重新登入 → 進後台會看到新的 QR code → 用新手機掃描（App 裡舊的那一筆可以刪掉）。
+   想要備用手機就在這時候用兩支手機一起掃
+6. **留下紀錄**：這個操作在 Supabase 做，後台的「操作紀錄」不會有；請記在團隊的紀錄（例如在 issue 留言：日期、哪位老師、原因、誰處理）
+
+> ⚠️ 信箱一定要確認正確再執行 delete；這兩段只影響該信箱的帳號，不會動到學生資料或作答紀錄。
+- **緊急關閉**（例如 Supabase 的兩步驟驗證故障，老師都進不了後台）：Render 環境變數設 `STAFF_MFA_REQUIRED=false` 後重新部署，後端就不檢查；
+  前端 `/admin` 仍會要求驗證，真的要全部關掉要另外改 `frontend/src/middleware.ts`。問題解決後記得改回來
+
+### 操作紀錄（#90）
+
+教授在後台「操作紀錄」頁查詢誰在什麼時間做了什麼（`audit_logs`，migration 026）。
+這張表**只能新增、不能修改或刪除**（資料庫觸發器擋住，連 SQL Editor 也改不了）；真的要清理，要由資料庫管理者先拿掉觸發器，不要隨便做。
+
+### 帳號停用與刪除（#87）
+
+後台「帳號管理」頁：停用（可恢復）、去識別化（教授，不能復原）、永久刪除（教授，30 天回收期）。
+- 回收期過了**不會自動刪除**：教授到「帳號管理」按「清除到期帳號」才會真正刪除（要再輸入一次驗證碼）
+- 刪除用 Supabase Auth 的管理 API，會連帶刪掉 profiles 與這個人自己的資料；老師寫過的教師判定保留
 
 ### 注意
 

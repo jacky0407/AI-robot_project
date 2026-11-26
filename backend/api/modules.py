@@ -15,6 +15,7 @@
 否則學生進來會看到空模組或被 RLS 擋住的機器人。
 
 學生端的解鎖規則（必修步驟通過才解鎖下一步）在 core/step_unlock.py。
+複製模組（#89）：POST /api/modules/{id}/copy，規則在 core/templates.py。
 """
 
 import logging
@@ -25,7 +26,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.audit import record
 from core.auth import CurrentUser, require_staff
+from core.templates import copy_title, module_content, pick_title
+from core.templates import create_module as create_module_from_content
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,8 @@ STEP_FIELDS = (
 STEP_FIELDS_019 = STEP_FIELDS + ", pass_mode"
 # migration 020：聊天室關卡
 STEP_FIELDS_020 = STEP_FIELDS_019 + ", step_type"
+# migration 024：停在機器人的第幾版（NULL = 跟著最新版，#89）
+STEP_FIELDS_024 = STEP_FIELDS_020 + ", tool_version"
 STEP_TYPES = ("answer", "chat")
 PASS_MODES = ("score", "complete", "teacher_review")
 
@@ -154,9 +160,13 @@ def _load_steps(db, module_id: str) -> list[dict]:
     def query(fields: str):
         return db.table("module_steps").select(fields).eq("module_id", module_id).order("step_order")
 
-    # 新欄位依 migration 逐層退回：沒跑 020 就不讀 step_type、沒跑 019 就不讀 pass_mode
+    # 新欄位依 migration 逐層退回：沒跑 024 就不讀 tool_version、沒跑 020 就不讀 step_type、沒跑 019 就不讀 pass_mode
     res = None
-    for fields, column in ((STEP_FIELDS_020, "step_type"), (STEP_FIELDS_019, "pass_mode")):
+    for fields, column in (
+        (STEP_FIELDS_024, "tool_version"),
+        (STEP_FIELDS_020, "step_type"),
+        (STEP_FIELDS_019, "pass_mode"),
+    ):
         try:
             res = query(fields).execute()
             break
@@ -208,6 +218,8 @@ def _step_output(step: dict, tools: dict[str, dict], counts: dict[str, int]) -> 
         "is_active": step.get("is_active", True),
         "pass_mode": step.get("pass_mode") if step.get("pass_mode") in PASS_MODES else "score",
         "step_type": step.get("step_type") if step.get("step_type") in STEP_TYPES else "answer",
+        # 停在機器人的第幾版（修改機器人時選的，#89）；None = 跟著最新版
+        "tool_version": step.get("tool_version"),
         "tool_title": tool.get("title"),
         "tool_status": tool.get("status"),
         "attempt_count": attempts,
@@ -286,6 +298,7 @@ async def create_module(body: CreateModuleRequest, user: CurrentUser = Depends(r
         "domain": body.domain,
         "is_published": False,
     }).execute()
+    record(db, user, "module.create", target_type="module", target_id=res.data[0]["id"], detail={"title": body.title})
     return {"data": {**res.data[0], "steps": []}, "message": "已建立模組，請新增步驟後再發布"}
 
 
@@ -314,6 +327,7 @@ async def update_module(module_id: UUID, body: UpdateModuleRequest, user: Curren
         _check_publishable(db, module_id)
 
     db.table("learning_modules").update(changes).eq("id", module_id).execute()
+    record(db, user, "module.update", target_type="module", target_id=module_id, detail=changes)
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -323,7 +337,7 @@ async def delete_module(module_id: UUID, user: CurrentUser = Depends(require_sta
     _require_owner(user)
     db = get_supabase()
     module_id = str(module_id)
-    _get_module_or_404(db, module_id)
+    module = _get_module_or_404(db, module_id)
 
     if _attempt_counts(db, module_id=module_id):
         raise _error(
@@ -335,7 +349,59 @@ async def delete_module(module_id: UUID, user: CurrentUser = Depends(require_sta
     assigned = db.table("course_modules").select("course_id").eq("module_id", module_id).execute().data or []
     db.table("learning_modules").delete().eq("id", module_id).execute()
     message = "已刪除模組" + (f"，並取消 {len(assigned)} 門課程的指派" if assigned else "")
+    record(db, user, "module.delete", target_type="module", target_id=module_id,
+           detail={"title": module.get("title"), "unassigned_courses": [a["course_id"] for a in assigned]})
     return {"success": True, "message": message}
+
+
+class CopyModuleRequest(_Body):
+    """新的名稱（選填）；不填就是「原本的名稱（複本）」"""
+    title: Optional[str] = Field(default=None, max_length=100)
+
+
+def load_module_content(db, module: dict) -> dict:
+    """模組要複製或存成範本的內容（core/templates.module_content），範本 API 也用這個"""
+    from core.chat_room import migration_missing
+
+    steps = _load_steps(db, module["id"])
+    bots: list[dict] = []
+    chat_step_ids = [s["id"] for s in steps if s.get("step_type") == "chat"]
+    if chat_step_ids:
+        try:
+            bots = db.table("chat_room_bots").select("*").in_("step_id", chat_step_ids).execute().data or []
+        except Exception as e:  # noqa: BLE001
+            if not migration_missing(e):
+                raise
+    return module_content(module, steps, bots)
+
+
+def copy_result(module: dict, skipped: list[str], db) -> dict:
+    """複製或從範本建立模組的回應：新模組（含關卡）＋略過了哪些關卡"""
+    message = f"已建立「{module['title']}」（未發布）"
+    if skipped:
+        message += f"；這些關卡的機器人已封存或刪除，沒有複製：{'、'.join(skipped)}"
+    return {"data": _module_detail(db, module), "skipped_steps": skipped, "message": message}
+
+
+@router.post("/{module_id}/copy", status_code=status.HTTP_201_CREATED)
+async def copy_module(
+    module_id: UUID,
+    body: Optional[CopyModuleRequest] = None,
+    user: CurrentUser = Depends(require_staff),
+):
+    """
+    複製模組（#89）：啟用中的關卡（含聊天室的對話機器人）照順序複製成一個新的、未發布的模組。
+    關卡指向原本的機器人，不會連機器人一起複製；學生作答與課程指派都不會複製。
+    """
+    _require_owner(user)
+    db = get_supabase()
+    source = _get_module_or_404(db, str(module_id))
+    content = load_module_content(db, source)
+    title = pick_title(body.title if body else None, copy_title(source.get("title")))
+    module, skipped = create_module_from_content(db, content, title=title)
+    record(db, user, "module.copy", target_type="module", target_id=module["id"],
+           detail={"source_id": source["id"], "skipped_steps": skipped})
+    return copy_result(module, skipped, db)
 
 
 # ──────────────────────────────────────────
@@ -376,6 +442,8 @@ async def add_step(module_id: UUID, body: CreateStepRequest, user: CurrentUser =
             raise _migration_required("020_chat_rooms.sql")
         raise
 
+    record(db, user, "step.create", target_type="module", target_id=module_id,
+           detail={"step_title": body.step_title, "tool_id": tool_id, "step_order": next_order})
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -407,6 +475,9 @@ async def update_step(
                     "這個步驟已有學生作答，不能更換機器人；請停用這一步，再新增一個步驟",
                 )
             _get_usable_tool(db, changes["tool_id"])
+            # 換了機器人：原本停在舊機器人第幾版的設定不適用了，改成跟著新機器人的最新版
+            if step.get("tool_version") is not None:
+                changes["tool_version"] = None
 
     try:
         _execute(db.table("module_steps").update(changes).eq("id", step_id))
@@ -416,6 +487,8 @@ async def update_step(
         if "pass_mode" in changes:
             raise _migration_required("019_step_pass_mode.sql")
         raise
+    record(db, user, "step.update", target_type="step", target_id=step_id,
+           detail={"module_id": module_id, "changes": changes})
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -426,7 +499,7 @@ async def delete_step(module_id: UUID, step_id: UUID, user: CurrentUser = Depend
     db = get_supabase()
     module_id, step_id = str(module_id), str(step_id)
     _get_module_or_404(db, module_id)
-    _get_step_or_404(db, module_id, step_id)
+    step = _get_step_or_404(db, module_id, step_id)
 
     if _attempt_counts(db, module_id=module_id).get(step_id):
         raise _error(
@@ -437,6 +510,8 @@ async def delete_step(module_id: UUID, step_id: UUID, user: CurrentUser = Depend
 
     db.table("module_steps").delete().eq("id", step_id).execute()
     _compact_order(db, module_id)
+    record(db, user, "step.delete", target_type="step", target_id=step_id,
+           detail={"module_id": module_id, "step_title": step.get("step_title"), "tool_id": step.get("tool_id")})
     return {"data": _module_detail(db, _get_module_or_404(db, module_id))}
 
 
@@ -509,6 +584,9 @@ async def replace_chat_bots(
         names.add(key)
         tool_ids.add(tool_id)
 
+    # 原本停在舊版的對話機器人（修改機器人時選的，#89），整份換掉時保留
+    locked = {r["tool_id"]: r["tool_version"] for r in _chat_bot_rows(db, step_id) if r.get("tool_version")}
+
     try:
         db.table("chat_room_bots").delete().eq("step_id", step_id).execute()
         if body.bots:
@@ -516,7 +594,8 @@ async def replace_chat_bots(
                 {"step_id": step_id, "tool_id": str(item.tool_id), "display_name": item.display_name,
                  "when_to_use": item.when_to_use, "sort_order": i + 1,
                  # 預設值不寫：還沒跑 021 的資料庫照樣能存
-                 **({"use_materials": True} if item.use_materials else {})}
+                 **({"use_materials": True} if item.use_materials else {}),
+                 **({"tool_version": locked[str(item.tool_id)]} if str(item.tool_id) in locked else {})}
                 for i, item in enumerate(body.bots)
             ]).execute()
     except APIError as e:

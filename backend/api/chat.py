@@ -31,6 +31,7 @@ from core.ai.agents.chat_agents import ChatBotAgent, RouterAgent
 from core.ai.llm_keys import use_api_key
 from core.ai_usage import check_budget, course_for_access, track_usage, usage_tool
 from core.ai.rubric_formatter import normalize_rubric
+from core.tool_lock import apply_locked_version
 from core.auth import CurrentUser, get_current_user
 from core.chat_room import (
     evaluator_bot,
@@ -85,7 +86,8 @@ def _load_chat_step(db, step_id: str) -> dict:
     res = db.table("module_steps").select("*, ai_tools(*)").eq("id", step_id).limit(1).execute()
     if not res.data:
         raise _error(404, "STEP_NOT_FOUND", "找不到這個關卡")
-    return res.data[0]
+    # 模組停在評分機器人的舊版時，評分與對話用那一版的內容（#89，migration 024）
+    return apply_locked_version(db, res.data[0])
 
 
 @router.get("/steps/{step_id}")

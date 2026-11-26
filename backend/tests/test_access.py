@@ -157,7 +157,8 @@ class TestStepAccess:
         filters = db.queried("tool_permissions")[0]
         assert ("eq", "user_id", "student-1") in filters
         assert ("eq", "status", "approved") in filters
-        assert ("or", "tool_id.eq.tool-1,tool_id.is.null") in filters
+        # 這個模組、這支機器人（舊的申請），或全部機器人（兩欄都是 NULL）
+        assert ("or", "module_id.eq.module-1,tool_id.eq.tool-1,and(tool_id.is.null,module_id.is.null)") in filters
 
     def test_expire_date_today_is_still_valid(self):
         db = FakeDB(
@@ -213,6 +214,96 @@ class TestStepAccess:
         with pytest.raises(HTTPException) as exc:
             check_step_access(db, STUDENT, STEP, TODAY)
         assert_denied(exc, 403, "NOT_ASSIGNED")
+
+
+class TestModulePermission:
+    """#86：自主探索改成申請模組（migration 025）"""
+
+    def test_approved_module_allows_its_steps(self):
+        db = FakeDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[{"id": "perm-mod", "tool_id": None, "module_id": "module-1",
+                               "start_date": None, "expire_date": None}],
+        )
+        assert check_step_access(db, STUDENT, STEP, TODAY).permission_id == "perm-mod"
+
+    def test_other_module_permission_is_not_all_tools(self):
+        """別的模組的核准 tool_id 也是 NULL，但不能被當成「全部機器人」"""
+        db = FakeDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[{"id": "perm-other", "tool_id": None, "module_id": "module-2",
+                               "start_date": None, "expire_date": None}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            check_step_access(db, STUDENT, STEP, TODAY)
+        assert_denied(exc, 403, "NOT_ASSIGNED")
+
+    def test_expired_other_module_does_not_report_expired(self):
+        db = FakeDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[{"id": "perm-other", "tool_id": None, "module_id": "module-2",
+                               "start_date": None, "expire_date": "2026-10-01"}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            check_step_access(db, STUDENT, STEP, TODAY)
+        assert_denied(exc, 403, "NOT_ASSIGNED")
+
+    def test_module_permission_preferred_over_old_tool_and_all(self):
+        db = FakeDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[
+                {"id": "perm-all", "tool_id": None, "module_id": None, "start_date": None, "expire_date": None},
+                {"id": "perm-tool", "tool_id": "tool-1", "module_id": None, "start_date": None, "expire_date": None},
+                {"id": "perm-mod", "tool_id": None, "module_id": "module-1", "start_date": None, "expire_date": None},
+            ],
+        )
+        assert check_step_access(db, STUDENT, STEP, TODAY).permission_id == "perm-mod"
+
+    def test_old_tool_permission_still_works(self):
+        """舊的「申請機器人」照常有效"""
+        db = FakeDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[{"id": "perm-tool", "tool_id": "tool-1", "module_id": None,
+                               "start_date": None, "expire_date": "2026-12-31"}],
+        )
+        assert check_step_access(db, STUDENT, STEP, TODAY).permission_id == "perm-tool"
+
+    def test_expired_module_permission_has_its_own_error(self):
+        db = FakeDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[{"id": "perm-mod", "tool_id": None, "module_id": "module-1",
+                               "start_date": None, "expire_date": "2026-10-01"}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            check_step_access(db, STUDENT, STEP, TODAY)
+        assert_denied(exc, 403, "PERMISSION_EXPIRED")
+
+    def test_before_migration_falls_back_to_tool_permissions(self):
+        """還沒跑 025（沒有 module_id）：退回舊的查法，舊的核准照常"""
+
+        class OldDB(FakeDB):
+            def table(self, name):
+                query = super().table(name)
+                if name != "tool_permissions":
+                    return query
+                original = query.execute
+
+                def execute():
+                    if any(f[0] == "or" and "module_id" in f[1] for f in query.filters):
+                        err = Exception("column tool_permissions.module_id does not exist")
+                        err.code = "42703"
+                        raise err
+                    return original()
+
+                query.execute = execute
+                return query
+
+        db = OldDB(
+            learning_modules=PUBLISHED,
+            tool_permissions=[{"id": "perm-tool", "tool_id": "tool-1", "start_date": None, "expire_date": None}],
+        )
+        assert check_step_access(db, STUDENT, STEP, TODAY).permission_id == "perm-tool"
+        assert ("or", "tool_id.eq.tool-1,tool_id.is.null") in db.queried("tool_permissions")[-1]
 
 
 # ──────────────────────────────────────────

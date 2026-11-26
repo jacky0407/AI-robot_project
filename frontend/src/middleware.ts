@@ -57,11 +57,20 @@ export async function middleware(request: NextRequest) {
   if (user) {
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role, registration_completed')
+      .select('role, registration_completed, is_active')
       .eq('id', user.id)
       .single()
 
     const isStaff = profile?.role === 'owner' || profile?.role === 'assistant'
+
+    // 0. 帳號已停用、去識別化或待刪除（#87）：登出並回到登入頁說明原因
+    //    Supabase 也封鎖了登入，但已經登入的人要等 token 過期，這裡讓他立刻離開
+    if (profile?.is_active === false) {
+      await supabase.auth.signOut()
+      const redirect = NextResponse.redirect(new URL('/?error=account_disabled', request.url))
+      response.cookies.getAll().forEach((c) => redirect.cookies.set(c))
+      return redirect
+    }
 
     if (pathname.startsWith('/onboarding')) {
       // 2. 已完成註冊的人不需要再填一次：回到原本要去的頁面，否則到系統選擇頁
@@ -75,9 +84,19 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(new URL(withNext('/onboarding', here), request.url))
       }
 
-      // 4. /admin 後台只有 owner / assistant 可以進入
-      if (pathname.startsWith('/admin') && !isStaff) {
+      // 4. /admin 後台與兩步驟驗證頁只有 owner / assistant 可以進入
+      if ((pathname.startsWith('/admin') || pathname.startsWith('/mfa')) && !isStaff) {
         return NextResponse.redirect(new URL('/student/courses', request.url))
+      }
+
+      // 4-1. 教師端一律要完成兩步驟驗證（#90）：這次登入還沒輸入驗證碼（aal1）就先到 /mfa
+      //      還沒設定過的人會在 /mfa 看到 QR code 設定，設定過的人輸入 6 位數驗證碼。
+      //      後端 require_staff 也會檢查（core/auth.py），這裡只是讓老師直接看到該做什麼
+      if (pathname.startsWith('/admin') && isStaff) {
+        const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+        if (aal?.currentLevel !== 'aal2') {
+          return NextResponse.redirect(new URL(withNext('/mfa', here), request.url))
+        }
       }
 
       // 5. 教師不進學生練習頁填寫模組（開會紀錄 #49 第 2 項）：/student 一律導回後台的課程管理
@@ -92,5 +111,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   // /portal、/xr：兩系統共用登入整合方案 #3，沒登入或沒完成註冊的人進不去
-  matcher: ['/admin/:path*', '/student/:path*', '/onboarding', '/portal', '/xr', '/xr/:path*'],
+  // /mfa：教師端兩步驟驗證（#90）
+  matcher: ['/admin/:path*', '/student/:path*', '/onboarding', '/portal', '/xr', '/xr/:path*', '/mfa'],
 }

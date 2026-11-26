@@ -15,8 +15,8 @@ from typing import Optional
 from core.ai.agents.chat_agents import ChatBot, ChatTurn
 
 BOT_SELECT_020 = "id, tool_id, display_name, when_to_use, sort_order, ai_tools(id, title, system_prompt, role_instruction, status)"
-# migration 021：學習助教（會查教材的機器人）
-BOT_SELECT = BOT_SELECT_020.replace("sort_order,", "sort_order, use_materials,")
+# migration 021 之後：用 * 一起讀 use_materials（學習助教）與 tool_version（024，停在舊版）
+BOT_SELECT = "*, ai_tools(id, title, system_prompt, role_instruction, status, version)"
 MESSAGE_SELECT = "id, role, tool_id, bot_name, content, routing, attempt_id, created_at"
 
 # 一次讀進來的對話則數（畫面與 prompt 共用）；評分時讀整串
@@ -64,9 +64,14 @@ def _select_bots(db, step_id: str):
 
 def load_bots(db, step_id: str, *, published_only: bool = True) -> list[ChatBot]:
     """聊天室的對話機器人（不含評分機器人），依 sort_order；已封存或未發布的機器人學生端不出現"""
+    from core.tool_lock import apply_locked_version
+
     res = _select_bots(db, step_id)
     bots = []
+    cache: dict = {}
     for row in sorted(res.data or [], key=lambda r: r.get("sort_order") or 0):
+        # 模組停在這支機器人的舊版時，用那一版的角色與指令（#89，migration 024）
+        apply_locked_version(db, row, cache=cache)
         tool = row.get("ai_tools") or {}
         if published_only and tool.get("status") != "published":
             continue
@@ -92,6 +97,7 @@ def load_bot_rows(db, step_id: str) -> list[dict]:
         "when_to_use": r.get("when_to_use") or "",
         "sort_order": r.get("sort_order") or 0,
         "use_materials": bool(r.get("use_materials")),
+        "tool_version": r.get("tool_version"),  # 停在第幾版（migration 024）；None = 跟著最新版
         "tool_title": (r.get("ai_tools") or {}).get("title"),
         "tool_status": (r.get("ai_tools") or {}).get("status"),
     } for r in rows]

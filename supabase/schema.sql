@@ -24,6 +24,15 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     profession TEXT,                                   -- 職業 / 身分（/onboarding 填寫）
     registration_completed BOOLEAN NOT NULL DEFAULT false, -- 是否已完成 /onboarding；false 時 middleware 導回 /onboarding
     terms_accepted_at TIMESTAMPTZ,                     -- 同意服務條款與隱私權政策的時間
+    -- 帳號狀態（migration 027，#87）：active / disabled 停用 / deidentified 去識別化 / pending_deletion 待刪除（30 天回收期）
+    -- is_active 與它同步（account_status = 'active' 才是 true），後端 core/auth.py 看 is_active
+    account_status TEXT NOT NULL DEFAULT 'active'
+        CONSTRAINT profiles_account_status_check CHECK (account_status IN ('active', 'disabled', 'deidentified', 'pending_deletion')),
+    status_reason TEXT,                                -- 停用、去識別化、刪除的原因
+    status_changed_at TIMESTAMPTZ,
+    status_changed_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    deletion_scheduled_for TIMESTAMPTZ,                -- 待刪除：這個時間之後才能真正刪除
+    status_before_deletion TEXT,                       -- 申請刪除前的狀態，30 天內復原時回到這個狀態
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 -- complete_registration() 定義在 supabase/migrations/004_registration.sql
@@ -73,11 +82,13 @@ CREATE TABLE IF NOT EXISTS public.course_members (
     UNIQUE(course_id, user_id)
 );
 
--- 自主探索者權限與每日額度表
+-- 自主探索者權限與每日額度表（一筆 = 一次申請）
+-- 申請的對象（migration 025，#86）：module_id 有值 = 申請模組（新的申請）；tool_id 有值 = 舊的申請機器人；
+-- 兩欄都是 NULL = 全部機器人（只能從後台設定）
 CREATE TABLE IF NOT EXISTS public.tool_permissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    tool_id UUID, -- NULL 表示全平台通用額度，或指定特定 tool_id
+    tool_id UUID, -- 舊的機器人申請；沒有外鍵
     daily_quota INT DEFAULT 10,
     used_today INT DEFAULT 0,
     used_date DATE,                        -- used_today 是哪一天（台灣時間）的次數；扣額度用 consume_tool_quota()，見 migrations/008
@@ -150,6 +161,12 @@ CREATE TABLE IF NOT EXISTS public.learning_modules (
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- 自主探索申請的模組（migration 025）：learning_modules 建好之後才能加外鍵，所以放在這裡
+-- 模組被刪除時申請一起刪：若 SET NULL 會變成「tool_id、module_id 都是 NULL = 全部機器人」
+ALTER TABLE public.tool_permissions
+    ADD COLUMN IF NOT EXISTS module_id UUID REFERENCES public.learning_modules(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS tool_permissions_user_status_idx ON public.tool_permissions (user_id, status);
+
 -- 模組步驟編排 (定義 1~9 步驟、前置解鎖與資料傳遞)
 CREATE TABLE IF NOT EXISTS public.module_steps (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -164,6 +181,7 @@ CREATE TABLE IF NOT EXISTS public.module_steps (
     is_active BOOLEAN NOT NULL DEFAULT true, -- false = 已停用：學生看不到、不能作答，作答保留（migration 010）
     pass_mode TEXT NOT NULL DEFAULT 'score' CHECK (pass_mode IN ('score', 'complete', 'teacher_review')), -- 怎麼算通過（migration 019）
     step_type TEXT NOT NULL DEFAULT 'answer' CHECK (step_type IN ('answer', 'chat')), -- 作答關卡／聊天室（migration 020）
+    tool_version INT,                      -- NULL = 跟著機器人最新版；有值 = 停在這一版，內容查 ai_tool_versions（migration 024）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(module_id, step_order)
 );
@@ -229,7 +247,8 @@ CREATE TABLE IF NOT EXISTS public.ai_evaluations (
 CREATE TABLE IF NOT EXISTS public.teacher_reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id UUID NOT NULL REFERENCES public.step_attempts(id) ON DELETE CASCADE,
-    teacher_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    -- 老師帳號被刪除時判定保留（migration 027 從 CASCADE 改成 SET NULL，避免連帶刪掉學生的研究資料）
+    teacher_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     decision TEXT CHECK (decision IN ('accept_ai', 'modify', 'override', 'request_retry')) NOT NULL,
     final_score INT,
     final_feedback TEXT,
@@ -319,6 +338,7 @@ CREATE TABLE IF NOT EXISTS public.chat_room_bots (
     when_to_use TEXT NOT NULL DEFAULT '',  -- 給調度員看：學生說什麼時該它出場
     sort_order INT NOT NULL DEFAULT 0,
     use_materials BOOLEAN NOT NULL DEFAULT false,  -- 學習助教：回答前先查教材（migration 021）
+    tool_version INT,                      -- NULL = 跟著機器人最新版；有值 = 停在這一版（migration 024）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE (step_id, tool_id),
     UNIQUE (step_id, display_name)
@@ -437,6 +457,55 @@ AS $$
     GROUP BY 1, 2, 3, 4, 5;
 $$;
 
+-- 機器人與模組的範本（migration 023，#89）：存成範本當時的完整內容，跟正式的機器人、模組分開；只給 service_role
+CREATE TABLE IF NOT EXISTS public.templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind TEXT NOT NULL CHECK (kind IN ('tool', 'module')),
+    title TEXT NOT NULL,
+    description TEXT,
+    content JSONB NOT NULL,                -- tool：機器人教學內容；module：模組資料與關卡清單（關卡指向現有的機器人）
+    source_id UUID,                        -- 從哪支機器人／哪個模組存的；不設外鍵，原本的被刪掉範本照樣留著
+    source_version INT,                    -- 機器人範本：存的是第幾版
+    created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS templates_kind_idx ON public.templates (kind, created_at);
+
+-- 操作稽核紀錄（migration 026，#90）：教師端誰、在什麼時間、做了什麼（backend/core/audit.py）
+-- 只能新增：service_role 只有 SELECT / INSERT，觸發器再擋 UPDATE / DELETE / TRUNCATE；
+-- actor_id 不設外鍵（帳號刪除時不能去改舊紀錄）；detail 不放學生作答原文或個資
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id UUID,
+    actor_role TEXT,
+    action TEXT NOT NULL,                  -- 例如 tool.update、review.judge、export.research
+    target_type TEXT,
+    target_id TEXT,
+    detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON public.audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON public.audit_logs (actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_action_idx ON public.audit_logs (action, created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.audit_logs_append_only()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION '操作紀錄（audit_logs）只能新增，不能修改或刪除';
+END;
+$$;
+DROP TRIGGER IF EXISTS audit_logs_no_update_delete ON public.audit_logs;
+CREATE TRIGGER audit_logs_no_update_delete
+    BEFORE UPDATE OR DELETE ON public.audit_logs
+    FOR EACH ROW EXECUTE FUNCTION public.audit_logs_append_only();
+DROP TRIGGER IF EXISTS audit_logs_no_truncate ON public.audit_logs;
+CREATE TRIGGER audit_logs_no_truncate
+    BEFORE TRUNCATE ON public.audit_logs
+    FOR EACH STATEMENT EXECUTE FUNCTION public.audit_logs_append_only();
+-- 權限：只給 service_role 讀與新增（資料表權限其他都在 migrations/002，這張表例外寫在這裡）
+REVOKE ALL ON public.audit_logs FROM anon, authenticated, service_role;
+GRANT SELECT, INSERT ON public.audit_logs TO service_role;
+
 -- 研究倫理知情同意與匿名編號對照表
 CREATE TABLE IF NOT EXISTS public.research_consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -491,7 +560,7 @@ CREATE TRIGGER on_auth_user_created
 -- ==============================================================================
 -- 8. 權限（RLS）：學生只看得到被指派的內容
 --
--- 這一節是 migrations 005、006、010、012、013、022 的「最終版本」，讓只跑 schema.sql 的新資料庫
+-- 這一節是 migrations 005、006、010、012、013、022、025 的「最終版本」，讓只跑 schema.sql 的新資料庫
 -- 也有完整的權限規則（docs/KNOWN_GAPS.md #9）。已經有資料庫的人照樣跑 migrations 即可，
 -- 兩邊內容相同、全部可重複執行。⚠️ 之後改權限規則，migration 和這裡要一起改。
 --
@@ -532,6 +601,8 @@ ALTER TABLE public.chat_messages       ENABLE ROW LEVEL SECURITY;  -- 不建政�
 ALTER TABLE public.course_materials    ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.material_chunks     ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
 ALTER TABLE public.ai_usage_logs       ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取
+ALTER TABLE public.templates           ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可存取（migration 023）
+ALTER TABLE public.audit_logs          ENABLE ROW LEVEL SECURITY;  -- 不建政策：只有 service_role 可讀與新增（migration 026）
 
 -- ── 判斷函式（SECURITY DEFINER：查指派資料時不受那些表本身的 RLS 限制）────────────
 
@@ -568,7 +639,8 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS
         SELECT 1 FROM public.tool_permissions tp
         WHERE tp.user_id = auth.uid()
           AND tp.status = 'approved'
-          AND (tp.tool_id = p_tool_id OR tp.tool_id IS NULL)
+          -- 兩欄都是 NULL 才是「全部機器人」；模組申請（module_id 有值）不算（migration 025）
+          AND (tp.tool_id = p_tool_id OR (tp.tool_id IS NULL AND tp.module_id IS NULL))
           AND (tp.start_date IS NULL OR tp.start_date <= public.today_taipei())
           AND (tp.expire_date IS NULL OR tp.expire_date >= public.today_taipei())
     );
@@ -577,16 +649,33 @@ $$;
 -- 以下三個函式把「跨表查詢」包進 SECURITY DEFINER，
 -- 避免 learning_modules ↔ module_steps 的政策互相查詢造成無限遞迴
 
--- 模組已發布，且其中有登入者被核准的機器人
+-- 有沒有被核准使用這個模組（自主探索申請模組，migration 025）
+CREATE OR REPLACE FUNCTION public.has_module_permission(p_module_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.tool_permissions tp
+        WHERE tp.user_id = auth.uid()
+          AND tp.status = 'approved'
+          AND tp.module_id = p_module_id
+          AND (tp.start_date IS NULL OR tp.start_date <= public.today_taipei())
+          AND (tp.expire_date IS NULL OR tp.expire_date >= public.today_taipei())
+    );
+$$;
+
+-- 模組已發布，且（被核准使用這個模組，或其中有被核准的機器人）
 CREATE OR REPLACE FUNCTION public.module_visible_via_permission(p_module_id uuid)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
     SELECT EXISTS (
-        SELECT 1
-        FROM public.learning_modules m
-        JOIN public.module_steps s ON s.module_id = m.id
+        SELECT 1 FROM public.learning_modules m
         WHERE m.id = p_module_id
           AND m.is_published
-          AND public.has_tool_permission(s.tool_id)
+          AND (
+              public.has_module_permission(m.id)
+              OR EXISTS (
+                  SELECT 1 FROM public.module_steps s
+                  WHERE s.module_id = m.id AND public.has_tool_permission(s.tool_id)
+              )
+          )
     );
 $$;
 
@@ -606,6 +695,18 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS
     );
 $$;
 
+-- 機器人是否出現在登入者被核准的模組裡（啟用中的關卡，migration 025）
+CREATE OR REPLACE FUNCTION public.tool_in_permitted_module(p_tool_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.module_steps s
+        WHERE s.tool_id = p_tool_id
+          AND s.is_active
+          AND public.module_is_published(s.module_id)
+          AND public.has_module_permission(s.module_id)
+    );
+$$;
+
 REVOKE EXECUTE ON FUNCTION public.today_taipei() FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.is_staff() FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.module_assigned_via_course(uuid) FROM PUBLIC, anon;
@@ -613,6 +714,8 @@ REVOKE EXECUTE ON FUNCTION public.has_tool_permission(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.module_visible_via_permission(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.module_is_published(uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.tool_in_assigned_module(uuid) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.has_module_permission(uuid) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.tool_in_permitted_module(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.today_taipei() TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.is_staff() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.module_assigned_via_course(uuid) TO authenticated;
@@ -620,6 +723,8 @@ GRANT EXECUTE ON FUNCTION public.has_tool_permission(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.module_visible_via_permission(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.module_is_published(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.tool_in_assigned_module(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.has_module_permission(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.tool_in_permitted_module(uuid) TO authenticated;
 
 -- ── profiles：只能讀自己那一列，不能新增、修改、刪除（角色只能由後台或後端改；migration 006）──
 DROP POLICY IF EXISTS "users can read own profile" ON public.profiles;
@@ -633,7 +738,7 @@ CREATE POLICY "read course assignments" ON public.course_modules
     FOR SELECT TO authenticated
     USING (public.is_staff() OR public.module_assigned_via_course(module_id));
 
--- ── 模組步驟：課程指派的模組全部步驟，或有核准的機器人所在步驟；學生看不到停用的步驟（migration 010）──
+-- ── 模組步驟：課程指派的模組全部步驟、核准的模組（025）全部步驟，或有核准的機器人所在步驟；學生看不到停用的步驟（migration 010）──
 DROP POLICY IF EXISTS "read assigned steps" ON public.module_steps;
 CREATE POLICY "read assigned steps" ON public.module_steps
     FOR SELECT TO authenticated
@@ -644,6 +749,7 @@ CREATE POLICY "read assigned steps" ON public.module_steps
             AND (
                 public.module_assigned_via_course(module_id)
                 OR (public.has_tool_permission(tool_id) AND public.module_is_published(module_id))
+                OR (public.has_module_permission(module_id) AND public.module_is_published(module_id))
             )
         )
     );
@@ -658,7 +764,7 @@ CREATE POLICY "read assigned modules" ON public.learning_modules
         OR public.module_visible_via_permission(id)
     );
 
--- ── AI 機器人：已發布，且（逐位核准，或出現在課程指派的模組裡）──────────────────
+-- ── AI 機器人：已發布，且（逐位核准、出現在課程指派的模組裡，或在核准的模組裡）──────
 -- 新增、修改不開放前端，一律走後端 API（migration 022 拿掉了 005 的 "staff create tools"）
 DROP POLICY IF EXISTS "read assigned tools" ON public.ai_tools;
 CREATE POLICY "read assigned tools" ON public.ai_tools
@@ -670,6 +776,7 @@ CREATE POLICY "read assigned tools" ON public.ai_tools
             AND (
                 public.has_tool_permission(id)
                 OR public.tool_in_assigned_module(id)
+                OR public.tool_in_permitted_module(id)  -- 核准的模組裡的機器人（migration 025）
             )
         )
     );

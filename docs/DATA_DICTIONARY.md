@@ -127,7 +127,7 @@ erDiagram
 | `learner_profiles` | 學習者側寫的一個版本（只新增不覆蓋） | 錯誤習慣、構面掌握度隨時間的變化 | 015 |
 | `course_materials`、`material_chunks` | 課程教材、教材切段 | 學習助教的參考資料 | 021 |
 | `export_logs` | 一次匯出 | 稽核：誰、何時、什麼條件、幾筆 | 018 |
-| `ai_usage_logs` | 一次 AI 呼叫 | 功能、模型、輸入／輸出 token、估計費用（依價目表）、延遲、成功與否、平台或學生自備金鑰 | 023 |
+| `ai_usage_logs` | 一次 AI 呼叫 | 功能、模型、輸入／輸出 token、估計費用（依價目表）、延遲、成功與否、平台或學生自備金鑰 | 028 |
 | `user_api_keys` | 學生自備的 Gemini 金鑰（加密） | 不匯出 | 017 |
 
 ---

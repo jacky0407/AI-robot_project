@@ -6,11 +6,14 @@
   - 建立機器人：教師端（owner / assistant），建立者記為自己
   - 修改機器人：建立者本人或教授（owner），見 can_edit_tool()
   - 刪除機器人：只限 owner（教授）
+  - 複製機器人：教師端（owner / assistant），新的一支建立者是自己（#89，core/templates.py）
 
 版本（migration 022）：
   - 每次修改內容 ai_tools.version + 1，每一版的完整內容存一列在 ai_tool_versions，不覆蓋
   - 評分時 practice.py 把當時的 version 記在 ai_evaluations.tool_version，研究時對得上
   - 改評分規準不會重算舊的評分；回應的 attempt_count 讓前端提醒老師
+  - 被多個模組使用時，修改可以逐個模組選「更新成新版」或「停在目前這一版」（update_modules，
+    migration 024，#89）；停在舊版的模組，學生作答、評分都用那一版的內容（core/tool_lock.py）
 """
 
 import logging
@@ -21,7 +24,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from core.audit import record
 from core.auth import CurrentUser, require_staff
+from core.tool_lock import (
+    LockMigrationRequired,
+    apply_lock_changes,
+    load_tool_usages,
+    plan_lock_changes,
+    summarize_usages,
+)
+from core.templates import TOOL_CONTENT_FIELDS, copy_title, create_tool, pick_title, save_tool_version, tool_content
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -31,18 +43,8 @@ router = APIRouter(prefix="/api/teacher", tags=["Teacher Management"])
 # PostgreSQL 外鍵違反：module_steps.tool_id 是 ON DELETE RESTRICT
 FOREIGN_KEY_VIOLATION = "23503"
 
-# 修改時會讓版本 + 1 的欄位（機器人的教學內容）；status 等狀態不在這裡
-CONTENT_FIELDS = (
-    "title",
-    "domain",
-    "target_competency",
-    "role_instruction",
-    "system_prompt",
-    "teaching_strategy",
-    "rubric_criteria",
-    "scale_type",
-    "error_taxonomy",
-)
+# 修改時會讓版本 + 1 的欄位（機器人的教學內容）；status 等狀態不在這裡。複製與範本也用同一份（core/templates.py）
+CONTENT_FIELDS = TOOL_CONTENT_FIELDS
 # 改了這些，舊的評分不會重算，要提醒老師
 RUBRIC_FIELDS = ("rubric_criteria", "scale_type")
 
@@ -135,6 +137,9 @@ class ToolUpdate(_ToolValidators):
     error_taxonomy: list[dict[str, Any]] | None = Field(default=None, max_length=50)
     # 送出前看到的版本；別人在這之間改過就回 409，避免蓋掉別人的修改
     expected_version: int | None = None
+    # 要更新成新版的模組（GET 回傳的 used_by 裡的 module_id）；沒列到的模組停在目前這一版。
+    # 不送 = 原本的行為：跟著最新版的都用新版，已經停在舊版的不動
+    update_modules: list[str] | None = Field(default=None, max_length=500)
 
 
 # ── 共用 ────────────────────────────────────────────────────────────────────
@@ -161,24 +166,8 @@ def _count_attempts(db, tool_id: str) -> int:
     return len(db.table("step_attempts").select("id").in_("step_id", step_ids).execute().data or [])
 
 
-def _save_version(db, tool: dict, user_id: str | None) -> None:
-    """把這一版的完整內容存進 ai_tool_versions；同一版已經存過就略過"""
-    try:
-        exists = (
-            db.table("ai_tool_versions").select("id")
-            .eq("tool_id", tool["id"]).eq("version", tool["version"]).limit(1).execute().data
-        )
-        if exists:
-            return
-        db.table("ai_tool_versions").insert({
-            "tool_id": tool["id"],
-            "version": tool["version"],
-            "snapshot": tool,
-            "edited_by": user_id,
-        }).execute()
-    except Exception:  # noqa: BLE001 - 版本紀錄失敗不擋住儲存，但一定要留下 log
-        logger.exception("ai_tool_versions 寫入失敗（tool_id=%s, version=%s），請確認已執行 migration 022",
-                         tool.get("id"), tool.get("version"))
+# 存下某一版的完整內容；實作在 core/templates.py（複製機器人也會用到）
+_save_version = save_tool_version
 
 
 def _dump(model: BaseModel, fields: tuple[str, ...]) -> dict:
@@ -209,7 +198,13 @@ async def get_ai_tool(tool_id: str, user: CurrentUser = Depends(require_staff)):
     """單一機器人的完整設定（編輯頁用），附 can_edit 與 attempt_count（已有幾筆作答用過它）"""
     db = get_supabase()
     tool = _get_tool(db, tool_id)
-    return {"data": {**tool, "can_edit": can_edit_tool(user, tool), "attempt_count": _count_attempts(db, tool_id)}}
+    return {"data": {
+        **tool,
+        "can_edit": can_edit_tool(user, tool),
+        "attempt_count": _count_attempts(db, tool_id),
+        # 哪些模組在用、各自跟著最新版還是停在第幾版；修改時讓老師逐個模組選要不要更新
+        "used_by": summarize_usages(db, load_tool_usages(db, tool_id)),
+    }}
 
 
 @router.post("/tools", status_code=status.HTTP_201_CREATED)
@@ -222,6 +217,8 @@ async def create_ai_tool(body: ToolCreate, user: CurrentUser = Depends(require_s
         raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "CREATE_FAILED", "建立機器人失敗")
     tool = res.data[0]
     _save_version(db, tool, user.id)
+    record(db, user, "tool.create", target_type="tool", target_id=tool["id"],
+           detail={"title": tool.get("title"), "version": 1})
     return {"data": tool}
 
 
@@ -243,11 +240,35 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
                      f"這支機器人已經被修改過（目前第 {current_version} 版），請重新整理後再改")
 
     changes = {k: v for k, v in _dump(body, CONTENT_FIELDS).items() if v is not None and v != tool.get(k)}
-    if not changes:
-        return {"data": tool, "changed": False, "rubric_changed": False, "attempt_count": 0}
 
-    # 修改前先確認目前這一版有存檔（migration 022 之前建立、或上次存檔失敗的機器人）
-    _save_version(db, tool, tool.get("updated_by") or tool.get("created_by"))
+    if changes or body.update_modules is not None:
+        # 修改前先確認目前這一版有存檔（migration 022 之前建立、或上次存檔失敗的機器人）；
+        # 模組要停在這一版，也要有這一版的內容
+        _save_version(db, tool, tool.get("updated_by") or tool.get("created_by"))
+
+    # 老師選了哪些模組要更新：沒選的先停在目前這一版，再升版（先做這步，失敗就什麼都沒改）。
+    # 內容沒改也照樣套用：讓老師可以把先前停在舊版的模組改回跟著最新版
+    lock_changes: list = []
+    if body.update_modules is not None:
+        lock_changes = plan_lock_changes(load_tool_usages(db, tool_id), set(body.update_modules), current_version)
+        try:
+            apply_lock_changes(db, lock_changes)
+        except LockMigrationRequired:
+            raise _error(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "MIGRATION_REQUIRED",
+                "資料庫還沒更新，模組還不能停在舊版：請在 Supabase SQL Editor 執行 "
+                "supabase/migrations/024_tool_version_lock.sql",
+            )
+
+    if not changes:
+        result = {"data": tool, "changed": False, "rubric_changed": False, "attempt_count": 0}
+        if body.update_modules is not None:
+            result["used_by"] = summarize_usages(db, load_tool_usages(db, tool_id))
+            if lock_changes:
+                record(db, user, "tool.update", target_type="tool", target_id=tool_id,
+                       detail={"version": current_version, "fields": [], "module_locks": len(lock_changes)})
+        return result
 
     new_version = current_version + 1
     res = (
@@ -269,12 +290,42 @@ async def update_ai_tool(tool_id: str, body: ToolUpdate, user: CurrentUser = Dep
     _save_version(db, updated, user.id)
 
     rubric_changed = any(k in changes for k in RUBRIC_FIELDS)
+    # 改了哪些欄位、版本從幾到幾；內容本身已存在 ai_tool_versions，這裡不重複存
+    record(db, user, "tool.update", target_type="tool", target_id=tool_id, detail={
+        "from_version": current_version,
+        "version": new_version,
+        "fields": sorted(changes),
+        "rubric_changed": rubric_changed,
+        "module_locks": len(lock_changes),
+    })
     return {
         "data": updated,
         "changed": True,
         "rubric_changed": rubric_changed,
         "attempt_count": _count_attempts(db, tool_id) if rubric_changed else 0,
+        "used_by": summarize_usages(db, load_tool_usages(db, tool_id)),
     }
+
+
+class CopyRequest(BaseModel):
+    """新的名稱（選填）；不填就是「原本的名稱（複本）」"""
+
+    title: str | None = Field(default=None, max_length=100)
+
+
+@router.post("/tools/{tool_id}/copy", status_code=status.HTTP_201_CREATED)
+async def copy_ai_tool(tool_id: str, body: CopyRequest | None = None, user: CurrentUser = Depends(require_staff)):
+    """
+    複製機器人（#89）：用目前的內容建立一支新的機器人。
+    新的一支從第 1 版、草稿開始，建立者是自己，所以複製完一定可以修改；學生作答不會跟著複製。
+    """
+    db = get_supabase()
+    source = _get_tool(db, tool_id)
+    title = pick_title(body.title if body else None, copy_title(source.get("title")))
+    tool = create_tool(db, tool_content(source), user_id=user.id, title=title)
+    record(db, user, "tool.copy", target_type="tool", target_id=tool["id"],
+           detail={"source_id": tool_id, "source_version": source.get("version")})
+    return {"data": {**tool, "can_edit": True}, "message": f"已複製成「{tool['title']}」（草稿），請確認內容後再發布"}
 
 
 @router.delete("/tools/{tool_id}")
@@ -309,4 +360,6 @@ async def delete_ai_tool(tool_id: str, user: CurrentUser = Depends(require_staff
             detail="找不到該 AI 機器人或已被刪除"
         )
 
+    record(supabase, user, "tool.delete", target_type="tool", target_id=tool_id,
+           detail={"title": (res.data[0] or {}).get("title")})
     return {"success": True, "message": "已成功刪除 AI 機器人"}

@@ -11,6 +11,8 @@ const CALLBACK_ERRORS: Record<string, string> = {
   link_expired: "驗證連結已失效或已被使用。若你已點過驗證信，請直接登入；否則請重新註冊以取得新的驗證信。",
   profile: "無法讀取使用者資料，請稍後再試或聯絡管理員",
   auth: "登入驗證失敗，請再試一次",
+  // 帳號被停用、去識別化或待刪除（#87）：middleware 登出後帶到這裡
+  account_disabled: "此帳號已停用，無法登入。如有疑問請聯絡老師或平台管理者。",
 };
 
 
@@ -124,6 +126,12 @@ function HomeContent() {
 
       if (error || !data.user) {
         const msg = error?.message ?? "請再試一次";
+        // 停用的帳號在 Supabase 被封鎖登入（#87）
+        if (msg.toLowerCase().includes("banned")) {
+          setAuthError(CALLBACK_ERRORS.account_disabled);
+          setSubmitting(false);
+          return;
+        }
         setAuthError(
           "登入失敗：" +
             msg +

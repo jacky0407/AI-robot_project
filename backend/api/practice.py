@@ -37,6 +37,7 @@ from core.practice_session import ensure_session, parse_session_id
 from core.ai.rubric_formatter import normalize_rubric
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
 from core.privacy import detect_pii
+from core.tool_lock import apply_locked_version
 from core.step_unlock import check_step_unlocked, load_active_steps, module_progress
 from database.client import get_supabase
 
@@ -170,6 +171,8 @@ async def submit_answer(
         step_res = db.table("module_steps").select("*, ai_tools(*)").eq("id", body.step_id).single().execute()
         if not step_res.data or "ai_tools" not in step_res.data:
             raise HTTPException(status_code=404, detail="Step or AI Tool not found")
+        # 模組停在機器人舊版時，改用那一版的內容評分（#89，migration 024）
+        apply_locked_version(db, step_res.data)
 
         # 作答屬於哪個模組，以步驟本身為準，不採信前端傳來的 module_id
         # （否則可以把作答記到別的模組下，弄亂進度、解鎖與研究資料）
@@ -446,8 +449,7 @@ async def get_hint(
     step_res = (
         db.table("module_steps")
         .select(
-            "id, module_id, tool_id, step_order, pass_score, "
-            "ai_tools(status, system_prompt, rubric_criteria, scale_type, teaching_strategy)"
+            "*, ai_tools(status, version, system_prompt, rubric_criteria, scale_type, teaching_strategy)"
         )
         .eq("id", step_id)
         .single()
@@ -458,6 +460,7 @@ async def get_hint(
 
     # 沒被指派的學生不能看教授設定的提示；看提示不扣額度
     access = check_step_access(db, user, step_res.data)
+    apply_locked_version(db, step_res.data)  # 模組停在舊版時用那一版的提示（migration 024）
 
     tool = step_res.data["ai_tools"]
     plan = parse_teaching_strategy(tool.get("teaching_strategy"))
@@ -607,7 +610,7 @@ async def get_step_memory(step_id: str, user: CurrentUser = Depends(get_current_
     db = get_supabase()
     step_res = (
         db.table("module_steps")
-        .select("id, module_id, tool_id, step_order, ai_tools(status, teaching_strategy)")
+        .select("*, ai_tools(status, version, teaching_strategy)")
         .eq("id", step_id)
         .limit(1)
         .execute()
@@ -617,6 +620,7 @@ async def get_step_memory(step_id: str, user: CurrentUser = Depends(get_current_
         raise HTTPException(status_code=404, detail="Step or AI Tool not found")
 
     check_step_access(db, user, rows[0])
+    apply_locked_version(db, rows[0])
 
     config = parse_memory_config(rows[0]["ai_tools"].get("teaching_strategy"))
     memory = load_bot_memory(db, user.id, rows[0])

@@ -280,7 +280,7 @@ function StudentWorkspace() {
       if (moduleError) {
         setErrorMsg(`無法讀取訓練模組：${moduleError.message}`);
       } else if (!moduleRows || moduleRows.length === 0) {
-        setErrorMsg("目前沒有可以練習的訓練模組。請在「自主探索」申請機器人並等老師核准，或從「正式課程」加入課程。");
+        setErrorMsg("目前沒有可以練習的訓練模組。請在「自主探索」申請模組並等老師核准，或從「正式課程」加入課程。");
       } else {
         const formatted: Module[] = moduleRows.map(toModule);
         setModules(formatted);

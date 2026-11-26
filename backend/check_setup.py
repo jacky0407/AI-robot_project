@@ -36,6 +36,8 @@ EXPECTED_TABLES = [
     "material_chunks",    # migration 021
     "ai_tool_versions",   # migration 022：機器人每次修改前的舊版內容
     "ai_usage_logs",      # migration 028：AI 用量與費用
+    "templates",          # migration 023：機器人與模組的範本
+    "audit_logs",         # migration 026：操作稽核紀錄（只能新增）
 ]
 
 # 只靠 migration 建立的資料表 → 缺少時要跑哪一支
@@ -51,6 +53,8 @@ TABLE_MIGRATIONS = {
     "material_chunks": "021_course_materials.sql",
     "ai_tool_versions": "022_ai_tool_versions.sql",
     "ai_usage_logs": "028_ai_usage.sql",
+    "templates": "023_templates.sql",
+    "audit_logs": "026_audit_logs.sql",
 }
 
 # migration 001 / 003 / 008 之後才有的欄位（新建資料庫跑 schema.sql 就會有）
@@ -59,10 +63,11 @@ EXPECTED_COLUMNS = {
     "ai_tools": ["scale_type", "teaching_strategy", "error_taxonomy"],
     "prompt_logs": ["hint_trigger", "hint_source"],
     "step_attempts": ["tutor_action", "session_id"],  # session_id：migration 009
-    "tool_permissions": ["used_date"],  # migration 008：自主模式每日額度
-    "module_steps": ["is_active", "pass_mode", "step_type"],  # 010 停用步驟；019 怎麼算通過；020 聊天室
-    "chat_room_bots": ["use_materials"],  # 021：學習助教查教材
-    "courses": ["monthly_ai_budget_usd"],  # 023：每月 AI 預算
+    "profiles": ["account_status", "deletion_scheduled_for"],  # 027：帳號停用、去識別化、永久刪除
+    "tool_permissions": ["used_date", "module_id"],  # 008：自主模式每日額度；025：申請模組
+    "module_steps": ["is_active", "pass_mode", "step_type", "tool_version"],  # 010 停用步驟；019 怎麼算通過；020 聊天室；024 停在舊版
+    "chat_room_bots": ["use_materials", "tool_version"],  # 021：學習助教查教材；024 停在舊版
+    "courses": ["monthly_ai_budget_usd"],  # 028：每月 AI 預算
 }
 
 PLACEHOLDERS = {

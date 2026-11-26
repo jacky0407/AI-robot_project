@@ -150,7 +150,7 @@ def budget_status(db, *, course_id: Optional[str], access_mode: str) -> Optional
             if not budget:
                 return None
             used = _month_total(db, course_id, False)
-    except Exception as e:  # noqa: BLE001 - 查不到預算（例如還沒跑 023）時不擋學生
+    except Exception as e:  # noqa: BLE001 - 查不到預算（例如還沒跑 028）時不擋學生
         logger.warning(f"讀取 AI 預算失敗，這次不檢查：{e}")
         return None
     budget = float(budget)

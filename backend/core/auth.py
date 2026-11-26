@@ -10,7 +10,15 @@
 
 身分一律以 token 為準，不相信前端在 body 裡傳來的 user_id（見 docs/KNOWN_GAPS.md #8）。
 角色讀 profiles.role；只能由後台或後端（service_role）修改，見 migrations/006。
+
+兩步驟驗證（#90）：教師端（owner / assistant）一律要完成兩步驟驗證才能用教師端 API。
+  - Supabase 的 access token 裡有 aal：aal1 = 只輸入密碼；aal2 = 已輸入驗證器 App 的 6 位數
+  - require_staff 檢查 aal2，沒有就回 403 MFA_REQUIRED（前端導到 /mfa 設定或輸入驗證碼）
+  - 緊急狀況（例如 Supabase 的兩步驟驗證故障）可以在 Render 設 STAFF_MFA_REQUIRED=false 暫時關掉
 """
+
+import base64
+import json
 
 from dataclasses import dataclass
 from typing import Optional
@@ -19,6 +27,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from supabase_auth.errors import AuthError
 
+from core.config import get_settings
 from database.client import get_supabase
 
 # 對應 profiles.role 的 CHECK：owner / assistant 是教師端，student / explorer 是學生端
@@ -33,6 +42,13 @@ bearer_scheme = HTTPBearer(auto_error=False, description="Supabase access token"
 class CurrentUser:
     id: str
     role: str
+    # 這次登入的驗證等級（token 的 aal）：aal1 = 只有密碼；aal2 = 完成兩步驟驗證。
+    # get_current_user 一律從 token 讀出來填（讀不到當 aal1）；
+    # None 只會出現在單元測試直接建立的 CurrentUser（測試各 API 時不檢查兩步驟驗證）
+    aal: Optional[str] = None
+    # 最近一次輸入兩步驟驗證碼的時間（token 的 amr 裡 totp 的 timestamp，Unix 秒）；
+    # 永久刪除帳號等不能復原的操作，要求 5 分鐘內重新輸入過（require_recent_mfa）
+    mfa_at: Optional[int] = None
 
     @property
     def is_staff(self) -> bool:
@@ -41,6 +57,35 @@ class CurrentUser:
 
 def _error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _token_claims(token: str) -> dict:
+    """
+    解出 access token 的內容。只在 supabase.auth.get_user(token) 驗證過 token 之後呼叫，
+    所以這裡只解碼、不再驗簽；格式不對回空的 dict（後面一律當最嚴格的情況處理）。
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:  # noqa: BLE001
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def token_aal(token: str) -> str:
+    """從 access token 讀出 aal（aal1 / aal2）；讀不到一律當 aal1（最嚴格），不會因此放行"""
+    return "aal2" if _token_claims(token).get("aal") == "aal2" else "aal1"
+
+
+def token_mfa_at(token: str) -> Optional[int]:
+    """最近一次輸入兩步驟驗證碼的時間（amr 裡 method = totp 的 timestamp）；沒有就是 None"""
+    times = [
+        entry.get("timestamp")
+        for entry in _token_claims(token).get("amr") or []
+        if isinstance(entry, dict) and entry.get("method") == "totp" and isinstance(entry.get("timestamp"), int)
+    ]
+    return max(times) if times else None
 
 
 def get_current_user(
@@ -74,10 +119,51 @@ def get_current_user(
     if row.get("is_active") is False:
         raise _error(status.HTTP_403_FORBIDDEN, "ACCOUNT_DISABLED", "此帳號已停用")
 
-    return CurrentUser(id=user_id, role=row.get("role") or "student")
+    return CurrentUser(
+        id=user_id,
+        role=row.get("role") or "student",
+        aal=token_aal(token),
+        mfa_at=token_mfa_at(token),
+    )
 
 
 def require_staff(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if not user.is_staff:
         raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_DENIED", "只有教師或助教可以執行此操作")
+    # aal 是 None 代表不是從 token 來的（只有單元測試），不檢查
+    if user.aal is not None and user.aal != "aal2" and get_settings().staff_mfa_required:
+        raise _error(
+            status.HTTP_403_FORBIDDEN,
+            "MFA_REQUIRED",
+            "教師端需要完成兩步驟驗證：請重新整理頁面，依畫面指示設定或輸入驗證器 App 的 6 位數驗證碼",
+        )
+    return user
+
+
+# 不能復原的操作（永久刪除帳號）要在幾秒內重新輸入過驗證碼
+RECENT_MFA_SECONDS = 300
+
+
+def require_recent_mfa(user: CurrentUser, *, now: Optional[float] = None) -> None:
+    """
+    再次驗證：5 分鐘內重新輸入過兩步驟驗證碼才放行，否則 403 REAUTH_REQUIRED。
+    前端收到後請老師再輸入一次 6 位數（supabase.auth.mfa.challengeAndVerify），再送一次。
+    """
+    import time
+
+    if user.aal is None and user.mfa_at is None:
+        return  # 單元測試直接建立的 CurrentUser
+    now = time.time() if now is None else now
+    if user.mfa_at is None or now - user.mfa_at > RECENT_MFA_SECONDS:
+        raise _error(
+            status.HTTP_403_FORBIDDEN,
+            "REAUTH_REQUIRED",
+            "這個操作無法復原，請再輸入一次驗證器 App 的 6 位數驗證碼",
+        )
+
+
+def require_owner(user: CurrentUser = Depends(require_staff)) -> CurrentUser:
+    """只限教授（owner）；一樣要先通過 require_staff（含兩步驟驗證）"""
+    if user.role != "owner":
+        raise _error(status.HTTP_403_FORBIDDEN, "PERMISSION_DENIED", "只有教授可以執行此操作")
     return user

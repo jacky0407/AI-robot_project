@@ -66,7 +66,8 @@ class TestGetCurrentUser:
         db = fake_db(profile=[{"role": "owner", "is_active": True}])
         user = resolve("Bearer token-abc", db)
 
-        assert user == CurrentUser(id="u1", role="owner")
+        # token-abc 不是 JWT，讀不到 aal → 當作只有密碼（aal1）
+        assert user == CurrentUser(id="u1", role="owner", aal="aal1")
         db.auth.get_user.assert_called_once_with("token-abc")
 
     def test_missing_header_is_401_without_calling_supabase(self):
@@ -139,3 +140,111 @@ class TestRequireStaff:
             require_staff(CurrentUser(id="u1", role=role))
 
         assert error_of(excinfo) == (403, "PERMISSION_DENIED")
+
+
+
+# ──────────────────────────────────────────
+# 兩步驟驗證（#90）
+# ──────────────────────────────────────────
+
+import base64
+import json
+
+from core.auth import require_owner, token_aal
+
+
+def jwt_with(claims: dict) -> str:
+    """只做出格式正確的 JWT（不簽章）；驗簽由 supabase.auth.get_user 負責，這裡只讀 aal"""
+    def b64(data: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+    return f"{b64({'alg': 'HS256'})}.{b64(claims)}.signature"
+
+
+class TestTokenAal:
+
+    def test_aal2_token(self):
+        assert token_aal(jwt_with({"sub": "u1", "aal": "aal2"})) == "aal2"
+
+    def test_aal1_token(self):
+        assert token_aal(jwt_with({"sub": "u1", "aal": "aal1"})) == "aal1"
+
+    @pytest.mark.parametrize("token", ["not-a-jwt", "a.b.c", "", jwt_with({"sub": "u1"}), jwt_with({"aal": "AAL2"})])
+    def test_anything_else_is_treated_as_aal1(self, token):
+        """讀不到或不認得一律當 aal1（最嚴格），不會因此放行"""
+        assert token_aal(token) == "aal1"
+
+    def test_current_user_carries_aal_from_token(self):
+        db = fake_db(profile=[{"role": "owner", "is_active": True}])
+        user = resolve(f"Bearer {jwt_with({'sub': 'u1', 'aal': 'aal2'})}", db)
+        assert user.aal == "aal2"
+
+
+class TestStaffMfa:
+
+    @pytest.fixture(autouse=True)
+    def mfa_on(self, monkeypatch):
+        monkeypatch.setattr(auth, "get_settings", lambda: SimpleNamespace(staff_mfa_required=True))
+
+    @pytest.mark.parametrize("role", ["owner", "assistant"])
+    def test_staff_with_password_only_is_403_mfa_required(self, role):
+        with pytest.raises(HTTPException) as excinfo:
+            require_staff(CurrentUser(id="u1", role=role, aal="aal1"))
+        assert error_of(excinfo) == (403, "MFA_REQUIRED")
+
+    @pytest.mark.parametrize("role", ["owner", "assistant"])
+    def test_staff_with_mfa_passes(self, role):
+        user = CurrentUser(id="u1", role=role, aal="aal2")
+        assert require_staff(user) is user
+
+    def test_student_is_still_permission_denied(self):
+        """學生不用兩步驟驗證；教師端 API 照樣回 PERMISSION_DENIED"""
+        with pytest.raises(HTTPException) as excinfo:
+            require_staff(CurrentUser(id="u1", role="student", aal="aal1"))
+        assert error_of(excinfo) == (403, "PERMISSION_DENIED")
+
+    def test_can_be_turned_off_in_emergency(self, monkeypatch):
+        monkeypatch.setattr(auth, "get_settings", lambda: SimpleNamespace(staff_mfa_required=False))
+        user = CurrentUser(id="u1", role="owner", aal="aal1")
+        assert require_staff(user) is user
+
+    def test_through_fastapi_password_only_token_is_rejected(self):
+        app = FastAPI()
+
+        @app.get("/staff")
+        def staff(user: CurrentUser = Depends(require_staff)):
+            return {"id": user.id}
+
+        db = fake_db(profile=[{"role": "owner", "is_active": True}])
+        token = jwt_with({"sub": "u1", "aal": "aal1"})
+        with patch.object(auth, "get_supabase", return_value=db):
+            res = TestClient(app).get("/staff", headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 403
+        assert res.json()["detail"]["code"] == "MFA_REQUIRED"
+
+
+class TestRequireOwner:
+
+    def test_owner_passes(self):
+        user = CurrentUser(id="u1", role="owner", aal="aal2")
+        assert require_owner(user) is user
+
+    def test_assistant_is_403(self):
+        with pytest.raises(HTTPException) as excinfo:
+            require_owner(CurrentUser(id="u1", role="assistant", aal="aal2"))
+        assert error_of(excinfo) == (403, "PERMISSION_DENIED")
+
+
+class TestTokenMfaAt:
+    """#87：永久刪除帳號要 5 分鐘內重新驗證，時間從 token 的 amr 讀"""
+
+    def test_latest_totp_timestamp(self):
+        from core.auth import token_mfa_at
+        token = jwt_with({"amr": [{"method": "password", "timestamp": 100},
+                                  {"method": "totp", "timestamp": 200},
+                                  {"method": "totp", "timestamp": 300}]})
+        assert token_mfa_at(token) == 300
+
+    @pytest.mark.parametrize("claims", [{"amr": [{"method": "password", "timestamp": 100}]}, {}, {"amr": "bad"}])
+    def test_no_totp_is_none(self, claims):
+        from core.auth import token_mfa_at
+        assert token_mfa_at(jwt_with(claims)) is None
