@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, apiFetch } from "@/utils/api";
 import ChatBotsPanel from "./ChatBotsPanel";
+import ForwardFieldsEditor, { type ForwardField } from "./ForwardFieldsEditor";
 
 export type ModuleSummary = {
   id: string;
@@ -28,6 +29,7 @@ type Step = {
   require_teacher_review: boolean;
   pass_mode?: PassMode;
   step_type?: StepType;
+  pass_forward_keys?: (ForwardField | string)[];
   is_active: boolean;
   tool_title: string | null;
   tool_status: string | null;
@@ -431,6 +433,11 @@ function StepRow({
           改成聊天室（上面選的機器人會變成評分機器人）
         </label>
       )}
+      <ForwardFieldsEditor
+        initial={(step.pass_forward_keys ?? []).map((f) => (typeof f === "string" ? { label: f, description: "" } : { label: f.label, description: f.description ?? "" }))}
+        busy={busy}
+        onSave={(fields) => onSave(step, { pass_forward_keys: fields }, "已儲存要傳給後面關卡的欄位")}
+      />
       {step.step_type === "chat" && (
         <ChatBotsPanel moduleId={moduleId} stepId={step.id} evaluatorToolId={step.tool_id} evaluatorTitle={step.tool_title} tools={tools} />
       )}

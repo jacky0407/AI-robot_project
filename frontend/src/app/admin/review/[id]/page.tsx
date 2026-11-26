@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { apiFetch } from "@/utils/api";
+import ForwardReview, { type ForwardDetail } from "./ForwardReview";
 import AdminNav from "../../AdminNav";
 
 type DimensionScore = { dimension: string; score: number; max_score: number; reason?: string; evidence?: string };
@@ -26,6 +27,8 @@ type Submission = {
   };
   // 沒有評分規準的機器人只給回饋、不評分（存在 step_attempts.structured_data）
   ai_feedback?: string | null;
+  // 要傳給後面關卡的欄位（#84）
+  forward?: ForwardDetail;
   attempt_number: number;
   status: string;
   tutor_action?: string | null;
@@ -255,6 +258,8 @@ function ReviewDetail() {
                 ))}
               </div>
             )}
+
+            {data.forward && <ForwardReview submissionId={data.submission_id} initial={data.forward} />}
 
             <form onSubmit={handleJudge} style={{ ...card, display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0 }}>教師最終判定</h3>

@@ -57,6 +57,7 @@ from core.materials import (
     search_materials,
 )
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
+from core.step_forward import extract_and_save
 from core.practice_session import ensure_session, parse_session_id
 from core.privacy import detect_pii
 from core.step_unlock import check_step_unlocked
@@ -338,6 +339,12 @@ async def _evaluate(db, user, step, evaluator, rows, session_id) -> AsyncGenerat
     if new_status:
         db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
     yield practice._sse_event("pass_status", practice._pass_status(pass_mode, new_status))
+    if new_status == "passed":
+        # 通過時抽出要傳給後面關卡的欄位（#84）；聊天室從整段對話抽
+        structured = {**attempt_row["structured_data"], **({"ai_feedback": summary} if ai_passed is None else {})}
+        values = await extract_and_save(db, attempt_id, step, transcript, structured)
+        if values:
+            yield practice._sse_event("forward_extracted", {"fields": values})
 
     row = save_message(db, {
         "user_id": user.id, "module_id": step.get("module_id"), "step_id": step["id"],
