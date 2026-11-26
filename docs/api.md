@@ -1409,14 +1409,58 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 ### `GET /api/courses/:course_id/ai-usage?month=YYYY-MM`（限教師端）
 預設本月。回傳 `total`、`by_feature`、`by_tool`、`by_model`、`by_day`（每項含 `calls`、`failed`、`input_tokens`、`output_tokens`、`platform_cost_usd`、`student_key_cost_usd`），本月另有 `budget`（`used_usd`、`budget_usd`、`ratio`、`level`）。`400 INVALID_MONTH`、`503 MIGRATION_REQUIRED`。
 
----
-
 ## 五之四、跨步驟結構化資料傳遞 ✅（#84，需求說明書 BLD-006）
 
 - **設定**：關卡的 `pass_forward_keys`（`POST`／`PATCH /api/modules/:module_id/steps…`）：`[{label（≤30 字）, description（≤200 字）}]`，最多 10 個
 - **抽出**：作答「通過」時（分數達標、送出即通過、老師複核後通過；聊天室是送出評分通過時），AI 依欄位從作答／整段對話抽出，存 `step_attempts.structured_data.forward.ai_fields`；SSE 多一個 `forward_extracted`（`fields`）。抽出失敗不影響通過
 - **教師修正**：`PUT /api/review/submissions/:id/forward` `{fields: {欄位: 內容 | null}}`（限教師端）→ `teacher_fields`，**教師版本優先**，AI 原始值保留、之後也不會覆蓋；`GET /api/review/submissions/:id` 多 `forward`（每個欄位的 `ai_value`、`teacher_value`）
 - **後面的關卡使用**：`GET /api/practice/steps/:step_id/forwarded` → 前面每一關通過（或最新）那次作答的欄位，附 `step_order`、`attempt_number`、`source`（ai／teacher／mixed）；機器人記憶裡前面步驟改用這些欄位，沒設定欄位的關卡才退回作答全文
+
+---
+
+## 五之五、工具專屬表單與質性反思 ✅（#80，migration 029）
+
+規則在 `backend/core/tool_forms.py`，API 在 `backend/api/forms.py`。每支機器人有自己的表單（前後測、反思、研究問卷），不和別的機器人共用。
+
+**題型**（`questions[].type`）：`single` 單選（`options`）、`multi` 複選（`options`）、`scale` 量尺（`min`～`max`，0～10，可加 `min_label`、`max_label`）、`short` 簡答（200 字）、`long` 長文字（5000 字）。每題可設 `required`（必答）、`allow_na`（可選「不適用」）、`help`（說明）；`id` 可不給，會自動編成 `q1`、`q2`…。一份最多 30 題。
+
+**出現時點**（`trigger_timing`）：`pre_practice` 練習前、`post_practice` 這一關通過後、`after_feedback` 每次拿到回饋後（預設）、`post_revision` 第 2 次以後的作答拿到回饋後、`every_n_attempts` 每 N 次（`trigger_every_n`）、`teacher_release` 老師發布後。前三種與「教師發布」一關填一次；其他跟著作答，每次作答填一次。
+
+**必填與擋關**：`is_required = false` 學生可略過（記一筆 `skipped = true`）；`gate`：`none` 不影響、`completion` 填答了（略過不算）這一關才算通過（`/progress` 的 `passed` 會是 false、`form_pending` 是 true）、`full_feedback` 填答前前端只顯示簡短回饋。
+
+**版本**：修改 = 新增一列（同 `form_key`、`version + 1`），舊版 `is_active = false`；舊的填答指向舊版那一列，題目與選項不會變。
+
+### 教師端（owner / assistant；新增、修改、停用、發布限機器人建立者或教授）
+
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| `GET` | `/api/teacher/tools/:tool_id/forms?include_old=` | 表單清單（預設只列最新版本），每份附 `response_count`；回應另有 `can_edit` |
+| `POST` | `/api/teacher/tools/:tool_id/forms` | 新增。body：`{title, description?, trigger_timing?, trigger_every_n?, is_required?, gate?, questions: [...]}` |
+| `PUT` | `/api/teacher/forms/:form_id` | 修改（同上 body）→ 產生新版本；改舊版本回 `409 FORM_NOT_CURRENT` |
+| `DELETE` | `/api/teacher/forms/:form_id` | 停用（所有版本），不刪資料 |
+| `POST` | `/api/teacher/forms/:form_id/release` | 教師發布；body `{"released": false}` 收回。不是 `teacher_release` 的表單回 `400 NOT_RELEASE_FORM` |
+| `GET` | `/api/teacher/forms/:form_id/responses` | 所有版本的填答（附 `student_name`）與每一版的題目 |
+
+題目不合規則回 `400 FORM_INVALID`。
+
+### 學生端（要有這一關的作答權限；不扣次數、不呼叫 AI）
+
+**`GET /api/practice/steps/:step_id/forms`**：進入關卡時、每次拿到回饋後查一次。
+
+```json
+{ "data": {
+    "pending": [{ "id": "…", "form_key": "…", "title": "練習後反思", "version": 2, "trigger_timing": "after_feedback",
+                  "timing_label": "看完回饋後", "is_required": false, "gate": "none", "questions": [ … ],
+                  "attempt_id": "這份要跟著哪次作答填；一關一次的是 null" }],
+    "completion_pending": false,
+    "feedback_locked": false } }
+```
+
+**`POST /api/practice/forms/:form_id/responses`**：body `{step_id, attempt_id?, skipped?, responses: {"answers": {"q1": 4, "q2": ["觀察", "記錄"], "q3": "文字"}, "na": ["q4"]}}`
+
+存下時連到表單版本、使用者、機器人、關卡、模組、課程（自主探索為空）、作答、當時的 AI 評分（`ai_evaluation_id`、`ai_total_score`）、時點與時間。錯誤：`400 ANSWER_REQUIRED`（必答題沒答，附 `question_id`）、`400 RESPONSE_INVALID`、`400 PII_DETECTED`（簡答與長文字過個資偵測）、`400 FORM_REQUIRED`（必填表單不能略過）、`400 ATTEMPT_REQUIRED`、`400 FORM_NOT_FOR_STEP`、`404 ATTEMPT_NOT_FOUND`、`409 ALREADY_ANSWERED`、`409 FORM_NOT_CURRENT`（表單已改版，請重新整理）。
+
+匯出：`POST /api/export/*` 的 `dataset = "form_responses"`，一題一列（見 DATA_DICTIONARY 2.7）。
 
 ---
 
@@ -1511,7 +1555,7 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 >
 > ✅ 2026-11 已實作（`backend/api/export.py`、migration 018）。與下方原始規格的差異：
 > - 權限：只限教授（owner），助教 403
-> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, dataset?: "attempts" | "chat_messages", format?: "csv" | "xlsx"}`（#83：`chat_messages` 一列一則聊天訊息；`xlsx` 一個檔兩個工作表）；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
+> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, dataset?: "attempts" | "chat_messages" | "form_responses", format?: "csv" | "xlsx"}`（#83：`chat_messages` 一列一則聊天訊息；#80：`form_responses` 一列一份表單填答的一題；`xlsx` 一個檔三個工作表）；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
 > - 一列 = 一次作答：步驟、AI 總分與逐構面（`名稱:分/滿分;…`）、錯誤代碼、提示層級、教師判定；作答原文預設不匯出，研究用勾選時會遮罩個資
 > - CSV 為 UTF-8 含 BOM；回應標頭 `X-Export-Row-Count`；每次匯出寫入 `export_logs`
 > - 前端：`/admin/tools` 的「資料匯出」

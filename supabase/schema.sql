@@ -272,26 +272,56 @@ CREATE TABLE IF NOT EXISTS public.prompt_logs (
 -- 6. 表單與研究倫理 (Forms & Ethics)
 -- ==============================================================================
 
--- 工具專屬表單 (前後測、質性反思題)
+-- 工具專屬表單 (前後測、質性反思題；#80，migration 029)：一列 = 一份表單的一個版本
+-- 修改 = 新增一列（同 form_key、version + 1），舊版 is_active = false；舊的填答指向舊版，題目不變
 CREATE TABLE IF NOT EXISTS public.forms (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    form_key UUID NOT NULL DEFAULT gen_random_uuid(),  -- 同一份表單所有版本共用
     tool_id UUID REFERENCES public.ai_tools(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
-    trigger_timing TEXT CHECK (trigger_timing IN ('pre_practice', 'post_practice', 'after_feedback', 'post_revision')) DEFAULT 'after_feedback',
-    schema_json JSONB NOT NULL,            -- 題型與結構 (單選、複選、量表、簡答)
-    version INT DEFAULT 1,
-    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+    description TEXT NOT NULL DEFAULT '',
+    trigger_timing TEXT DEFAULT 'after_feedback' CONSTRAINT forms_trigger_timing_check CHECK (trigger_timing IN (
+        'pre_practice', 'post_practice', 'after_feedback', 'post_revision', 'every_n_attempts', 'teacher_release'
+    )),
+    trigger_every_n INT,                   -- every_n_attempts 的 N
+    released_at TIMESTAMPTZ,               -- teacher_release：教師發布時間
+    is_required BOOLEAN NOT NULL DEFAULT false,  -- 必填（不能略過）
+    gate TEXT NOT NULL DEFAULT 'none' CONSTRAINT forms_gate_check CHECK (gate IN ('none', 'completion', 'full_feedback')),
+    schema_json JSONB NOT NULL,            -- {"questions": [...]}：單選、複選、量尺、簡答、長文字（core/tool_forms.py）
+    version INT NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    CONSTRAINT forms_every_n_check CHECK (
+        trigger_timing <> 'every_n_attempts' OR (trigger_every_n IS NOT NULL AND trigger_every_n >= 1)
+    )
 );
+CREATE UNIQUE INDEX IF NOT EXISTS forms_key_version_idx ON public.forms (form_key, version);
+CREATE INDEX IF NOT EXISTS forms_tool_active_idx ON public.forms (tool_id, is_active);
 
--- 學生表單填答紀錄
+-- 學生表單填答紀錄（一列 = 一次填答或略過）
 CREATE TABLE IF NOT EXISTS public.form_responses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    form_id UUID NOT NULL REFERENCES public.forms(id) ON DELETE CASCADE,
+    form_id UUID NOT NULL REFERENCES public.forms(id) ON DELETE CASCADE,  -- 填答當時的那一版
+    form_key UUID,
+    form_version INT,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    tool_id UUID REFERENCES public.ai_tools(id) ON DELETE SET NULL,
+    step_id UUID REFERENCES public.module_steps(id) ON DELETE SET NULL,
+    module_id UUID REFERENCES public.learning_modules(id) ON DELETE SET NULL,
+    course_id UUID REFERENCES public.courses(id) ON DELETE SET NULL,     -- 自主探索為 NULL
     attempt_id UUID REFERENCES public.step_attempts(id) ON DELETE SET NULL,
-    responses JSONB NOT NULL,              -- 填答結果
+    ai_evaluation_id UUID REFERENCES public.ai_evaluations(id) ON DELETE SET NULL,
+    ai_total_score INT,                    -- 填答當時那次作答的 AI 總分
+    timing TEXT,                           -- 出現的時點（同 forms.trigger_timing）
+    skipped BOOLEAN NOT NULL DEFAULT false,
+    responses JSONB NOT NULL,              -- {"answers": {題目 id: 答案}, "na": [選不適用的題目 id]}
     submitted_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
+CREATE INDEX IF NOT EXISTS form_responses_user_step_idx ON public.form_responses (user_id, step_id, form_key);
+CREATE INDEX IF NOT EXISTS form_responses_form_idx ON public.form_responses (form_id);
+CREATE INDEX IF NOT EXISTS form_responses_module_idx ON public.form_responses (module_id);
 
 -- 學習者側寫：每位學生 × 模組，每次更新新增一列（version + 1），不覆蓋（migration 015）
 -- 只放程式計算的數字與錯誤代碼，不放學生原文；只給 service_role 存取（見第 8 節）

@@ -68,6 +68,8 @@ EXPECTED_COLUMNS = {
     "module_steps": ["is_active", "pass_mode", "step_type", "tool_version"],  # 010 停用步驟；019 怎麼算通過；020 聊天室；024 停在舊版
     "chat_room_bots": ["use_materials", "tool_version"],  # 021：學習助教查教材；024 停在舊版
     "courses": ["monthly_ai_budget_usd"],  # 028：每月 AI 預算
+    "forms": ["form_key", "gate", "is_required", "is_active", "released_at"],  # 029：工具專屬表單
+    "form_responses": ["form_key", "step_id", "attempt_id", "skipped", "ai_total_score"],  # 029
 }
 
 PLACEHOLDERS = {

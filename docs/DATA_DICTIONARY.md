@@ -20,16 +20,17 @@
 
 **共同規格**
 
-- 兩種資料集（請求的 `dataset`）：
+- 三種資料集（請求的 `dataset`）：
   - `attempts`（預設）：一列 = **一次作答**（`step_attempts` 一筆）。聊天室關卡是「送出評分」那一次，作答內容是當時整理的整段對話。欄位見 2.1～2.5
   - `chat_messages`：一列 = **一則聊天室訊息**（`chat_messages` 一筆），學生與機器人的訊息都有。欄位見 2.1、2.6
+  - `form_responses`：一列 = **一份表單填答裡的一題**（`form_responses` 一筆展開；略過的表單只有一列）。欄位見 2.1、2.7
 - 兩種格式（請求的 `format`）：
   - `csv`（預設）：一次一個資料集。UTF-8、開頭有 BOM（Excel 直接開中文不亂碼）；逗號分隔，含逗號或換行的欄位以雙引號包住（RFC 4180）
-  - `xlsx`：一個 Excel 檔兩個工作表「作答」「聊天訊息」，欄位名稱與 CSV 相同
+  - `xlsx`：一個 Excel 檔三個工作表「作答」「聊天訊息」「表單填答」，欄位名稱與 CSV 相同
 - 排序：依學生、再依作答時間（舊 → 新）。
 - 篩選條件（請求 body）：`course_id`（必填）、`module_id`、`date_from`、`date_to`（以作答時間的 UTC 日期比較，含首尾）、`include_content`。
 - 只匯出「指派給這門課的模組」裡的作答；老師與助理自己的試作不匯出。
-- 回應標頭 `X-Export-Row-Count` = 資料列數（CSV 是選的資料集；xlsx 是「作答」）；`X-Export-Chat-Count` = 聊天訊息列數。
+- 回應標頭 `X-Export-Row-Count` = 資料列數（CSV 是選的資料集；xlsx 是「作答」）；`X-Export-Chat-Count` = 聊天訊息列數；`X-Export-Form-Count` = 表單填答列數。
 
 > ⚠️ 研究同意書流程（PRI-004）尚未上線：在此之前所有學生的 `is_consented` 都是 false，研究用匯出會是空的（只有欄位名稱）。
 
@@ -109,6 +110,27 @@
 | `message_chars` | 訊息字數 | 整數 | 0 | `content` 的字元數 |
 | `message_text` | 訊息內容（勾選「含作答內容」才有這欄） | 文字 | — | 研究用：個資片段換成 `[已遮罩]`；教學用：原文 |
 
+### 2.7 表單填答（`dataset = form_responses`，#80）
+
+識別欄位同 2.1。一份填答展開成**一題一列**，題目用**填答當時那一版**的表單（表單修改會產生新版本，舊答案不會對到新題目）。略過的表單只有一列，題目欄位空白。
+
+| 欄位 | 意義 | 格式 | 缺失值 | 計算方式／來源 |
+|---|---|---|---|---|
+| `module_title`、`step_order`、`step_title` | 填答所在的模組與關卡 | 同 2.2 | — | 同 2.2 |
+| `tool_title` | 表單屬於哪個機器人 | 文字 | — | `form_responses.tool_id` → `ai_tools.title` |
+| `form_title` | 表單名稱 | 文字 | — | 那一版 `forms.title` |
+| `form_version` | 表單版本 | 整數，從 1 開始 | — | `form_responses.form_version`（每次修改 + 1） |
+| `form_timing` | 表單出現的時點 | 代碼，見第 4 節 | — | `form_responses.timing` |
+| `form_submitted_at` | 填答（或略過）時間 | UTC，ISO 8601 | — | `form_responses.submitted_at`；日期篩選用這欄 |
+| `form_skipped` | 學生是不是按了略過 | `True`／`False` | — | `form_responses.skipped`；必填表單不能略過 |
+| `attempt_number` | 跟著第幾次作答填的 | 整數 | 「練習前／結束後／教師發布」的表單不跟著作答，空白 | `attempt_id` → `step_attempts.attempt_number`；可以和「作答」資料集用 學生＋關卡＋次數 對起來 |
+| `ai_total_score` | 填答當時那次作答的 AI 總分 | 整數 | 沒有評分時空白 | `form_responses.ai_total_score`（填答當下記下，之後重評不會變） |
+| `question_id` | 題目編號 | 文字（例如 `q1`） | 略過時空白 | 表單 `schema_json.questions[].id`；同一份表單改版時題目編號不變，可跨版本對照 |
+| `question_type` | 題型 | `single` 單選／`multi` 複選／`scale` 量尺／`short` 簡答／`long` 長文字 | 略過時空白 | `questions[].type` |
+| `question_label` | 題目文字 | 文字 | 略過時空白 | `questions[].label` |
+| `answer` | 答案 | 單選：選項文字；複選：選項以 `;` 分隔；量尺：整數；簡答、長文字：文字 | 沒作答或選不適用時空白；**簡答與長文字沒勾「含作答內容」時空白** | `responses.answers[題目編號]`；研究用時文字答案的個資片段換成 `[已遮罩]` |
+| `answer_na` | 學生選了「不適用」 | `True`／`False` | 略過時空白 | `responses.na` 裡有這題 |
+
 ---
 
 ## 3. 資料表關係
@@ -133,6 +155,10 @@ erDiagram
     module_steps ||--o{ chat_messages : "聊天"
     profiles ||--o{ learner_profiles : "學習者側寫"
     profiles ||--|| research_consents : "研究同意與匿名編號"
+    ai_tools ||--o{ forms : "工具專屬表單（一列一版）"
+    forms ||--o{ form_responses : "填答"
+    profiles ||--o{ form_responses : "填答"
+    step_attempts ||--o{ form_responses : "跟著作答"
     courses ||--o{ course_materials : "教材"
     course_materials ||--o{ material_chunks : "切段"
 ```
@@ -151,6 +177,7 @@ erDiagram
 | `chat_room_bots`、`chat_messages` | 聊天室的機器人設定、一則聊天訊息 | 誰說的、哪個機器人回答、調度理由、助教引用與是否直接給答案 | 020、021 |
 | `learner_profiles` | 學習者側寫的一個版本（只新增不覆蓋） | 錯誤習慣、構面掌握度隨時間的變化 | 015 |
 | `course_materials`、`material_chunks` | 課程教材、教材切段 | 學習助教的參考資料 | 021 |
+| `forms`、`form_responses` | 機器人的一份表單的一個版本、一次填答或略過 | 前後測、反思、研究問卷；連到作答與當時的 AI 分數 | schema、029 |
 | `export_logs` | 一次匯出 | 稽核：誰、何時、什麼條件、幾筆 | 018 |
 | `ai_usage_logs` | 一次 AI 呼叫 | 功能、模型、輸入／輸出 token、估計費用（依價目表）、延遲、成功與否、平台或學生自備金鑰 | 028 |
 | `user_api_keys` | 學生自備的 Gemini 金鑰（加密） | 不匯出 | 017 |
@@ -172,6 +199,15 @@ erDiagram
 | | `evaluate` | 評分機器人的評分結果 |
 | `chat_messages.routing.answer_mode` | `guide` | 學習助教只引導、不給答案 |
 | | `answer` | 同一個問題問到設定次數，助教直接給答案 |
+| `forms.trigger_timing` | `pre_practice` | 練習前：這一關還沒填過就出現 |
+| | `post_practice` | 結束後：這一關通過後出現一次 |
+| | `after_feedback` | 看完回饋後：每次作答拿到回饋後 |
+| | `post_revision` | 修正後：第 2 次以後的作答拿到回饋後 |
+| | `every_n_attempts` | 每 N 次作答（N = `trigger_every_n`） |
+| | `teacher_release` | 教師按「發布」後出現一次 |
+| `forms.gate` | `none` | 不影響進度 |
+| | `completion` | 填答了（略過不算）這一關才算通過 |
+| | `full_feedback` | 填答了才顯示完整回饋 |
 | `prompt_logs.hint_trigger` | `score_below_threshold`／`student_request` | 分數不夠自動給／學生主動要求 |
 | `prompt_logs.hint_source` | `teacher`／`generated` | 老師撰寫／AI 依評分結果產生 |
 
@@ -187,5 +223,4 @@ erDiagram
 - 學習者側寫 `learner_profiles`
 - 同一次作答的「全部」教師判定歷程（目前只匯出最新一筆）
 - 跨步驟結構化欄位 `step_attempts.structured_data.forward`（#84）：`ai_fields` AI 抽出的原始值、`teacher_fields` 教師修正（優先）、`labels`、`extracted_at`、`edited_at`；欄位設定在 `module_steps.pass_forward_keys`
-- 工具專屬表單與質性反思（#80，功能尚未完成）
 - AI 用量與費用 `ai_usage_logs`（已記錄，老師可在課程的「AI 用量」分頁看；尚未進匯出檔）

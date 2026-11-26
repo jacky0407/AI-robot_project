@@ -40,6 +40,7 @@ from api.usage import router as usage_router
 from api.templates import router as templates_router
 from api.audit_logs import router as audit_logs_router
 from api.accounts import router as accounts_router
+from api import forms as forms_api
 
 app.include_router(practice_router)
 # TODO: 等成員二實作後，在此加入其他 router
@@ -61,6 +62,8 @@ app.include_router(usage_router)
 app.include_router(templates_router)
 app.include_router(audit_logs_router)
 app.include_router(accounts_router)
+app.include_router(forms_api.teacher_router)
+app.include_router(forms_api.student_router)
 
 
 @app.get("/")

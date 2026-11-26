@@ -10,7 +10,9 @@
 兩種資料集（dataset）：
   attempts       一列 = 一次作答：作答者、步驟、AI 評分（逐構面）、錯誤分類、提示使用、教師最終判定
   chat_messages  一列 = 一則聊天室訊息：誰說的、哪個機器人回答、怎麼選的、學習助教引用與是否給答案（#83）
-格式（format）：csv 一次一個資料集；xlsx 一個檔兩個工作表（作答、聊天訊息）。
+  form_responses 一列 = 一份表單填答的一題（略過的表單一列）：表單版本、出現時點、當時的 AI 分數、答案（#80）
+格式（format）：csv 一次一個資料集；xlsx 一個檔三個工作表（作答、聊天訊息、表單填答）。
+表單的簡答與長文字算作答內容：沒勾 include_content 時不匯出；單選、複選、量尺一律匯出。
 作答原文與訊息內容預設不匯出（include_content），研究用時就算勾選也會再過一次個資遮罩。
 欄位定義見 docs/DATA_DICTIONARY.md。
 """
@@ -60,7 +62,19 @@ CHAT_COLUMNS = [
     "module_title", "step_order", "step_title", "sent_at", "role", "bot_name", "routed_by", "routing_reason",
     "is_tutor", "answer_mode", "times_asked", "sources", "evaluation_attempt_number", "message_chars",
 ]
-SHEET_TITLES = {"attempts": "作答", "chat_messages": "聊天訊息"}
+FORM_SELECT = (
+    "id, user_id, module_id, step_id, form_version, timing, skipped, ai_total_score, responses, submitted_at, "
+    "forms(title, version, schema_json), module_steps(step_order, step_title), ai_tools(title), "
+    "step_attempts(attempt_number)"
+)
+FORM_COLUMNS = [
+    "module_title", "step_order", "step_title", "tool_title", "form_title", "form_version", "form_timing",
+    "form_submitted_at", "form_skipped", "attempt_number", "ai_total_score", "question_id", "question_type",
+    "question_label", "answer", "answer_na",
+]
+FORM_TEXT_TYPES = ("short", "long")
+SHEET_TITLES = {"attempts": "作答", "chat_messages": "聊天訊息", "form_responses": "表單填答"}
+DATASETS = ("attempts", "chat_messages", "form_responses")
 
 
 class ExportRequest(BaseModel):
@@ -70,7 +84,8 @@ class ExportRequest(BaseModel):
     date_to: Optional[date] = None
     include_content: bool = False
     # attempts：一列一次作答；chat_messages：一列一則聊天訊息（#83）。xlsx 會兩個都放（各一個工作表）
-    dataset: Literal["attempts", "chat_messages"] = "attempts"
+    # form_responses：一列一份表單填答的一題（#80）
+    dataset: Literal["attempts", "chat_messages", "form_responses"] = "attempts"
     format: Literal["csv", "xlsx"] = "csv"
 
 
@@ -175,11 +190,74 @@ def _load_chat(db, body: ExportRequest, user_ids: list[str], modules: dict[str, 
     return sorted(_date_filter(rows, body), key=lambda m: (m.get("user_id") or "", m.get("created_at") or ""))
 
 
-def _date_filter(rows: list[dict], body: ExportRequest) -> list[dict]:
+def _form_rows(resp: dict, modules: dict[str, str], include_content: bool, mask: bool) -> list[dict]:
+    """一份填答展開成一題一列；略過的表單一列（題目欄位空白）"""
+    form = _first(resp.get("forms"))
+    step = _first(resp.get("module_steps"))
+    base = {
+        "module_title": modules.get(resp.get("module_id"), ""),
+        "step_order": step.get("step_order"),
+        "step_title": step.get("step_title") or "",
+        "tool_title": _first(resp.get("ai_tools")).get("title") or "",
+        "form_title": form.get("title") or "",
+        "form_version": resp.get("form_version") or form.get("version"),
+        "form_timing": resp.get("timing") or "",
+        "form_submitted_at": resp.get("submitted_at"),
+        "form_skipped": bool(resp.get("skipped")),
+        "attempt_number": _first(resp.get("step_attempts")).get("attempt_number"),
+        "ai_total_score": resp.get("ai_total_score"),
+    }
+    if resp.get("skipped"):
+        return [base]
+    saved = resp.get("responses") if isinstance(resp.get("responses"), dict) else {}
+    answers = saved.get("answers") if isinstance(saved.get("answers"), dict) else {}
+    na = set(saved.get("na") or [])
+    rows = []
+    # 題目用「填答當時那一版」的（forms 一列 = 一個版本）
+    for q in (form.get("schema_json") or {}).get("questions") or []:
+        if not isinstance(q, dict):
+            continue
+        qid, qtype = q.get("id"), q.get("type")
+        value = answers.get(qid)
+        if qtype in FORM_TEXT_TYPES:
+            text = value if isinstance(value, str) else ""
+            answer = (mask_pii(text) if mask else text) if include_content else ""
+        elif isinstance(value, list):
+            answer = ";".join(str(v) for v in value)
+        else:
+            answer = "" if value is None else value
+        rows.append({
+            **base,
+            "question_id": qid,
+            "question_type": qtype,
+            "question_label": q.get("label") or "",
+            "answer": answer,
+            "answer_na": qid in na,
+        })
+    return rows
+
+
+def _load_forms(db, body: ExportRequest, user_ids: list[str], modules: dict[str, str]) -> list[dict]:
+    """表單填答；還沒跑 migration 029 時當作沒有"""
+    if not user_ids or not modules:
+        return []
+    try:
+        rows = (
+            db.table("form_responses").select(FORM_SELECT)
+            .in_("module_id", list(modules)).in_("user_id", user_ids).execute()
+        ).data or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"讀取表單填答失敗（是否尚未執行 migration 029？）：{e}")
+        return []
+    rows = _date_filter(rows, body, "submitted_at")
+    return sorted(rows, key=lambda r: (r.get("user_id") or "", r.get("submitted_at") or ""))
+
+
+def _date_filter(rows: list[dict], body: ExportRequest, field: str = "created_at") -> list[dict]:
     if body.date_from:
-        rows = [r for r in rows if (r.get("created_at") or "")[:10] >= body.date_from.isoformat()]
+        rows = [r for r in rows if (r.get(field) or "")[:10] >= body.date_from.isoformat()]
     if body.date_to:
-        rows = [r for r in rows if (r.get("created_at") or "")[:10] <= body.date_to.isoformat()]
+        rows = [r for r in rows if (r.get(field) or "")[:10] <= body.date_to.isoformat()]
     return rows
 
 
@@ -270,7 +348,7 @@ def _cell(value):
 
 def _download(content: bytes, kind: str, fmt: str, counts: dict[str, int], dataset: str) -> Response:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
-    suffix = "" if fmt == "xlsx" or dataset == "attempts" else "-chat"
+    suffix = "" if fmt == "xlsx" or dataset == "attempts" else ("-chat" if dataset == "chat_messages" else "-forms")
     media = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fmt == "xlsx"
              else "text/csv; charset=utf-8")
     return Response(
@@ -281,12 +359,14 @@ def _download(content: bytes, kind: str, fmt: str, counts: dict[str, int], datas
             # 主要資料集的列數（csv 是選的那個；xlsx 是作答），聊天訊息另外給
             "X-Export-Row-Count": str(counts["attempts"] if fmt == "xlsx" else counts[dataset]),
             "X-Export-Chat-Count": str(counts["chat_messages"]),
-            "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Row-Count, X-Export-Chat-Count",
+            "X-Export-Form-Count": str(counts["form_responses"]),
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Row-Count, X-Export-Chat-Count, X-Export-Form-Count",
         },
     )
 
 
-def _respond(db, user, kind: str, body: ExportRequest, identity, attempts, chat, modules, *, mask: bool) -> Response:
+def _respond(db, user, kind: str, body: ExportRequest, identity, attempts, chat, modules, *, mask: bool,
+             forms: list[dict] | None = None) -> Response:
     """
     identity(user_id) → 識別欄位 dict（研究用：匿名編號；教學用：姓名與 Email），回 None 表示這位學生不匯出。
     """
@@ -313,22 +393,34 @@ def _respond(db, user, kind: str, body: ExportRequest, identity, attempts, chat,
             row["message_text"] = mask_pii(text) if mask else text
         chat_rows.append(row)
 
+    form_rows = []
+    for r in forms or []:
+        who = identity(r.get("user_id"))
+        if who is None:
+            continue
+        form_rows.extend({**who, **row} for row in _form_rows(r, modules, body.include_content, mask))
+
     attempt_columns = [*id_columns, *COMMON_COLUMNS] + (["answer_text"] if body.include_content else [])
     chat_columns = [*id_columns, *CHAT_COLUMNS] + (["message_text"] if body.include_content else [])
-    counts = {"attempts": len(attempt_rows), "chat_messages": len(chat_rows)}
+    form_columns = [*id_columns, *FORM_COLUMNS]
+    counts = {"attempts": len(attempt_rows), "chat_messages": len(chat_rows), "form_responses": len(form_rows)}
+    sheets = {
+        "attempts": (attempt_columns, attempt_rows),
+        "chat_messages": (chat_columns, chat_rows),
+        "form_responses": (form_columns, form_rows),
+    }
 
     if body.format == "xlsx":
-        content = _xlsx([
-            (SHEET_TITLES["attempts"], attempt_columns, attempt_rows),
-            (SHEET_TITLES["chat_messages"], chat_columns, chat_rows),
-        ])
-    elif body.dataset == "chat_messages":
-        content = _csv(chat_columns, chat_rows)
+        content = _xlsx([(SHEET_TITLES[d], *sheets[d]) for d in DATASETS])
     else:
-        content = _csv(attempt_columns, attempt_rows)
+        content = _csv(*sheets[body.dataset])
 
     _audit(db, user, kind, body, counts["attempts"] if body.format == "xlsx" else counts[body.dataset])
     return _download(content, kind, body.format, counts, body.dataset)
+
+
+def _wants(body: ExportRequest, dataset: str) -> bool:
+    return body.dataset == dataset or body.format == "xlsx"
 
 
 @router.post("/research")
@@ -348,13 +440,14 @@ async def export_research(body: ExportRequest, user: CurrentUser = Depends(requi
         for c in consents or []
         if c.get("is_consented") and not c.get("withdrawn_at") and c.get("anonymous_research_id")
     }
-    chat = _load_chat(db, body, list(anon), modules) if (body.dataset == "chat_messages" or body.format == "xlsx") else []
+    chat = _load_chat(db, body, list(anon), modules) if _wants(body, "chat_messages") else []
+    forms = _load_forms(db, body, list(anon), modules) if _wants(body, "form_responses") else []
 
     def identity(uid):
         rid = anon.get(uid)
         return {"research_id": rid} if rid else None  # 沒同意或已撤回：不匯出
 
-    return _respond(db, user, "research", body, identity, attempts, chat, modules, mask=True)
+    return _respond(db, user, "research", body, identity, attempts, chat, modules, mask=True, forms=forms)
 
 
 @router.post("/teaching")
@@ -364,7 +457,8 @@ async def export_teaching(body: ExportRequest, user: CurrentUser = Depends(requi
     db = get_supabase()
     _, members, attempts, modules = _load(db, body)
     people = {m["user_id"]: _first(m.get("profiles")) for m in members}
-    chat = _load_chat(db, body, list(people), modules) if (body.dataset == "chat_messages" or body.format == "xlsx") else []
+    chat = _load_chat(db, body, list(people), modules) if _wants(body, "chat_messages") else []
+    forms = _load_forms(db, body, list(people), modules) if _wants(body, "form_responses") else []
 
     def identity(uid):
         p = people.get(uid)
@@ -372,4 +466,4 @@ async def export_teaching(body: ExportRequest, user: CurrentUser = Depends(requi
             return None
         return {"student_name": p.get("full_name") or "", "student_email": p.get("email") or ""}
 
-    return _respond(db, user, "teaching", body, identity, attempts, chat, modules, mask=False)
+    return _respond(db, user, "teaching", body, identity, attempts, chat, modules, mask=False, forms=forms)
