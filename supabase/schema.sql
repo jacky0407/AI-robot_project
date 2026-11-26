@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS public.module_steps (
     pass_forward_keys JSONB DEFAULT '[]'::jsonb,  -- 需傳給下一步的欄位 key
     is_active BOOLEAN NOT NULL DEFAULT true, -- false = 已停用：學生看不到、不能作答，作答保留（migration 010）
     pass_mode TEXT NOT NULL DEFAULT 'score' CHECK (pass_mode IN ('score', 'complete', 'teacher_review')), -- 怎麼算通過（migration 019）
-    step_type TEXT NOT NULL DEFAULT 'answer' CHECK (step_type IN ('answer', 'chat')), -- 作答關卡／聊天室（migration 020）
+    step_type TEXT NOT NULL DEFAULT 'chat' CHECK (step_type IN ('answer', 'chat')), -- 作答關卡／聊天室（migration 020）；030 起全部是聊天室的階段
     tool_version INT,                      -- NULL = 跟著機器人最新版；有值 = 停在這一版，內容查 ai_tool_versions（migration 024）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE(module_id, step_order)
@@ -360,9 +360,11 @@ CREATE TABLE IF NOT EXISTS public.export_logs (
 );
 
 -- 多機器人聊天室（migration 020）：聊天室裡可對話的機器人；評分機器人是 module_steps.tool_id
+-- 一個模組一個聊天室（migration 030）：step_id 有值 = 只在這個階段出場；module_id 有值 = 整個模組共用
 CREATE TABLE IF NOT EXISTS public.chat_room_bots (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    step_id UUID NOT NULL REFERENCES public.module_steps(id) ON DELETE CASCADE,
+    step_id UUID REFERENCES public.module_steps(id) ON DELETE CASCADE,
+    module_id UUID REFERENCES public.learning_modules(id) ON DELETE CASCADE,
     tool_id UUID NOT NULL REFERENCES public.ai_tools(id) ON DELETE RESTRICT,
     display_name TEXT NOT NULL,            -- 聊天室裡顯示的名字，學生用 @名字 指名
     when_to_use TEXT NOT NULL DEFAULT '',  -- 給調度員看：學生說什麼時該它出場
@@ -371,8 +373,13 @@ CREATE TABLE IF NOT EXISTS public.chat_room_bots (
     tool_version INT,                      -- NULL = 跟著機器人最新版；有值 = 停在這一版（migration 024）
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     UNIQUE (step_id, tool_id),
-    UNIQUE (step_id, display_name)
+    UNIQUE (step_id, display_name),
+    CONSTRAINT chat_room_bots_scope_check CHECK ((step_id IS NULL) <> (module_id IS NULL))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS chat_room_bots_module_tool_idx
+    ON public.chat_room_bots (module_id, tool_id) WHERE module_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS chat_room_bots_module_name_idx
+    ON public.chat_room_bots (module_id, display_name) WHERE module_id IS NOT NULL;
 
 -- 聊天室對話（migration 020）：誰說的、由哪個機器人回答、為什麼是它；只給 service_role
 CREATE TABLE IF NOT EXISTS public.chat_messages (
@@ -390,6 +397,7 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_messages_thread_idx ON public.chat_messages (user_id, step_id, created_at);
+CREATE INDEX IF NOT EXISTS chat_messages_module_thread_idx ON public.chat_messages (user_id, module_id, created_at);  -- 030
 
 -- 學習助教的教材庫（migration 021，RAG）：老師的教材切段與向量；只給 service_role（pgvector 見檔案開頭）
 CREATE TABLE IF NOT EXISTS public.course_materials (

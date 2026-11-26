@@ -66,7 +66,7 @@ EXPECTED_COLUMNS = {
     "profiles": ["account_status", "deletion_scheduled_for"],  # 027：帳號停用、去識別化、永久刪除
     "tool_permissions": ["used_date", "module_id"],  # 008：自主模式每日額度；025：申請模組
     "module_steps": ["is_active", "pass_mode", "step_type", "tool_version"],  # 010 停用步驟；019 怎麼算通過；020 聊天室；024 停在舊版
-    "chat_room_bots": ["use_materials", "tool_version"],  # 021：學習助教查教材；024 停在舊版
+    "chat_room_bots": ["use_materials", "tool_version", "module_id"],  # 021：學習助教查教材；024 停在舊版；030 模組共用
     "courses": ["monthly_ai_budget_usd"],  # 028：每月 AI 預算
     "forms": ["form_key", "gate", "is_required", "is_active", "released_at"],  # 029：工具專屬表單
     "form_responses": ["form_key", "step_id", "attempt_id", "skipped", "ai_total_score"],  # 029

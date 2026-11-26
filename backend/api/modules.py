@@ -94,7 +94,7 @@ class CreateStepRequest(_Body):
     # 怎麼算通過（#65）：score 看分數、complete 作答即通過、teacher_review 教師複核後通過
     pass_mode: Literal["score", "complete", "teacher_review"] = "score"
     # answer = 原本的作答關卡；chat = 多機器人聊天室（#68），tool_id 是聊天室的評分機器人
-    step_type: Literal["answer", "chat"] = "answer"
+    step_type: Literal["answer", "chat"] = "chat"  # 一個模組一個聊天室（#108）：預設聊天室階段
     # 通過時要抽出、傳給後面關卡的欄位（#84；存在 module_steps.pass_forward_keys）
     pass_forward_keys: list[ForwardFieldItem] = Field(default_factory=list, max_length=10)
 
@@ -381,6 +381,13 @@ def load_module_content(db, module: dict) -> dict:
         except Exception as e:  # noqa: BLE001
             if not migration_missing(e):
                 raise
+    # 整個模組共用的對話機器人（#108）；還沒跑 030 時沒有
+    try:
+        shared = db.table("chat_room_bots").select("*").eq("module_id", module["id"]).execute().data or []
+        bots += [{**b, "step_id": None} for b in shared if not b.get("step_id")]
+    except Exception as e:  # noqa: BLE001
+        if not (migration_missing(e) or "module_id" in str(e)):
+            raise
     return module_content(module, steps, bots)
 
 
@@ -626,3 +633,72 @@ def _chat_bot_rows(db, step_id: str) -> list[dict]:
         if migration_missing(e):
             raise _migration_required("020_chat_rooms.sql")
         raise
+
+
+# ──────────────────────────────────────────
+# 整個模組共用的對話機器人（#108，migration 030）
+# ──────────────────────────────────────────
+
+@router.get("/{module_id}/chat-bots")
+async def get_module_chat_bots(module_id: UUID, user: CurrentUser = Depends(require_staff)):
+    """模組聊天室每個階段都會出現的對話機器人（例如學習助教）；只在某個階段出現的設定在該階段"""
+    from core.chat_room import load_bot_rows
+
+    db = get_supabase()
+    module_id = str(module_id)
+    _get_module_or_404(db, module_id)
+    return {"data": load_bot_rows(db, module_id, column="module_id")}
+
+
+@router.put("/{module_id}/chat-bots")
+async def replace_module_chat_bots(module_id: UUID, body: ChatBotsRequest, user: CurrentUser = Depends(require_staff)):
+    """
+    整份換掉模組共用的對話機器人。名稱不能和任何階段的評分機器人一樣（學生用 @名稱 指名）；
+    和某個階段自己的對話機器人重複時，那個階段以自己的設定為準。
+    """
+    from core.chat_room import load_bot_rows
+
+    _require_owner(user)
+    db = get_supabase()
+    module_id = str(module_id)
+    _get_module_or_404(db, module_id)
+
+    steps = _load_steps(db, module_id)
+    evaluators = _load_tools(db, sorted({s["tool_id"] for s in steps if s.get("tool_id")}))
+    evaluator_names = {(t.get("title") or "").strip().lower() for t in evaluators.values()}
+    names, tool_ids = set(), set()
+    for item in body.bots:
+        tool_id = str(item.tool_id)
+        if tool_id in evaluators:
+            raise _error(status.HTTP_400_BAD_REQUEST, "EVALUATOR_IN_LIST",
+                         "這支是某個階段的評分機器人，已經在聊天室裡了，不用再加成共用的")
+        if tool_id in tool_ids:
+            raise _error(status.HTTP_400_BAD_REQUEST, "DUPLICATE_TOOL", "同一支機器人只能加一次")
+        key = item.display_name.lower()
+        if key in names or key in evaluator_names:
+            raise _error(status.HTTP_400_BAD_REQUEST, "DUPLICATE_NAME",
+                         f"名稱「{item.display_name}」重複了：學生用 @名稱 指名，名稱不能一樣")
+        _get_usable_tool(db, tool_id)
+        names.add(key)
+        tool_ids.add(tool_id)
+
+    current = load_bot_rows(db, module_id, column="module_id")
+    locked = {r["tool_id"]: r["tool_version"] for r in current if r.get("tool_version")}
+    try:
+        db.table("chat_room_bots").delete().eq("module_id", module_id).execute()
+        if body.bots:
+            db.table("chat_room_bots").insert([
+                {"module_id": module_id, "tool_id": str(item.tool_id), "display_name": item.display_name,
+                 "when_to_use": item.when_to_use, "sort_order": i + 1,
+                 **({"use_materials": True} if item.use_materials else {}),
+                 **({"tool_version": locked[str(item.tool_id)]} if str(item.tool_id) in locked else {})}
+                for i, item in enumerate(body.bots)
+            ]).execute()
+    except APIError as e:
+        # 還沒跑 030：沒有 module_id 欄位，或 step_id 還是 NOT NULL（23502）
+        if e.code == "23502" or (e.code == UNDEFINED_COLUMN and "module_id" in str(e.message)):
+            raise _migration_required("030_module_chat_room.sql")
+        raise
+    record(db, user, "module.chat_bots", target_type="module", target_id=module_id,
+           detail={"bots": [item.display_name for item in body.bots]})
+    return {"data": load_bot_rows(db, module_id, column="module_id")}

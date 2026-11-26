@@ -7,6 +7,11 @@
   - 對話 = chat_messages，一位學生在一個關卡一串對話
 
 評分機器人在聊天室裡也能被 @，被 @ 時代表學生要送出評分（api/chat.py）。
+
+一個模組一個聊天室（#108，migration 030）：學生畫面把整個模組合成一間連續的聊天室，關卡是裡面的「階段」。
+  - 對話機器人可以只在某個階段出場（chat_room_bots.step_id），也可以整個模組共用（module_id、step_id 為 NULL）
+  - 階段沒有任何對話機器人時，由評分機器人陪學生對話（chat_partners）
+  - 訊息仍記在各階段的 step_id 底下；機器人回覆時看得到整個模組最近的對話，評分只評這個階段的對話
 """
 
 import re
@@ -21,6 +26,10 @@ MESSAGE_SELECT = "id, role, tool_id, bot_name, content, routing, attempt_id, cre
 
 # 一次讀進來的對話則數（畫面與 prompt 共用）；評分時讀整串
 HISTORY_LOAD_LIMIT = 200
+# 整個模組的對話（模組聊天室畫面）
+MODULE_HISTORY_LIMIT = 500
+# 機器人回覆時參考的整個模組最近對話則數（跨階段接續）
+MODULE_CONTEXT_TURNS = 40
 # 送去評分的對話字數上限（與作答字數上限同級，太長就從最舊的捨棄）
 TRANSCRIPT_CHARS = 12000
 
@@ -52,32 +61,57 @@ def evaluator_bot(step: dict) -> Optional[ChatBot]:
     )
 
 
-def _select_bots(db, step_id: str):
+def _select_bots(db, step_id: str, column: str = "step_id"):
     """還沒跑 021（沒有 use_materials）時退回舊欄位：聊天室照常，只是沒有學習助教"""
     try:
-        return db.table("chat_room_bots").select(BOT_SELECT).eq("step_id", step_id).order("sort_order").execute()
+        return db.table("chat_room_bots").select(BOT_SELECT).eq(column, step_id).order("sort_order").execute()
     except Exception as e:  # noqa: BLE001
         if getattr(e, "code", None) != UNDEFINED_COLUMN or "use_materials" not in str(e):
             raise
-        return db.table("chat_room_bots").select(BOT_SELECT_020).eq("step_id", step_id).order("sort_order").execute()
+        return db.table("chat_room_bots").select(BOT_SELECT_020).eq(column, step_id).order("sort_order").execute()
 
 
-def load_bots(db, step_id: str, *, published_only: bool = True) -> list[ChatBot]:
-    """聊天室的對話機器人（不含評分機器人），依 sort_order；已封存或未發布的機器人學生端不出現"""
+def _shared_rows(db, module_id: Optional[str]) -> list[dict]:
+    """整個模組共用的對話機器人；還沒跑 030（沒有 module_id 欄位）時當作沒有"""
+    if not module_id:
+        return []
+    try:
+        res = _select_bots(db, module_id, "module_id")
+    except Exception as e:  # noqa: BLE001
+        if migration_missing(e) or "module_id" in str(e):
+            return []
+        raise
+    return [r for r in res.data or [] if not r.get("step_id")]
+
+
+def load_bots(db, step_id: str, *, published_only: bool = True, module_id: Optional[str] = None) -> list[ChatBot]:
+    """
+    聊天室的對話機器人（不含評分機器人），依 sort_order；已封存或未發布的機器人學生端不出現。
+    有 module_id 時再加上整個模組共用的機器人（排在這個階段自己的後面；同一支或同名的以階段的為準）。
+    """
     from core.tool_lock import apply_locked_version
 
     res = _select_bots(db, step_id)
+    stage_rows = sorted(res.data or [], key=lambda r: r.get("sort_order") or 0)
+    shared = sorted(_shared_rows(db, module_id), key=lambda r: r.get("sort_order") or 0)
     bots = []
     cache: dict = {}
-    for row in sorted(res.data or [], key=lambda r: r.get("sort_order") or 0):
+    seen_tools: set = set()
+    seen_names: set = set()
+    for row in stage_rows + shared:
         # 模組停在這支機器人的舊版時，用那一版的角色與指令（#89，migration 024）
         apply_locked_version(db, row, cache=cache)
         tool = row.get("ai_tools") or {}
         if published_only and tool.get("status") != "published":
             continue
+        name = (row.get("display_name") or tool.get("title") or "機器人").strip()
+        if str(row.get("tool_id")) in seen_tools or name.lower() in seen_names:
+            continue
+        seen_tools.add(str(row.get("tool_id")))
+        seen_names.add(name.lower())
         bots.append(ChatBot(
             tool_id=str(row.get("tool_id")),
-            name=(row.get("display_name") or tool.get("title") or "機器人").strip(),
+            name=name,
             when_to_use=row.get("when_to_use") or "",
             system_prompt=tool.get("system_prompt") or "",
             role_instruction=tool.get("role_instruction") or "",
@@ -86,10 +120,29 @@ def load_bots(db, step_id: str, *, published_only: bool = True) -> list[ChatBot]
     return bots
 
 
-def load_bot_rows(db, step_id: str) -> list[dict]:
-    """教師端設定頁用：原始的 chat_room_bots（含機器人名稱與狀態）"""
-    res = _select_bots(db, step_id)
-    rows = sorted(res.data or [], key=lambda r: r.get("sort_order") or 0)
+def chat_partners(bots: list[ChatBot], evaluator: Optional[ChatBot]) -> list[ChatBot]:
+    """
+    學生一般訊息可以由誰回答。老師沒設定任何對話機器人的階段（例如原本的作答關卡轉過來的），
+    由評分機器人陪學生對話；這時 @ 評分機器人仍然是「送出評分」。
+    """
+    if bots or evaluator is None:
+        return bots
+    return [ChatBot(
+        tool_id=evaluator.tool_id,
+        name=evaluator.name,
+        when_to_use="這個階段的對話",
+        system_prompt=evaluator.system_prompt,
+        role_instruction=evaluator.role_instruction,
+    )]
+
+
+def load_bot_rows(db, step_id: str, *, column: str = "step_id") -> list[dict]:
+    """教師端設定頁用：原始的 chat_room_bots（含機器人名稱與狀態）；column = module_id 時是模組共用的"""
+    if column == "module_id":
+        rows = sorted(_shared_rows(db, step_id), key=lambda r: r.get("sort_order") or 0)
+    else:
+        res = _select_bots(db, step_id)
+        rows = sorted(res.data or [], key=lambda r: r.get("sort_order") or 0)
     return [{
         "id": r.get("id"),
         "tool_id": r.get("tool_id"),
@@ -123,6 +176,21 @@ def load_history(db, user_id: str, step_id: str, limit: int = HISTORY_LOAD_LIMIT
         .select(MESSAGE_SELECT)
         .eq("user_id", user_id)
         .eq("step_id", step_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = res.data or []
+    return sorted(rows, key=lambda r: r.get("created_at") or "")
+
+
+def load_module_history(db, user_id: str, module_id: str, limit: int = MODULE_HISTORY_LIMIT) -> list[dict]:
+    """這位學生在整個模組（所有階段）的對話，舊 → 新；每則帶 step_id"""
+    res = (
+        db.table("chat_messages")
+        .select(MESSAGE_SELECT + ", step_id")
+        .eq("user_id", user_id)
+        .eq("module_id", module_id)
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -174,5 +242,6 @@ def public_message(row: dict) -> dict:
         # 學習助教引用的教材段落（例如「IEP 撰寫指引・第 2 段」）
         "sources": routing.get("sources") or [],
         "attempt_id": row.get("attempt_id"),
+        "step_id": row.get("step_id"),
         "created_at": row.get("created_at"),
     }

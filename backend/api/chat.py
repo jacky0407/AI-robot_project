@@ -2,8 +2,14 @@
 多機器人聊天室 API（#68，migration 020）
 
 學生端：
-  GET  /api/chat/steps/{step_id}                                  聊天室資訊與自己的對話
-  POST /api/chat/sessions/{session_id}/steps/{step_id}/messages   傳一則訊息（SSE）
+  GET  /api/chat/modules/{module_id}?step_id=                     一個模組一個聊天室（#108）：階段、整個模組的對話、目前階段的機器人
+  GET  /api/chat/steps/{step_id}                                  單一關卡的聊天室資訊與對話（舊畫面用）
+  POST /api/chat/sessions/{session_id}/steps/{step_id}/messages   傳一則訊息到某個階段（SSE）
+教師端：
+  GET  /api/chat/modules/{module_id}/users/{user_id}              某位學生在整個模組的對話（標出每則屬於哪個階段）
+
+一個模組一個聊天室（#108，migration 030）：關卡是聊天室裡的「階段」，訊息、評分、複核、解鎖都照舊記在各階段。
+機器人回覆時看得到整個模組最近的對話（跨階段接續）；送出評分只評目前這個階段的對話。
 
 每則學生訊息：
   1. 個資偵測（命中 400，不存、不扣次數、不呼叫 LLM）
@@ -32,13 +38,16 @@ from core.ai.llm_keys import use_api_key
 from core.ai_usage import check_budget, course_for_access, track_usage, usage_tool
 from core.ai.rubric_formatter import normalize_rubric
 from core.tool_lock import apply_locked_version
-from core.auth import CurrentUser, get_current_user
+from core.auth import CurrentUser, get_current_user, require_staff
 from core.chat_room import (
+    MODULE_CONTEXT_TURNS,
+    chat_partners,
     evaluator_bot,
     find_mention,
     is_chat_step,
     load_bots,
     load_history,
+    load_module_history,
     migration_missing,
     public_message,
     save_message,
@@ -60,7 +69,7 @@ from core.pass_mode import effective_pass_mode, has_rubric, status_after_submit
 from core.step_forward import extract_and_save
 from core.practice_session import ensure_session, parse_session_id
 from core.privacy import detect_pii
-from core.step_unlock import check_step_unlocked
+from core.step_unlock import check_step_unlocked, module_progress
 from database.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -104,7 +113,7 @@ async def get_chat_room(step_id: str, user: CurrentUser = Depends(get_current_us
 
     access = check_step_access(db, user, step)
     try:
-        bots = load_bots(db, step_id)
+        bots = load_bots(db, step_id, module_id=step.get("module_id"))
         history = load_history(db, user.id, step_id)
     except Exception as e:  # noqa: BLE001
         if migration_missing(e):
@@ -124,6 +133,123 @@ async def get_chat_room(step_id: str, user: CurrentUser = Depends(get_current_us
         "scoring": scoring,
         "messages": [public_message(r) for r in history],
         "quota": quota_status(access),
+    }}
+
+
+MODULE_STEP_SELECT = "id, step_order, step_title, is_required, is_active, tool_id, ai_tools(title, role_instruction, target_competency)"
+
+
+def _module_or_404(db, module_id: str, user: CurrentUser) -> dict:
+    rows = db.table("learning_modules").select("id, title, is_published").eq("id", module_id).limit(1).execute().data or []
+    if not rows or (not user.is_staff and not rows[0].get("is_published")):
+        raise _error(404, "MODULE_NOT_FOUND", "找不到這個模組")
+    return rows[0]
+
+
+def _stages(db, user_id: str, module_id: str, *, bypass_locks: bool) -> list[dict]:
+    """模組裡每個階段（啟用中的關卡）：進度＋階段開場說明（評分機器人的開場白）"""
+    progress = module_progress(db, user_id, module_id, bypass_locks=bypass_locks)
+    rows = db.table("module_steps").select(MODULE_STEP_SELECT).eq("module_id", module_id).execute().data or []
+    info = {r["id"]: r for r in rows}
+    stages = []
+    for p in progress:
+        tool = (info.get(p["step_id"]) or {}).get("ai_tools") or {}
+        stages.append({
+            **p,
+            "evaluator_name": (tool.get("title") or "").strip(),
+            "intro": tool.get("role_instruction") or "",
+            "target_competency": tool.get("target_competency") or "",
+        })
+    return stages
+
+
+def current_stage(stages: list[dict], wanted: str | None = None) -> dict | None:
+    """
+    要聊的是哪一個階段：指定的（沒鎖住才行）；否則第一個還沒通過、沒鎖住的；全部通過就停在最後一個。
+    """
+    if not stages:
+        return None
+    if wanted:
+        for st in stages:
+            if st["step_id"] == wanted and not st["locked"]:
+                return st
+    for st in stages:
+        if not st["passed"] and not st["locked"]:
+            return st
+    return stages[-1]
+
+
+@router.get("/modules/{module_id}")
+async def get_module_chat_room(module_id: str, step_id: str | None = None, user: CurrentUser = Depends(get_current_user)):
+    """
+    一個模組一個聊天室（#108）：
+      stages        每個階段的進度（passed、locked、form_pending）、評分機器人名稱、開場說明
+      current       現在聊的是哪個階段（可以用 ?step_id= 回到沒鎖住的前面階段）
+      completed     必修階段都通過了
+      messages      整個模組的對話（舊 → 新，每則有 step_id，前端依此畫出階段分隔）
+      room          目前階段的聊天室資訊（對話機器人含模組共用的、評分機器人、通過方式、今天剩幾次）
+    """
+    db = get_supabase()
+    module = _module_or_404(db, module_id, user)
+    stages = _stages(db, user.id, module_id, bypass_locks=user.is_staff)
+    current = current_stage(stages, step_id)
+    if current is None:
+        return {"data": {"module_id": module_id, "module_title": module.get("title"), "stages": [], "current_step_id": None,
+                         "completed": False, "messages": [], "room": None}}
+
+    step = _load_chat_step(db, current["step_id"])
+    access = check_step_access(db, user, step)
+    try:
+        evaluator = evaluator_bot(step)
+        bots = load_bots(db, current["step_id"], module_id=module_id)
+        history = load_module_history(db, user.id, module_id)
+    except Exception as e:  # noqa: BLE001
+        if migration_missing(e):
+            raise _error(503, "MIGRATION_REQUIRED", "資料庫還沒更新：請執行 supabase/migrations/020_chat_rooms.sql")
+        raise
+    scoring = has_rubric((step.get("ai_tools") or {}).get("rubric_criteria"))
+    required = [st for st in stages if st["is_required"]]
+    return {"data": {
+        "module_id": module_id,
+        "module_title": module.get("title"),
+        "stages": stages,
+        "current_step_id": current["step_id"],
+        "completed": bool(required) and all(st["passed"] for st in required),
+        "messages": [public_message(r) for r in history],
+        "room": {
+            "chat": True,
+            "step_id": current["step_id"],
+            "step_title": step.get("step_title"),
+            # 對話機器人（這個階段的＋模組共用的）；評分機器人另外放在 evaluator
+            "bots": [{"tool_id": b.tool_id, "name": b.name, "when_to_use": b.when_to_use, "use_materials": b.use_materials}
+                     for b in bots],
+            "evaluator": {"tool_id": evaluator.tool_id, "name": evaluator.name} if evaluator else None,
+            # 這個階段沒有對話機器人：評分機器人陪學生對話
+            "evaluator_chats": not bots and evaluator is not None,
+            "pass_mode": effective_pass_mode(step, scoring),
+            "scoring": scoring,
+            "quota": quota_status(access),
+        },
+    }}
+
+
+@router.get("/modules/{module_id}/users/{user_id}")
+async def get_student_module_chat(module_id: str, user_id: str, user: CurrentUser = Depends(require_staff)):
+    """教師端：某位學生在整個模組的對話，每則標出屬於哪個階段（監控與複核用，不扣次數、不呼叫 AI）"""
+    db = get_supabase()
+    _module_or_404(db, module_id, user)
+    stages = _stages(db, user_id, module_id, bypass_locks=True)
+    titles = {st["step_id"]: f"階段 {st['step_order']}：{st['step_title']}" for st in stages}
+    try:
+        history = load_module_history(db, user_id, module_id)
+    except Exception as e:  # noqa: BLE001
+        if migration_missing(e):
+            raise _error(503, "MIGRATION_REQUIRED", "資料庫還沒更新：請執行 supabase/migrations/020_chat_rooms.sql")
+        raise
+    return {"data": {
+        "stages": [{k: st[k] for k in ("step_id", "step_order", "step_title", "is_required", "passed", "form_pending")}
+                   for st in stages],
+        "messages": [{**public_message(r), "stage": titles.get(r.get("step_id"), "")} for r in history],
     }}
 
 
@@ -149,9 +275,8 @@ async def send_message(
         })
 
     db = get_supabase()
+    # 一個模組一個聊天室（#108）：每個關卡都是聊天室的一個階段（還沒跑 030 的作答關卡也可以聊）
     step = _load_chat_step(db, step_id)
-    if not is_chat_step(step):
-        raise _error(400, "NOT_CHAT_STEP", "這個關卡不是聊天室")
     module_id = step.get("module_id")
 
     # 步驟二：指派 → 解鎖 → Session → 扣次數（任一不過都不寫入、不扣）
@@ -159,15 +284,18 @@ async def send_message(
     check_step_unlocked(db, user, step)
     linked_session_id = ensure_session(db, session_id, user.id)
     try:
-        bots = load_bots(db, step_id)
+        evaluator = evaluator_bot(step)
+        bots = chat_partners(load_bots(db, step_id, module_id=module_id), evaluator)
         history_rows = load_history(db, user.id, step_id)
+        # 機器人回覆時看整個模組最近的對話（跨階段接續）；評分只用這個階段的 history_rows
+        context_rows = load_module_history(db, user.id, module_id) if module_id else history_rows
     except Exception as e:  # noqa: BLE001
         if migration_missing(e):
             raise _error(503, "MIGRATION_REQUIRED", "資料庫還沒更新：請執行 supabase/migrations/020_chat_rooms.sql")
         raise
 
-    evaluator = evaluator_bot(step)
-    mentioned = find_mention(content, bots + ([evaluator] if evaluator else []))
+    candidates = bots + ([evaluator] if evaluator and all(b.tool_id != evaluator.tool_id for b in bots) else [])
+    mentioned = find_mention(content, candidates)
     wants_evaluation = body.evaluate or (evaluator is not None and mentioned is not None and mentioned.tool_id == evaluator.tool_id)
     if not wants_evaluation and not bots:
         raise _error(400, "NO_CHAT_BOTS", "這個聊天室還沒有可以對話的機器人，請老師到模組管理設定")
@@ -199,7 +327,7 @@ async def send_message(
                                                  linked_session_id):
                         yield event
                 else:
-                    async for event in _reply(db, user, step, bots, mentioned, history_rows, content, linked_session_id):
+                    async for event in _reply(db, user, step, bots, mentioned, context_rows, content, linked_session_id):
                         yield event
             except Exception as e:  # noqa: BLE001
                 logger.error(f"chat error:\n{traceback.format_exc()}")
@@ -213,8 +341,12 @@ async def send_message(
 
 
 async def _reply(db, user, step, bots, mentioned, history_rows, content, session_id) -> AsyncGenerator[str, None]:
-    """一則訊息只讓一個機器人回答：有 @ 就是它，否則交給調度員"""
-    turns = to_turns(history_rows)
+    """
+    一則訊息只讓一個機器人回答：有 @ 就是它，否則交給調度員。
+    history_rows = 整個模組的對話：最近 MODULE_CONTEXT_TURNS 則給機器人當上下文（跨階段接續），
+    學習助教「同一個問題問了幾次」看整個模組。
+    """
+    turns = to_turns(history_rows[-MODULE_CONTEXT_TURNS:])
     if mentioned is not None:
         bot, routing = mentioned, {"by": "mention", "reason": f"學生 @{mentioned.name}"}
     elif len(bots) == 1:

@@ -9,7 +9,7 @@
   - 新的機器人一律從第 1 版、草稿開始，建立者是操作的人（不是原本的建立者）
   - 新的模組一律未發布；只複製啟用中的關卡，順序重新編成 1、2、3…
   - 模組的關卡指向原本的機器人（不會連機器人一起複製）；機器人已封存或已刪除的關卡會略過，並回報給老師
-  - 聊天室關卡連對話機器人設定（chat_room_bots）一起複製
+  - 聊天室關卡連對話機器人設定（chat_room_bots）一起複製；整個模組共用的對話機器人也一起（#108，content.chat_bots）
   - 學生作答、評分、教師判定都不會被複製（新的一份從零開始）
 """
 
@@ -156,6 +156,8 @@ def module_content(module: dict, steps: list[dict], bots: list[dict]) -> dict:
     active = [s for s in steps if s.get("is_active", True)]
     active.sort(key=lambda s: s.get("step_order") or 0)
     return {
+        # 整個模組共用的對話機器人（step_id 為 NULL，#108）
+        "chat_bots": bots_by_step.get(None, []),
         "title": module.get("title"),
         "description": module.get("description"),
         "domain": module.get("domain"),
@@ -176,7 +178,24 @@ def module_tool_ids(content: dict) -> list[str]:
         for tid in [s.get("tool_id"), *[b.get("tool_id") for b in s.get("chat_bots") or []]]:
             if tid and tid not in ids:
                 ids.append(tid)
+    for b in content.get("chat_bots") or []:
+        if b.get("tool_id") and b["tool_id"] not in ids:
+            ids.append(b["tool_id"])
     return ids
+
+
+def plan_shared_bots(content: dict, tools: dict[str, dict]) -> list[dict]:
+    """模組共用的對話機器人裡還能用的（存在、沒封存、不是某一關的評分機器人、不重複）"""
+    evaluators = {s.get("tool_id") for s in content.get("steps") or []}
+    seen: set[str] = set()
+    result = []
+    for b in content.get("chat_bots") or []:
+        tid = b.get("tool_id")
+        tool = tools.get(tid) if tid else None
+        if tool and tool.get("status") != "archived" and tid not in evaluators and tid not in seen and b.get("display_name"):
+            seen.add(tid)
+            result.append(b)
+    return result
 
 
 def plan_module_copy(content: dict, tools: dict[str, dict]) -> tuple[list[dict], list[str]]:
@@ -263,6 +282,20 @@ def create_module(db, content: dict, *, title: str) -> tuple[dict, list[str]]:
                     }
                     for i, b in enumerate(step["chat_bots"], start=1)
                 ]).execute()
+        shared = plan_shared_bots(content, tools)
+        if shared:
+            db.table("chat_room_bots").insert([
+                {
+                    "module_id": module["id"],
+                    "tool_id": b["tool_id"],
+                    "display_name": b["display_name"],
+                    "when_to_use": b.get("when_to_use") or "",
+                    "sort_order": i,
+                    **({"use_materials": True} if b.get("use_materials") else {}),
+                    **({"tool_version": b["tool_version"]} if b.get("tool_version") else {}),
+                }
+                for i, b in enumerate(shared, start=1)
+            ]).execute()
     except Exception:
         # 建到一半就失敗：刪掉這個新模組，不留下半套的資料
         try:
