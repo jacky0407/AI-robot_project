@@ -4,7 +4,8 @@
  *   預設（沒有 data-theme，或 data-theme="dark"）：目前的深色
  *   data-theme="b"：B 嫩芽溫暖
  *   data-theme="f"：F 溫柔藍紫
- * 目前只有作答區（/student/modules）改用這些變數，可用 ?theme=b、?theme=f 預覽
+ *   data-theme="b-dark"、"f-dark"：B、F 的深色版
+ * 目前只有作答區（/student/modules）改用這些變數，可用 ?theme=b、f、b-dark、f-dark 預覽
  */
 
 :root,
@@ -128,4 +129,86 @@
   --t-indigo-strong: #5466c4;
   --t-warning-strong: #9a6b00;
   --t-overlay: rgba(20, 24, 50, 0.45);
+}
+
+/* B 嫩芽溫暖・深色：偏暖的深棕灰底，嫩芽綠主色（不用冷藍，跟淺色 B 同一個溫度） */
+[data-theme="b-dark"] {
+  color-scheme: dark;
+  --t-bg: #171613;
+  --t-surface: #211f1b;
+  --t-surface-2: rgba(255, 248, 230, 0.04);
+  --t-surface-3: rgba(255, 248, 230, 0.09);
+  --t-field: #1a1916;
+  --t-border: #35322b;
+  --t-border-strong: #4c473d;
+  --t-text: #f1ede3;
+  --t-text-2: #d6d0c2;
+  --t-text-muted: #a49e90;
+  --t-text-faint: #7c766a;
+  --t-primary: #2e9464;
+  --t-on-primary: #ffffff;
+  --t-link: #86d6ad;
+  --t-link-soft: rgba(79, 184, 134, 0.14);
+  --t-link-border: rgba(79, 184, 134, 0.4);
+  --t-success: #86d6ad;
+  --t-success-strong: #2e9464;
+  --t-success-soft: rgba(79, 184, 134, 0.14);
+  --t-success-border: rgba(79, 184, 134, 0.4);
+  --t-warning: #e9c574;
+  --t-warning-soft: rgba(233, 197, 116, 0.13);
+  --t-warning-border: rgba(233, 197, 116, 0.4);
+  --t-danger: #f0a294;
+  --t-danger-strong: #cf5a4b;
+  --t-danger-soft: rgba(240, 120, 100, 0.13);
+  --t-danger-border: rgba(240, 120, 100, 0.4);
+  --t-orange: #f0b585;
+  --t-orange-soft: rgba(240, 150, 90, 0.13);
+  --t-orange-border: rgba(240, 150, 90, 0.38);
+  --t-indigo: #b7bdec;
+  --t-indigo-soft: rgba(150, 160, 230, 0.12);
+  --t-indigo-border: rgba(150, 160, 230, 0.35);
+  --t-indigo-strong: #5560b0;
+  --t-warning-strong: #a8620a;
+  --t-overlay: rgba(10, 9, 7, 0.7);
+}
+
+/* F 溫柔藍紫・深色：深藍紫底，藍紫主色＋黃色點綴 */
+[data-theme="f-dark"] {
+  color-scheme: dark;
+  --t-bg: #14162b;
+  --t-surface: #1d203b;
+  --t-surface-2: rgba(200, 210, 255, 0.05);
+  --t-surface-3: rgba(200, 210, 255, 0.1);
+  --t-field: #171a33;
+  --t-border: #2d3259;
+  --t-border-strong: #424878;
+  --t-text: #eef0fb;
+  --t-text-2: #c9cdea;
+  --t-text-muted: #9da2c5;
+  --t-text-faint: #70759a;
+  --t-primary: #5b6fd6;
+  --t-on-primary: #ffffff;
+  --t-link: #aab6f6;
+  --t-link-soft: rgba(140, 155, 240, 0.15);
+  --t-link-border: rgba(140, 155, 240, 0.4);
+  --t-success: #7fd9a8;
+  --t-success-strong: #2c9a62;
+  --t-success-soft: rgba(80, 200, 140, 0.13);
+  --t-success-border: rgba(80, 200, 140, 0.38);
+  --t-warning: #ffd860;
+  --t-warning-soft: rgba(255, 204, 0, 0.12);
+  --t-warning-border: rgba(255, 204, 0, 0.38);
+  --t-danger: #f5a1ab;
+  --t-danger-strong: #d04a58;
+  --t-danger-soft: rgba(240, 100, 115, 0.13);
+  --t-danger-border: rgba(240, 100, 115, 0.38);
+  --t-orange: #f3b98b;
+  --t-orange-soft: rgba(243, 150, 90, 0.13);
+  --t-orange-border: rgba(243, 150, 90, 0.36);
+  --t-indigo: #b9c3f7;
+  --t-indigo-soft: rgba(140, 155, 240, 0.13);
+  --t-indigo-border: rgba(140, 155, 240, 0.35);
+  --t-indigo-strong: #5466c4;
+  --t-warning-strong: #9a6b00;
+  --t-overlay: rgba(8, 9, 20, 0.72);
 }

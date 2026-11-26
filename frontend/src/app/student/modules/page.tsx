@@ -127,9 +127,9 @@ export default function StudentIntegratedWorkspacePage() {
 function StudentWorkspace() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  // 介面風格預覽（#64）：?theme=b 嫩芽溫暖、?theme=f 溫柔藍紫；沒帶時用目前的深色
+  // 介面風格預覽（#64）：?theme=b 嫩芽溫暖、f 溫柔藍紫、b-dark／f-dark 各自的深色版；沒帶時用目前的深色
   const themeParam = searchParams.get("theme");
-  const theme = themeParam === "b" || themeParam === "f" ? themeParam : undefined;
+  const theme = themeParam && ["b", "f", "b-dark", "f-dark"].includes(themeParam) ? themeParam : undefined;
   const [supabase] = useState(() => createClient());
 
   // 學生與課程模組資料
