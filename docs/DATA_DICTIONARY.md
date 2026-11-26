@@ -222,4 +222,5 @@ erDiagram
 - 提示的觸發方式與來源 `hint_trigger`、`hint_source`
 - 學習者側寫 `learner_profiles`
 - 同一次作答的「全部」教師判定歷程（目前只匯出最新一筆）
+- 跨步驟結構化欄位 `step_attempts.structured_data.forward`（#84）：`ai_fields` AI 抽出的原始值、`teacher_fields` 教師修正（優先）、`labels`、`extracted_at`、`edited_at`；欄位設定在 `module_steps.pass_forward_keys`
 - AI 用量與費用 `ai_usage_logs`（已記錄，老師可在課程的「AI 用量」分頁看；尚未進匯出檔）

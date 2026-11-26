@@ -1409,7 +1409,16 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 ### `GET /api/courses/:course_id/ai-usage?month=YYYY-MM`（限教師端）
 預設本月。回傳 `total`、`by_feature`、`by_tool`、`by_model`、`by_day`（每項含 `calls`、`failed`、`input_tokens`、`output_tokens`、`platform_cost_usd`、`student_key_cost_usd`），本月另有 `budget`（`used_usd`、`budget_usd`、`ratio`、`level`）。`400 INVALID_MONTH`、`503 MIGRATION_REQUIRED`。
 
-## 五之四、工具專屬表單與質性反思 ✅（#80，migration 029）
+## 五之四、跨步驟結構化資料傳遞 ✅（#84，需求說明書 BLD-006）
+
+- **設定**：關卡的 `pass_forward_keys`（`POST`／`PATCH /api/modules/:module_id/steps…`）：`[{label（≤30 字）, description（≤200 字）}]`，最多 10 個
+- **抽出**：作答「通過」時（分數達標、送出即通過、老師複核後通過；聊天室是送出評分通過時），AI 依欄位從作答／整段對話抽出，存 `step_attempts.structured_data.forward.ai_fields`；SSE 多一個 `forward_extracted`（`fields`）。抽出失敗不影響通過
+- **教師修正**：`PUT /api/review/submissions/:id/forward` `{fields: {欄位: 內容 | null}}`（限教師端）→ `teacher_fields`，**教師版本優先**，AI 原始值保留、之後也不會覆蓋；`GET /api/review/submissions/:id` 多 `forward`（每個欄位的 `ai_value`、`teacher_value`）
+- **後面的關卡使用**：`GET /api/practice/steps/:step_id/forwarded` → 前面每一關通過（或最新）那次作答的欄位，附 `step_order`、`attempt_number`、`source`（ai／teacher／mixed）；機器人記憶裡前面步驟改用這些欄位，沒設定欄位的關卡才退回作答全文
+
+---
+
+## 五之五、工具專屬表單與質性反思 ✅（#80，migration 029）
 
 規則在 `backend/core/tool_forms.py`，API 在 `backend/api/forms.py`。每支機器人有自己的表單（前後測、反思、研究問卷），不和別的機器人共用。
 

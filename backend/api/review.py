@@ -26,6 +26,7 @@ from core.audit import record
 from core.auth import CurrentUser, require_staff
 from core.learner_profile import refresh_learner_profile
 from core.pass_mode import effective_pass_mode, has_rubric, status_after_review
+from core.step_forward import extract_and_save, parse_fields, set_teacher_fields
 from core.step_unlock import DEFAULT_PASS_SCORE
 from database.client import get_supabase
 
@@ -228,6 +229,8 @@ async def get_submission_detail(attempt_id: str, user: CurrentUser = Depends(req
             },
             # 沒有評分規準的機器人只給回饋、不評分（#65）：回饋存在 structured_data
             "ai_feedback": structured.get("ai_feedback"),
+            # 要傳給後面關卡的欄位（#84）：AI 抽出的原始值與教師修正分開列
+            "forward": _forward_detail(step, structured),
             "attempt_number": attempt.get("attempt_number"),
             "status": attempt.get("status"),
             "tutor_action": attempt.get("tutor_action"),
@@ -274,7 +277,8 @@ async def judge_submission(
 
     attempt_res = (
         db.table("step_attempts")
-        .select("id, user_id, module_id, module_steps(*, ai_tools(rubric_criteria))")
+        .select("id, user_id, module_id, user_input_content, structured_data, "
+                "module_steps(*, ai_tools(rubric_criteria, system_prompt))")
         .eq("id", attempt_id)
         .execute()
     )
@@ -303,6 +307,9 @@ async def judge_submission(
     )
     if new_status:
         db.table("step_attempts").update({"status": new_status}).eq("id", attempt_id).execute()
+    if new_status == "passed":
+        # 老師複核後才通過的關卡：這時才抽出要傳給後面關卡的欄位（#84；失敗不影響判定）
+        await extract_and_save(db, attempt_id, step, attempt.get("user_input_content") or "", attempt.get("structured_data"))
 
     # 已發布的教師分數會改變「是否通過」與教師叮嚀：重算學生的側寫（失敗只記 log）
     if attempt.get("user_id") and attempt.get("module_id"):
@@ -331,3 +338,54 @@ def _as_list(value) -> list:
     if isinstance(value, list):
         return value
     return [value]
+
+
+
+# ──────────────────────────────────────────
+# 跨步驟欄位：教師修正（#84）
+# ──────────────────────────────────────────
+
+class ForwardFieldsRequest(BaseModel):
+    # 欄位名稱 → 教師確認的內容；空字串或 null = 這個欄位不採用教師版本（回到 AI 抽出的）
+    fields: dict[str, Optional[str]] = Field(default_factory=dict)
+
+
+def _forward_detail(step: dict, structured: dict) -> dict:
+    configured = parse_fields(step.get("pass_forward_keys"))
+    forward = structured.get("forward") if isinstance(structured.get("forward"), dict) else {}
+    ai = forward.get("ai_fields") or {}
+    teacher = forward.get("teacher_fields") or {}
+    return {
+        "fields": [
+            {"key": f.key, "label": f.label, "description": f.description,
+             "ai_value": ai.get(f.key), "teacher_value": teacher.get(f.key)}
+            for f in configured
+        ],
+        "extracted_at": forward.get("extracted_at"),
+        "edited_at": forward.get("edited_at"),
+    }
+
+
+@router.put("/submissions/{attempt_id}/forward")
+async def update_forward_fields(attempt_id: str, body: ForwardFieldsRequest, user: CurrentUser = Depends(require_staff)):
+    """
+    教師修正要傳給後面關卡的欄位。教師版本優先；AI 抽出的原始值保留不動，之後也不會被 AI 覆蓋。
+    """
+    db = get_supabase()
+    res = db.table("step_attempts").select("id, structured_data, module_steps(*)").eq("id", attempt_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    attempt = res.data[0]
+    step = attempt.get("module_steps") or {}
+    configured = {f.key: f.label for f in parse_fields(step.get("pass_forward_keys"))}
+    if not configured:
+        raise HTTPException(status_code=400, detail={"code": "NO_FORWARD_FIELDS", "message": "這一關沒有設定要傳給後面關卡的欄位"})
+    unknown = [k for k in body.fields if k not in configured]
+    if unknown:
+        raise HTTPException(status_code=400, detail={"code": "UNKNOWN_FIELD", "message": f"這一關沒有這些欄位：{'、'.join(unknown)}"})
+
+    structured = set_teacher_fields(attempt.get("structured_data"), body.fields, user.id, configured)
+    db.table("step_attempts").update({"structured_data": structured}).eq("id", attempt_id).execute()
+    record(db, user, "review.forward_fields", target_type="attempt", target_id=attempt_id,
+           detail={"keys": sorted(k for k, v in body.fields.items() if v)})
+    return {"data": _forward_detail(step, structured)}

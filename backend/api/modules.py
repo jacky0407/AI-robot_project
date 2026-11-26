@@ -44,7 +44,7 @@ FUNCTION_NOT_FOUND = "PGRST202"  # 還沒跑 migration 010（沒有 reorder_modu
 MODULE_FIELDS = "id, title, description, domain, is_published, created_at"
 STEP_FIELDS = (
     "id, module_id, tool_id, step_order, step_title, is_required, "
-    "pass_score, require_teacher_review, is_active"
+    "pass_score, require_teacher_review, is_active, pass_forward_keys"
 )
 # migration 019 才有的欄位：還沒跑時讀步驟照常運作（當作 score），只有要設定它時才回 503
 STEP_FIELDS_019 = STEP_FIELDS + ", pass_mode"
@@ -79,6 +79,12 @@ class UpdateModuleRequest(_Body):
     is_published: Optional[bool] = None
 
 
+class ForwardFieldItem(_Body):
+    """要傳給後面關卡的一個欄位（#84）"""
+    label: str = Field(min_length=1, max_length=30)
+    description: str = Field(default="", max_length=200)
+
+
 class CreateStepRequest(_Body):
     tool_id: UUID
     step_title: str = Field(min_length=1, max_length=100)
@@ -89,6 +95,8 @@ class CreateStepRequest(_Body):
     pass_mode: Literal["score", "complete", "teacher_review"] = "score"
     # answer = 原本的作答關卡；chat = 多機器人聊天室（#68），tool_id 是聊天室的評分機器人
     step_type: Literal["answer", "chat"] = "answer"
+    # 通過時要抽出、傳給後面關卡的欄位（#84；存在 module_steps.pass_forward_keys）
+    pass_forward_keys: list[ForwardFieldItem] = Field(default_factory=list, max_length=10)
 
 
 class UpdateStepRequest(_Body):
@@ -100,6 +108,7 @@ class UpdateStepRequest(_Body):
     is_active: Optional[bool] = None
     pass_mode: Optional[Literal["score", "complete", "teacher_review"]] = None
     step_type: Optional[Literal["answer", "chat"]] = None
+    pass_forward_keys: Optional[list[ForwardFieldItem]] = Field(default=None, max_length=10)
 
 
 class ChatBotItem(_Body):
@@ -432,6 +441,7 @@ async def add_step(module_id: UUID, body: CreateStepRequest, user: CurrentUser =
             # 預設值不寫：還沒跑 019 的資料庫照樣能新增步驟
             **({"pass_mode": body.pass_mode} if body.pass_mode != "score" else {}),
             **({"step_type": body.step_type} if body.step_type != "answer" else {}),
+            **({"pass_forward_keys": [f.model_dump() for f in body.pass_forward_keys]} if body.pass_forward_keys else {}),
         }).execute()
     except APIError as e:
         if e.code == UNIQUE_VIOLATION:
