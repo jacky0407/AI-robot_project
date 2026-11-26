@@ -273,6 +273,8 @@ function HomeContent() {
         {!isLoginMode && (
           <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 16px 0", lineHeight: 1.6 }}>
             新帳號預設為學生身分。教師／工作人員註冊後，請聯絡管理員開通後台權限。
+            <br />
+            使用時請勿輸入可以認出個人的資料（真實姓名、身分證字號、電話、地址、生日等），描述案例請用化名。
           </p>
         )}
 
