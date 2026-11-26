@@ -4,6 +4,7 @@
 // - 每則訊息只由一個機器人回答：打 @名稱 指定，沒指定時系統依內容挑一個
 // - @ 評分機器人或按「送出評分」：評分機器人評整段對話，結果顯示在左邊的「評分與回饋」
 // - 每日次數按每一則訊息計算
+// - 一個模組一個聊天室（#108）：傳入 stages 時，對話依階段畫出分隔線；訊息送到目前階段（room.step_id）
 // 後端：GET /api/chat/steps/{step_id}、POST /api/chat/sessions/{session_id}/steps/{step_id}/messages（SSE）
 
 import { useEffect, useRef, useState } from "react";
@@ -16,10 +17,20 @@ export type ChatRoomInfo = {
   evaluator: { tool_id: string; name: string } | null;
   pass_mode: string;
   scoring: boolean;
-  messages: ChatMessage[];
+  messages?: ChatMessage[];
+  // 這個階段沒有對話機器人：評分機器人陪學生對話（#108）
+  evaluator_chats?: boolean;
 };
 
-type ChatMessage = {
+// 模組聊天室的階段（GET /api/chat/modules/{module_id} 的 stages）
+export type ChatStage = {
+  step_id: string;
+  step_order: number;
+  step_title: string;
+  intro?: string;
+};
+
+export type ChatMessage = {
   id?: string;
   role: "student" | "bot";
   bot_name?: string | null;
@@ -28,6 +39,8 @@ type ChatMessage = {
   attempt_id?: string | null;
   // 學習助教引用的教材段落（#67）
   sources?: string[];
+  // 屬於哪個階段（#108）
+  step_id?: string | null;
 };
 
 const MAX_CHARS = 2000;
@@ -53,15 +66,22 @@ export default function ChatRoom({
   onEvaluationStart,
   onEvaluationEvent,
   onFinished,
+  messages: initialMessages,
+  stages,
+  header,
 }: {
   room: ChatRoomInfo;
   sessionId: string;
   disabledReason?: string;
   onEvaluationStart: () => void;
   onEvaluationEvent: (event: string, data: Record<string, unknown>) => void;
-  onFinished: () => void;
+  onFinished: (evaluated: boolean) => void;
+  // 模組聊天室：整個模組的對話與階段（#108）；不傳就是單一關卡的聊天室
+  messages?: ChatMessage[];
+  stages?: ChatStage[];
+  header?: React.ReactNode;
 }) {
-  const [messages, setMessages] = useState<ChatMessage[]>(room.messages);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? room.messages ?? []);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState<string>("");
   const [warning, setWarning] = useState("");
@@ -110,9 +130,15 @@ export default function ChatRoom({
       }
     } finally {
       setBusy("");
-      onFinished();
+      onFinished(evaluating);
     }
   };
+
+  const stageById = new Map((stages ?? []).map((st) => [st.step_id, st]));
+  const currentStage = stageById.get(room.step_id);
+  const lastStepId = messages.length ? messages[messages.length - 1].step_id ?? room.step_id : null;
+  // 目前階段還沒有任何訊息：在最後面畫出這個階段的開場
+  const showCurrentIntro = Boolean(stages && currentStage && lastStepId !== room.step_id && !messages.some((m) => m.step_id === room.step_id));
 
   const insertMention = (name: string) => setText((t) => `@${name} ${t.replace(/^[@＠]\S*\s*/, "")}`);
   const blocked = Boolean(disabledReason) || Boolean(busy);
@@ -120,9 +146,11 @@ export default function ChatRoom({
   return (
     <div style={{ backgroundColor: "#1e293b", borderRadius: "14px", padding: "16px", border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: "10px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
-        <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>聊天室</h3>
+        <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>{stages ? "模組聊天室" : "聊天室"}</h3>
         <span style={{ fontSize: "11px", color: "#94a3b8" }}>每則訊息只由一個機器人回答；打 @名稱 可以指定</span>
       </div>
+
+      {header}
 
       <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
         {room.bots.map((b) => (
@@ -131,14 +159,17 @@ export default function ChatRoom({
           </button>
         ))}
         {room.evaluator && (
-          <button type="button" onClick={() => insertMention(room.evaluator!.name)} title="評分機器人：@ 它會評整段對話" style={chip(true)}>
+          <button type="button" onClick={() => insertMention(room.evaluator!.name)} title="評分機器人：@ 它會評這個階段的對話" style={chip(true)}>
             @{room.evaluator.name}（評分）
           </button>
+        )}
+        {room.evaluator_chats && (
+          <span style={{ fontSize: "11px", color: "#94a3b8", alignSelf: "center" }}>這個階段直接打字就會由 {room.evaluator?.name} 回覆；@ 它代表送出評分</span>
         )}
       </div>
 
       <div ref={listRef} style={{ height: "360px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", padding: "4px 2px" }}>
-        {messages.length === 0 && (
+        {messages.length === 0 && !showCurrentIntro && (
           <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "#64748b" }}>
             還沒有對話。先打個招呼，或用 @ 找特定的機器人。
             <br />
@@ -146,7 +177,9 @@ export default function ChatRoom({
           </p>
         )}
         {messages.map((m, i) => (
-          <div key={m.id ?? i} style={{ alignSelf: m.role === "student" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
+          <div key={m.id ?? i} style={{ display: "contents" }}>
+          {stages && m.step_id && m.step_id !== messages[i - 1]?.step_id && <StageDivider stage={stageById.get(m.step_id)} showIntro={m.step_id === room.step_id} />}
+          <div style={{ alignSelf: m.role === "student" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
             {m.role === "bot" && (
               <div style={{ fontSize: "11px", color: m.routed_by === "evaluate" ? "#fbbf24" : "#7dd3fc", marginBottom: "2px" }}>
                 {m.bot_name ?? "機器人"}
@@ -170,7 +203,9 @@ export default function ChatRoom({
               <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "3px" }}>參考教材：{m.sources.join("、")}</div>
             )}
           </div>
+          </div>
         ))}
+        {showCurrentIntro && <StageDivider stage={currentStage} showIntro />}
         {busy && <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>{busy}</p>}
       </div>
 
@@ -202,6 +237,23 @@ export default function ChatRoom({
           </button>
         </span>
       </div>
+    </div>
+  );
+}
+
+// 階段分隔線：「階段 2：現況描述」＋（新階段剛開始時）評分機器人的開場說明
+function StageDivider({ stage, showIntro = false }: { stage?: ChatStage; showIntro?: boolean }) {
+  if (!stage) return null;
+  return (
+    <div style={{ alignSelf: "stretch", margin: "6px 0", textAlign: "center" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#94a3b8" }}>
+        <span style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.12)" }} />
+        階段 {stage.step_order}：{stage.step_title}
+        <span style={{ flex: 1, height: "1px", backgroundColor: "rgba(255,255,255,0.12)" }} />
+      </div>
+      {showIntro && stage.intro && (
+        <p style={{ margin: "6px auto 0", maxWidth: "85%", fontSize: "12px", lineHeight: 1.6, color: "#cbd5e1", whiteSpace: "pre-wrap" }}>{stage.intro}</p>
+      )}
     </div>
   );
 }

@@ -112,9 +112,18 @@ def load_tool_usages(db, tool_id: str) -> list[dict]:
             raise
         bots = []
     if bots:
-        step_ids = sorted({b["step_id"] for b in bots})
-        bot_steps = {s["id"]: s for s in db.table("module_steps").select("*").in_("id", step_ids).execute().data or []}
+        step_ids = sorted({b["step_id"] for b in bots if b.get("step_id")})
+        bot_steps = {
+            s["id"]: s for s in (db.table("module_steps").select("*").in_("id", step_ids).execute().data or [] if step_ids else [])
+        }
         for b in bots:
+            if not b.get("step_id"):
+                # 整個模組共用的對話機器人（#108，migration 030）
+                usages.append({
+                    "kind": "chat_bot", "id": b["id"], "module_id": b.get("module_id"), "step_id": None,
+                    "step_title": "整個模組共用", "tool_version": locked_version(b),
+                })
+                continue
             step = bot_steps.get(b["step_id"]) or {}
             usages.append({
                 "kind": "chat_bot", "id": b["id"], "module_id": step.get("module_id"), "step_id": b["step_id"],

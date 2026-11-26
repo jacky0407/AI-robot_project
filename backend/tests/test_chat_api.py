@@ -189,17 +189,26 @@ class TestSendMessage:
         assert student == []
         reply.assert_not_awaited()
 
-    def test_answer_step_rejects_chat_messages(self):
-        res, _, _ = send(make_db(step_type="answer"), "你好")
-        assert res.status_code == 400
-        assert res.json()["detail"]["code"] == "NOT_CHAT_STEP"
+    def test_answer_step_can_chat_now(self):
+        # 一個模組一個聊天室（#108）：每個關卡都是聊天室的一個階段，還沒跑 030 的作答關卡也能聊
+        res, events, _ = send(make_db(step_type="answer"), "你好")
+        assert res.status_code == 200 and events_named(events, "bot_reply")
 
     def test_empty_message_is_rejected(self):
         res, _, _ = send(make_db(), "   ")
         assert res.status_code == 400
 
-    def test_room_without_chat_bots_rejects_normal_messages(self):
-        res, _, _ = send(make_db(bots=()), "你好")
+    def test_room_without_chat_bots_lets_evaluator_chat(self):
+        # 沒有對話機器人的階段（例如作答關卡轉過來的）：評分機器人陪學生對話（#108）
+        res, events, _ = send(make_db(bots=()), "你好")
+        assert res.status_code == 200
+        assert events_named(events, "bot_selected")[0]["bot_name"] == "評分老師"
+        assert events_named(events, "bot_reply")
+
+    def test_room_without_any_bot_rejects_normal_messages(self):
+        db = make_db(bots=())
+        db.tables["module_steps"][0]["ai_tools"] = {}
+        res, _, _ = send(db, "你好")
         assert res.json()["detail"]["code"] == "NO_CHAT_BOTS"
 
     def test_bot_failure_reports_error_and_refunds(self, monkeypatch):

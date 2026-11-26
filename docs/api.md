@@ -1350,8 +1350,43 @@ data: {"overall_coherent": false, "passed_checks": 2, "failed_checks": 1, "stren
 - **每日次數按每一則學生訊息扣一次**；個資命中 400，不存、不扣
 - 對話存在 `chat_messages`（`routing.by` = `mention` / `router` / `only_bot` / `evaluate`），只給後端讀寫
 
+### 一個模組一個聊天室（#108，migration 030）
+
+老師 2026-11-26 決定：**模組全部改成聊天，一個模組一個聊天室**。資料結構保留關卡：學生畫面把整個模組合成一間連續的聊天室，關卡是裡面的「階段」。
+
+- 訊息、評分、教師複核、解鎖、表單（#80）、匯出都照舊記在各階段的 `step_id` 底下
+- 機器人回覆時看得到**整個模組最近 40 則**對話（跨階段接續）；學習助教「同一個問題問了幾次」看整個模組
+- **送出評分只評目前階段的對話**；通過後前端重新讀取，後端給下一個階段，前一階段的成果照 #84 傳下去
+- 對話機器人可以只在某個階段（`chat_room_bots.step_id`），也可以整個模組共用（`module_id`，`step_id` 為 NULL）；同一支或同名時以階段的為準
+- 階段沒有任何對話機器人時（例如原本的作答關卡轉過來的），**評分機器人陪學生對話**；這時 @ 評分機器人仍是送出評分
+- migration 030 把既有的 `answer` 關卡全部改成 `chat`，`step_type` 預設改成 `chat`；送出訊息不再擋作答關卡（拿掉 `NOT_CHAT_STEP`）
+
+#### `GET /api/chat/modules/:module_id?step_id=`
+```json
+{ "data": {
+    "module_id": "…", "module_title": "IEP 模組",
+    "stages": [{ "step_id": "…", "step_order": 1, "step_title": "家長晤談", "is_required": true, "passed": true,
+                 "locked": false, "locked_by": null, "form_pending": false,
+                 "evaluator_name": "晤談評分", "intro": "評分機器人的開場白（role_instruction）", "target_competency": "" }],
+    "current_step_id": "…",
+    "completed": false,
+    "messages": [{ "id": "…", "step_id": "…", "role": "student", "content": "…", "bot_name": null, "routed_by": null, "sources": [], "attempt_id": null, "created_at": "…" }],
+    "room": { "chat": true, "step_id": "…", "step_title": "…", "bots": [ … ], "evaluator": { "tool_id": "…", "name": "…" },
+              "evaluator_chats": false, "pass_mode": "score", "scoring": true, "quota": { … } } } }
+```
+- `current_step_id`：`?step_id=` 指定且沒鎖住就用它（回去看已通過的階段）；否則第一個還沒通過、沒鎖住的；都通過就停在最後一個
+- `completed`：必修階段都通過（模組正式的完成條件見 #85）
+- 學生：模組要已發布（否則 `404 MODULE_NOT_FOUND`）；權限同 `check_step_access`
+- 傳訊息照舊用 `POST /api/chat/sessions/:session_id/steps/:step_id/messages`，`step_id` 帶 `room.step_id`
+
+#### 教師端：`GET /api/chat/modules/:module_id/users/:user_id`
+某位學生在整個模組的對話，每則多 `stage`（「階段 2：現況描述」）；另有 `stages[]`（`passed`、`form_pending`）。只限教師端，不扣次數、不呼叫 AI。前端在學習監控的「學生概述」裡。
+
+#### 教師端：`GET` / `PUT /api/modules/:module_id/chat-bots`
+整個模組共用的對話機器人，body 同下面的階段設定。不能放任何階段的評分機器人（`EVALUATOR_IN_LIST`），名稱不能和任何階段的評分機器人一樣（`DUPLICATE_NAME`）；還沒跑 030 時 `PUT` 回 `503 MIGRATION_REQUIRED`。
+
 ### `GET /api/chat/steps/:step_id`
-不是聊天室的關卡回 `{"data": {"chat": false}}`。聊天室回 `chat`、`bots[]`（`tool_id`, `name`, `when_to_use`；只列已發布的）、
+（單一關卡的舊畫面用）不是聊天室的關卡回 `{"data": {"chat": false}}`。聊天室回 `chat`、`bots[]`（`tool_id`, `name`, `when_to_use`；只列已發布的）、
 `evaluator`（`tool_id`, `name`）、`pass_mode`、`scoring`、`messages[]`（只有自己的）、`quota`。
 
 ### `POST /api/chat/sessions/:session_id/steps/:step_id/messages`（SSE）
@@ -1365,7 +1400,7 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 | 評分時另有 | `score_start`、`analysis_start`、`dimension_score`、`score_complete` 或 `feedback_complete`、`pass_status`（同作答關卡） |
 | `error` / `quota_refunded` | 回覆失敗時退回這次次數 |
 
-錯誤：`400 PII_DETECTED`、`400 NOT_CHAT_STEP`、`400 EMPTY_MESSAGE`、`400 NO_CHAT_BOTS`（沒有對話機器人又不是要評分）、
+錯誤：`400 PII_DETECTED`、`400 EMPTY_MESSAGE`、`400 NO_CHAT_BOTS`（沒有對話機器人、也沒有評分機器人）、
 `403`（沒被指派、沒解鎖、Session 不是自己的）、`429 QUOTA_EXCEEDED`、`503 MIGRATION_REQUIRED`。
 
 ### 教師端：`GET` / `PUT /api/modules/:module_id/steps/:step_id/chat-bots`

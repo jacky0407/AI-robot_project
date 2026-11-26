@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ApiError, apiFetch } from "@/utils/api";
+import ModuleTranscript from "./ModuleTranscript";
 
 type CellStatus = "not_started" | "in_progress" | "passed" | "needs_review"; // 舊欄位，畫面改用 progress
 // 「通過了沒」與「有沒有作答等老師」分開顯示（2026-11-12 排練回饋）
@@ -605,6 +606,9 @@ function ProfileDrawer({ student, module, onClose }: { student: StudentRow; modu
             {data.saved_version ? `AI 助教目前參考的是第 ${data.saved_version} 版側寫。` : "尚未保存側寫：下一次評分後，AI 助教才會開始參考。"}
           </p>
         )}
+
+        {/* 一個模組一個聊天室（#108）：整段對話，標出每段屬於哪個階段 */}
+        <ModuleTranscript moduleId={module.module_id} userId={student.user_id} />
       </aside>
     </div>
   );

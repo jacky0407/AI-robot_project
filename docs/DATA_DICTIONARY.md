@@ -145,7 +145,8 @@ erDiagram
     learning_modules ||--o{ module_steps : "關卡"
     ai_tools ||--o{ module_steps : "評分／作答機器人"
     ai_tools ||--o{ ai_tool_versions : "舊版本"
-    module_steps ||--o{ chat_room_bots : "聊天室對話機器人"
+    module_steps ||--o{ chat_room_bots : "只在這個階段的對話機器人"
+    learning_modules ||--o{ chat_room_bots : "整個模組共用的對話機器人"
     profiles ||--o{ step_attempts : "作答"
     module_steps ||--o{ step_attempts : "作答"
     step_attempts ||--o| ai_evaluations : "AI 初評"
@@ -174,7 +175,7 @@ erDiagram
 | `ai_evaluations` | 一次 AI 初評 | 分數、構面、信心值、錯誤、當時參考的記憶（`memory_snapshot`）、機器人版本 | schema、001、015、022 |
 | `teacher_reviews` | 一次教師判定 | 最終判定，永不被 AI 覆蓋 | schema |
 | `prompt_logs` | 一則提示 | 提示層級、觸發方式、來源 | schema、001 |
-| `chat_room_bots`、`chat_messages` | 聊天室的機器人設定、一則聊天訊息 | 誰說的、哪個機器人回答、調度理由、助教引用與是否直接給答案 | 020、021 |
+| `chat_room_bots`、`chat_messages` | 聊天室的機器人設定（某個階段或整個模組共用）、一則聊天訊息 | 誰說的、哪個機器人回答、調度理由、助教引用與是否直接給答案。一個模組一個聊天室（#108）：訊息仍記在各階段的 `step_id`，匯出的 `step_order`、`step_title` 就是「階段」 | 020、021、030 |
 | `learner_profiles` | 學習者側寫的一個版本（只新增不覆蓋） | 錯誤習慣、構面掌握度隨時間的變化 | 015 |
 | `course_materials`、`material_chunks` | 課程教材、教材切段 | 學習助教的參考資料 | 021 |
 | `forms`、`form_responses` | 機器人的一份表單的一個版本、一次填答或略過 | 前後測、反思、研究問卷；連到作答與當時的 AI 分數 | schema、029 |

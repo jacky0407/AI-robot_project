@@ -339,8 +339,9 @@ class TestAnswerPolicyInChat:
         db.tables["chat_room_bots"][0]["use_materials"] = True
         history = []
         for q in questions_before:
-            history += [{"id": f"s{len(history)}", "user_id": "student-1", "step_id": STEP, "role": "student", "content": q},
-                        {"id": f"b{len(history)}", "user_id": "student-1", "step_id": STEP, "role": "bot",
+            history += [{"id": f"s{len(history)}", "user_id": "student-1", "module_id": MOD, "step_id": STEP,
+                         "role": "student", "content": q},
+                        {"id": f"b{len(history)}", "user_id": "student-1", "module_id": MOD, "step_id": STEP, "role": "bot",
                          "tool_id": TUTOR, "bot_name": "家長", "content": "你覺得呢？"}]
         db.tables["chat_messages"] = history
         reply = AsyncMock(return_value="好")

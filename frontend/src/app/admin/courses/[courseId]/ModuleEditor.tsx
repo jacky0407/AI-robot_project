@@ -237,13 +237,22 @@ export default function ModuleEditor({
         {notice && <p style={{ margin: 0, fontSize: "12px", color: notice.ok ? "#86efac" : "#fca5a5" }}>{notice.text}</p>}
       </div>
 
-      {/* 關卡清單 */}
+      {/* 一個模組一個聊天室（#108）：整個模組共用的對話機器人 */}
       <div>
-        <h4 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 4px 0" }}>關卡（{detail.steps.length}）</h4>
-        <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 10px 0" }}>
-          學生要通過前面的必修關卡，下一關才會解鎖。已有學生作答的關卡不能刪除或更換機器人，請改用「停用」：學生會看不到，作答紀錄完整保留。
+        <h4 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 4px 0" }}>模組聊天室</h4>
+        <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>
+          學生進入這個模組就是一間聊天室，對話從頭到尾接續；下面每一個階段有自己的評分機器人，通過後自動進到下一個階段。
         </p>
-        {detail.steps.length === 0 && <p style={{ fontSize: "13px", color: "#94a3b8" }}>還沒有關卡，請從下方新增。</p>}
+        <ChatBotsPanel moduleId={detail.id} tools={tools} excludeToolIds={detail.steps.map((s) => s.tool_id)} />
+      </div>
+
+      {/* 階段（關卡）清單 */}
+      <div>
+        <h4 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 4px 0" }}>聊天室階段（{detail.steps.length}）</h4>
+        <p style={{ fontSize: "12px", color: "#94a3b8", margin: "0 0 10px 0" }}>
+          學生要通過前面的必修階段，下一階段才會解鎖。已有學生作答的階段不能刪除或更換機器人，請改用「停用」：學生會看不到，作答紀錄完整保留。
+        </p>
+        {detail.steps.length === 0 && <p style={{ fontSize: "13px", color: "#94a3b8" }}>還沒有階段，請從下方新增。</p>}
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {detail.steps.map((s, i) => (
             <StepRow key={`${s.id}-${version}`} moduleId={detail.id} step={s} index={i} total={detail.steps.length} tools={tools} busy={busy} onMove={moveStep} onSave={saveStep} onDelete={deleteStep} />
@@ -253,21 +262,12 @@ export default function ModuleEditor({
 
       {/* 新增關卡 */}
       <form onSubmit={handleAddStep} style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "14px", borderRadius: "10px", border: "1px dashed rgba(255,255,255,0.2)" }}>
-        <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: 0 }}>新增關卡（排在最後）</h4>
-        <div style={{ display: "flex", gap: "16px", fontSize: "12px", flexWrap: "wrap" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-            <input type="radio" checked={newStep.step_type === "chat"} onChange={() => setNewStep({ ...newStep, step_type: "chat" })} />
-            聊天室（多個機器人對話，評分機器人評整段對話）
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-            <input type="radio" checked={newStep.step_type === "answer"} onChange={() => setNewStep({ ...newStep, step_type: "answer" })} />
-            作答關卡（寫完一份作答再送出）
-          </label>
-        </div>
+        <h4 style={{ fontSize: "13px", fontWeight: "bold", margin: 0 }}>新增階段（排在最後）</h4>
+        <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>選的機器人是這個階段的評分機器人：學生 @ 它或按「送出評分」時，評這個階段的對話。</p>
         <div className="me-two" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
           <select value={newStep.tool_id} onChange={(e) => setNewStep({ ...newStep, tool_id: e.target.value })} style={{ ...input, backgroundColor: "#0f172a" }}>
             <option value="">
-              {tools.length ? (newStep.step_type === "chat" ? "選擇評分機器人…（對話機器人新增後再設定）" : "選擇這一關使用的機器人…") : "還沒有機器人，請先到「建立機器人」建立"}
+              {tools.length ? "選擇評分機器人…（對話機器人新增後再設定）" : "還沒有機器人，請先到「建立機器人」建立"}
             </option>
             {tools.map((t) => (
               <option key={t.id} value={t.id}>
@@ -275,11 +275,11 @@ export default function ModuleEditor({
               </option>
             ))}
           </select>
-          <input maxLength={100} placeholder="關卡名稱，例如：優勢與需求分析" value={newStep.step_title} onChange={(e) => setNewStep({ ...newStep, step_title: e.target.value })} style={input} />
+          <input maxLength={100} placeholder="階段名稱，例如：優勢與需求分析" value={newStep.step_title} onChange={(e) => setNewStep({ ...newStep, step_title: e.target.value })} style={input} />
         </div>
         <StepOptions form={newStep} onChange={(changes) => setNewStep({ ...newStep, ...changes })} />
         <button type="submit" disabled={busy} style={{ ...primaryBtn, alignSelf: "flex-start", opacity: busy ? 0.5 : 1 }}>
-          ＋ 新增關卡
+          ＋ 新增階段
         </button>
       </form>
     </div>
@@ -292,7 +292,7 @@ function StepOptions({ form, onChange }: { form: Pick<StepForm, "is_required" | 
     <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", alignItems: "center", fontSize: "12px" }}>
       <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
         <input type="checkbox" checked={form.is_required} onChange={(e) => onChange({ is_required: e.target.checked })} />
-        必修（沒通過會擋住後面的關卡）
+        必修（沒通過會擋住後面的階段）
       </label>
       <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
         怎麼算通過
@@ -338,7 +338,8 @@ function StepRow({
   onDelete: (step: Step) => void;
 }) {
   const [form, setForm] = useState<StepForm>({
-    step_type: step.step_type ?? "answer",
+    // 一個模組一個聊天室（#108）：每個階段都是聊天；舊的作答關卡存檔時一併改成聊天
+    step_type: "chat",
     tool_id: step.tool_id,
     step_title: step.step_title,
     is_required: step.is_required,
@@ -376,10 +377,9 @@ function StepRow({
   return (
     <div style={{ padding: "12px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", backgroundColor: step.is_active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.01)", opacity: step.is_active ? 1 : 0.65 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "12px", fontWeight: "bold", color: "#4ade80", minWidth: "52px" }}>第 {step.step_order} 關</span>
+        <span style={{ fontSize: "12px", fontWeight: "bold", color: "#4ade80", minWidth: "52px" }}>階段 {step.step_order}</span>
         <button disabled={busy || index === 0} onClick={() => onMove(index, -1)} title="往前移" style={{ ...smallBtn, padding: "2px 8px", opacity: busy || index === 0 ? 0.3 : 1 }}>↑</button>
         <button disabled={busy || index === total - 1} onClick={() => onMove(index, 1)} title="往後移" style={{ ...smallBtn, padding: "2px 8px", opacity: busy || index === total - 1 ? 0.3 : 1 }}>↓</button>
-        {step.step_type === "chat" && <span style={pill("#7dd3fc", "rgba(14,165,233,0.15)")}>聊天室</span>}
         {!step.is_active && <span style={pill("#94a3b8", "rgba(255,255,255,0.08)")}>已停用</span>}
         {step.tool_status && step.tool_status !== "published" && <span style={pill("#fbbf24", "rgba(245,158,11,0.15)")}>機器人未發布</span>}
         {step.tool_version ? (
@@ -427,20 +427,12 @@ function StepRow({
         </button>
       </div>
       {error && <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#fca5a5" }}>{error}</p>}
-      {!locked && (
-        <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px", fontSize: "12px", color: "#94a3b8", cursor: "pointer" }}>
-          <input type="checkbox" checked={form.step_type === "chat"} onChange={(e) => setForm({ ...form, step_type: e.target.checked ? "chat" : "answer" })} />
-          改成聊天室（上面選的機器人會變成評分機器人）
-        </label>
-      )}
       <ForwardFieldsEditor
         initial={(step.pass_forward_keys ?? []).map((f) => (typeof f === "string" ? { label: f, description: "" } : { label: f.label, description: f.description ?? "" }))}
         busy={busy}
-        onSave={(fields) => onSave(step, { pass_forward_keys: fields }, "已儲存要傳給後面關卡的欄位")}
+        onSave={(fields) => onSave(step, { pass_forward_keys: fields }, "已儲存要傳給後面階段的欄位")}
       />
-      {step.step_type === "chat" && (
-        <ChatBotsPanel moduleId={moduleId} stepId={step.id} evaluatorToolId={step.tool_id} evaluatorTitle={step.tool_title} tools={tools} />
-      )}
+      <ChatBotsPanel moduleId={moduleId} stepId={step.id} evaluatorToolId={step.tool_id} evaluatorTitle={step.tool_title} tools={tools} />
     </div>
   );
 }

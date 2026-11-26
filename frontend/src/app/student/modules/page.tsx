@@ -7,6 +7,7 @@ import { ApiError, apiFetch, streamSSE } from "@/utils/api";
 import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 import BotMemoryPanel from "./BotMemoryPanel";
 import ChatRoom, { loadChatRoom, type ChatRoomInfo } from "./ChatRoom";
+import ModuleChatRoom from "./ModuleChatRoom";
 import ForwardedPanel from "./ForwardedPanel";
 
 // ─── 步驟與模組型別定義 ───
@@ -170,6 +171,8 @@ function StudentWorkspace() {
   const [progressKey, setProgressKey] = useState(0);
   // 聊天室關卡（#68）：選到的關卡是聊天室時，中間的作答區換成聊天室；null = 一般作答關卡或還沒讀到
   const [chatRoom, setChatRoom] = useState<{ stepId: string; room: ChatRoomInfo } | null>(null);
+  // 一個模組一個聊天室（#108）；讀不到（例如資料庫還沒更新）時改用原本的單一關卡畫面
+  const [moduleChatOff, setModuleChatOff] = useState(false);
   const [isLoadingHint, setIsLoadingHint] = useState(false);
 
   // 切換步驟或模組時清空這一步的作答狀態
@@ -809,8 +812,35 @@ function StudentWorkspace() {
             {/* 前面關卡依老師設定的欄位傳來的重點（#84）；沒有就不顯示 */}
             {selectedStep && <ForwardedPanel stepId={selectedStep.id} refreshKey={progressKey} />}
 
-            {/* 作答：聊天室關卡改成聊天室 */}
-            {chat ? (
+            {/* 作答：一個模組一個聊天室（#108），關卡是聊天室裡的階段 */}
+            {selectedStep && !moduleChatOff ? (
+              <ModuleChatRoom
+                moduleId={selectedStep.module_id}
+                stepId={selectedStep.id}
+                sessionId={sessionId}
+                disabledReason={lockReason ?? quotaBlockReason}
+                refreshKey={progressKey}
+                onEvaluationStart={() => setRun({ ...EMPTY_RUN })}
+                onEvaluationEvent={handleEvent}
+                onFinished={() => {
+                  setQuotaKey((k) => k + 1);
+                  setProgressKey((k) => k + 1);
+                }}
+                onStageChange={(stepId, manual) => {
+                  const mod = modules.find((m) => m.id === selectedStep.module_id);
+                  const next = mod?.steps.find((st) => st.id === stepId);
+                  if (!mod || !next) return;
+                  if (manual) {
+                    goToStep(mod.id, next);
+                  } else {
+                    // 剛通過自動進到下一階段：留著左邊剛剛的評分結果，只換目前階段
+                    setSelectedStep(next);
+                    if (courseId) window.history.replaceState(null, "", `?${new URLSearchParams({ course: courseId, step: next.id })}`);
+                  }
+                }}
+                onUnavailable={() => setModuleChatOff(true)}
+              />
+            ) : chat ? (
               <ChatRoom
                 key={chat.step_id}
                 room={chat}
