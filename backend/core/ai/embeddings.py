@@ -45,6 +45,10 @@ async def embed_texts(texts: list[str], *, task_type: str = "RETRIEVAL_DOCUMENT"
             config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBEDDING_DIM),
         )
         got = [list(e.values) for e in (res.embeddings or [])]
+        # AI 用量（#81）：embedding 回應沒有 token 數，用字數估（中文約 1 字 1 token）
+        from core.ai_usage import record
+
+        record("embedding", model, input_tokens=sum(len(t) for t in batch))
         if len(got) != len(batch):
             raise RuntimeError(f"embedding 數量不符：送 {len(batch)} 段，回 {len(got)} 個")
         vectors.extend(got)

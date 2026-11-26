@@ -8,6 +8,13 @@ import { useState } from "react";
 import { ApiError, apiDownload } from "@/utils/api";
 
 type Kind = "research" | "teaching";
+// 匯出什麼（#83）：作答或聊天訊息各一個 CSV，或兩個都放進同一個 Excel（兩個工作表）
+type Output = "attempts_csv" | "chat_csv" | "xlsx";
+const OUTPUTS: { value: Output; label: string; hint: string }[] = [
+  { value: "attempts_csv", label: "作答（CSV）", hint: "一列一次作答：AI 評分、提示、教師判定" },
+  { value: "chat_csv", label: "聊天訊息（CSV）", hint: "一列一則聊天室訊息：哪個機器人回答、怎麼選的、助教引用" },
+  { value: "xlsx", label: "兩者（Excel）", hint: "一個 Excel 檔，「作答」「聊天訊息」兩個工作表" },
+];
 
 const field: React.CSSProperties = {
   boxSizing: "border-box",
@@ -25,6 +32,7 @@ export default function ExportTab({ courseId }: { courseId: string }) {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [includeContent, setIncludeContent] = useState(false);
+  const [output, setOutput] = useState<Output>("attempts_csv");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -37,6 +45,8 @@ export default function ExportTab({ courseId }: { courseId: string }) {
       const body = {
         course_id: courseId,
         include_content: includeContent,
+        dataset: output === "chat_csv" ? "chat_messages" : "attempts",
+        format: output === "xlsx" ? "xlsx" : "csv",
         ...(dateFrom ? { date_from: dateFrom } : {}),
         ...(dateTo ? { date_to: dateTo } : {}),
       };
@@ -44,16 +54,21 @@ export default function ExportTab({ courseId }: { courseId: string }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename ?? `${kind}-export.csv`;
+      a.download = filename ?? `${kind}-export.${output === "xlsx" ? "xlsx" : "csv"}`;
       a.click();
       URL.revokeObjectURL(url);
       const count = headers.get("X-Export-Row-Count");
+      const chatCount = headers.get("X-Export-Chat-Count");
       setMsg({
         ok: true,
         text:
           count === "0" && kind === "research"
             ? "已匯出，但沒有資料：目前沒有學生同意研究使用（研究同意書功能上線後才會有資料）。"
-            : `已匯出 ${count ?? ""} 筆作答。`,
+            : output === "chat_csv"
+              ? `已匯出 ${count ?? ""} 則聊天訊息。`
+              : output === "xlsx"
+                ? `已匯出 ${count ?? ""} 筆作答、${chatCount ?? ""} 則聊天訊息。`
+                : `已匯出 ${count ?? ""} 筆作答。`,
       });
     } catch (err) {
       setMsg({ ok: false, text: err instanceof ApiError ? `匯出失敗：${err.message}` : "匯出失敗：連不到後端" });
@@ -66,7 +81,7 @@ export default function ExportTab({ courseId }: { courseId: string }) {
     <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "520px", fontSize: "13px", color: "#cbd5e1" }}>
       <div>
         <h2 style={{ fontSize: "16px", fontWeight: "bold", margin: "0 0 4px", color: "#f8fafc" }}>資料匯出</h2>
-        <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>把這門課學生的作答與評分匯出成 CSV，可用 Excel 開啟。</p>
+        <p style={{ fontSize: "12px", color: "#94a3b8", margin: 0 }}>把這門課學生的作答、評分與聊天訊息匯出成 CSV 或 Excel。每個欄位的意思見資料字典（docs/DATA_DICTIONARY.md）。</p>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
@@ -99,9 +114,22 @@ export default function ExportTab({ courseId }: { courseId: string }) {
         </label>
       </div>
 
+      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+        {OUTPUTS.map((o) => (
+          <label key={o.value} style={{ display: "flex", gap: "6px", alignItems: "flex-start" }}>
+            <input type="radio" checked={output === o.value} onChange={() => setOutput(o.value)} />
+            <span>
+              {o.label}
+              <br />
+              <span style={{ color: "#64748b" }}>{o.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
       <label style={{ display: "flex", gap: "6px", alignItems: "center" }}>
         <input type="checkbox" checked={includeContent} onChange={(e) => setIncludeContent(e.target.checked)} />
-        包含作答原文{kind === "research" ? "（會遮罩疑似個資）" : ""}
+        包含作答原文與訊息內容{kind === "research" ? "（會遮罩疑似個資）" : ""}
       </label>
 
       <button
@@ -109,7 +137,7 @@ export default function ExportTab({ courseId }: { courseId: string }) {
         disabled={busy || !courseId}
         style={{ alignSelf: "flex-start", padding: "9px 22px", border: "none", backgroundColor: busy ? "#334155" : "#16a34a", color: "#fff", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: busy ? "default" : "pointer" }}
       >
-        {busy ? "匯出中…" : "匯出 CSV"}
+        {busy ? "匯出中…" : output === "xlsx" ? "匯出 Excel" : "匯出 CSV"}
       </button>
       <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>只有教授可以匯出；每次匯出都會留下紀錄。</p>
       {msg && <p style={{ margin: 0, color: msg.ok ? "#86efac" : "#fca5a5" }}>{msg.text}</p>}

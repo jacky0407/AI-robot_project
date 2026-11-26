@@ -169,3 +169,96 @@ class TestTeaching:
 def test_mask_pii_keeps_normal_text():
     assert mask_pii("小明在積木角專注二十分鐘") == "小明在積木角專注二十分鐘"
     assert "[已遮罩]" in mask_pii("身分證 A123456789")
+
+
+# ──────────────────────────────────────────
+# #83 聊天室逐則訊息、Excel、最新的教師判定
+# ──────────────────────────────────────────
+
+def chat_db():
+    db = make_db()
+    step = {"step_order": 2, "step_title": "家長晤談"}
+    db.tables["chat_messages"] = [
+        {"id": "m1", "user_id": "u-agree", "module_id": MOD, "step_id": "s2", "role": "student",
+         "content": "請問孩子早上的作息？電話 0912-345-678", "routing": None, "attempt_id": None,
+         "created_at": "2026-11-05T09:00:00Z", "module_steps": step},
+        {"id": "m2", "user_id": "u-agree", "module_id": MOD, "step_id": "s2", "role": "bot", "bot_name": "IEP 小幫手",
+         "content": "你覺得要先觀察什麼？", "attempt_id": None, "created_at": "2026-11-05T09:00:05Z", "module_steps": step,
+         "routing": {"by": "router", "reason": "問 IEP 寫法", "answer_mode": "guide", "times_asked": 1,
+                     "sources": ["IEP 指引・第 2 段"]}},
+        {"id": "m3", "user_id": "u-agree", "module_id": MOD, "step_id": "s2", "role": "bot", "bot_name": "評分老師",
+         "content": "評分：80 分", "attempt_id": "a-u-agree-2-1", "created_at": "2026-11-09T10:00:00Z",
+         "module_steps": step, "routing": {"by": "evaluate", "reason": "送出評分"}},
+        {"id": "m4", "user_id": "u-no", "module_id": MOD, "step_id": "s2", "role": "student", "content": "沒同意的",
+         "routing": None, "attempt_id": None, "created_at": "2026-11-05T09:00:00Z", "module_steps": step},
+        {"id": "m5", "user_id": "u-other", "module_id": MOD, "step_id": "s2", "role": "student", "content": "別班的",
+         "routing": None, "attempt_id": None, "created_at": "2026-11-05T09:00:00Z", "module_steps": step},
+    ]
+    return db
+
+
+class TestChatExport:
+
+    def test_research_chat_only_consented_and_masked(self):
+        res = post("research", chat_db(), dataset="chat_messages", include_content=True)
+        rows = rows_of(res)
+
+        assert {r["research_id"] for r in rows} == {"SPED-aaaa1111"}
+        assert "student_name" not in rows[0]
+        assert "0912-345-678" not in rows[0]["message_text"] and "[已遮罩]" in rows[0]["message_text"]
+        assert res.headers["X-Export-Row-Count"] == "3"
+        assert 'research-export-chat-' in res.headers["Content-Disposition"]
+
+    def test_chat_columns(self):
+        rows = rows_of(post("research", chat_db(), dataset="chat_messages"))
+        tutor, evaluation = rows[1], rows[2]
+        assert (tutor["routed_by"], tutor["is_tutor"], tutor["answer_mode"], tutor["times_asked"], tutor["sources"]) == \
+            ("router", "True", "guide", "1", "IEP 指引・第 2 段")
+        assert evaluation["routed_by"] == "evaluate" and evaluation["evaluation_attempt_number"] == "2"
+        assert rows[0]["role"] == "student" and rows[0]["is_tutor"] == ""
+        assert "message_text" not in rows[0]          # 預設不匯出內容
+
+    def test_teaching_chat_has_names_of_course_students_only(self):
+        rows = rows_of(post("teaching", chat_db(), dataset="chat_messages"))
+        assert {r["student_name"] for r in rows} == {"王小美", "李小斌"}
+
+    def test_missing_chat_table_means_no_rows(self):
+        db = make_db()
+        db.errors[("chat_messages", "select")] = RuntimeError("relation chat_messages does not exist")
+        res = post("research", db, dataset="chat_messages")
+        assert res.status_code == 200 and rows_of(res) == []
+
+
+class TestXlsx:
+
+    def test_xlsx_has_attempts_and_chat_sheets(self):
+        from openpyxl import load_workbook
+
+        res = post("research", chat_db(), format="xlsx")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("application/vnd.openxmlformats")
+        assert res.headers["X-Export-Row-Count"] == "3" and res.headers["X-Export-Chat-Count"] == "3"
+        wb = load_workbook(io.BytesIO(res.content), read_only=True)
+        assert wb.sheetnames == ["作答", "聊天訊息"]
+        attempts = list(wb["作答"].iter_rows(values_only=True))
+        chats = list(wb["聊天訊息"].iter_rows(values_only=True))
+        assert attempts[0][0] == "research_id" and len(attempts) == 4
+        assert chats[0][0] == "research_id" and len(chats) == 4
+
+    def test_xlsx_export_is_audited(self):
+        db = chat_db()
+        post("teaching", db, format="xlsx")
+        assert db.rows("export_logs")[0]["params"]["format"] == "xlsx"
+
+
+def test_latest_teacher_review_is_exported():
+    db = make_db()
+    for a in db.tables["step_attempts"]:
+        a["teacher_reviews"] = [
+            {"decision": "modify", "final_score": 60, "is_published": True, "reviewed_at": "2026-11-10T00:00:00Z"},
+            {"decision": "override", "final_score": 90, "is_published": True, "reviewed_at": "2026-11-12T00:00:00Z"},
+            {"decision": "accept_ai", "final_score": 70, "is_published": False, "reviewed_at": "2026-11-11T00:00:00Z"},
+        ]
+    row = rows_of(post("research", db))[0]
+    assert (row["teacher_decision"], row["teacher_final_score"], row["teacher_reviewed_at"]) == \
+        ("override", "90", "2026-11-12T00:00:00Z")

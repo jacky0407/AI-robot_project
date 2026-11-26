@@ -1397,6 +1397,20 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 
 ---
 
+## 五之三、AI 用量與每月預算 ✅（#81，migration 028）
+
+- 每一次 AI 呼叫寫一列 `ai_usage_logs`：功能（逐項評分、整體回饋、提示、錯誤偵測、跨步驟檢核、聊天調度、聊天回覆、向量）、模型、輸入／輸出 token、估計費用、延遲、成功與否、平台或學生自備金鑰
+- 費用依 `MODEL_PRICES` 價目表估算（預設值在 `core/config.py`），實際以 Google Cloud 帳單為準
+- **每月預算**：`courses.monthly_ai_budget_usd`（`PATCH /api/courses/:id`，`null` = 不限）；自主探索用環境變數 `AUTONOMOUS_MONTHLY_BUDGET_USD`。只算平台金鑰，月份以台灣時間計
+  - 用到 `BUDGET_WARN_RATIO`（預設 0.8）：`score_start.budget` / `message_saved.budget` 的 `level = "warn"`
+  - 用完：送出作答、聊天訊息回 `429 BUDGET_EXCEEDED`，不建立作答、不扣次數；**聊天室「送出評分」不擋**，讓已經聊完的學生能完成
+  - 查不到預算（例如還沒跑 023）時不擋學生
+
+### `GET /api/courses/:course_id/ai-usage?month=YYYY-MM`（限教師端）
+預設本月。回傳 `total`、`by_feature`、`by_tool`、`by_model`、`by_day`（每項含 `calls`、`failed`、`input_tokens`、`output_tokens`、`platform_cost_usd`、`student_key_cost_usd`），本月另有 `budget`（`used_usd`、`budget_usd`、`ratio`、`level`）。`400 INVALID_MONTH`、`503 MIGRATION_REQUIRED`。
+
+---
+
 ## 六、教師複核 (Review)
 
 ### `GET /api/review/pending`
@@ -1488,7 +1502,7 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 >
 > ✅ 2026-11 已實作（`backend/api/export.py`、migration 018）。與下方原始規格的差異：
 > - 權限：只限教授（owner），助教 403
-> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, format: "csv"}`；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
+> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, dataset?: "attempts" | "chat_messages", format?: "csv" | "xlsx"}`（#83：`chat_messages` 一列一則聊天訊息；`xlsx` 一個檔兩個工作表）；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
 > - 一列 = 一次作答：步驟、AI 總分與逐構面（`名稱:分/滿分;…`）、錯誤代碼、提示層級、教師判定；作答原文預設不匯出，研究用勾選時會遮罩個資
 > - CSV 為 UTF-8 含 BOM；回應標頭 `X-Export-Row-Count`；每次匯出寫入 `export_logs`
 > - 前端：`/admin/tools` 的「資料匯出」

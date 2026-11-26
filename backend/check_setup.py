@@ -35,6 +35,7 @@ EXPECTED_TABLES = [
     "course_materials",   # migration 021：學習助教的教材（RAG）
     "material_chunks",    # migration 021
     "ai_tool_versions",   # migration 022：機器人每次修改前的舊版內容
+    "ai_usage_logs",      # migration 028：AI 用量與費用
     "templates",          # migration 023：機器人與模組的範本
     "audit_logs",         # migration 026：操作稽核紀錄（只能新增）
 ]
@@ -51,6 +52,7 @@ TABLE_MIGRATIONS = {
     "course_materials": "021_course_materials.sql",
     "material_chunks": "021_course_materials.sql",
     "ai_tool_versions": "022_ai_tool_versions.sql",
+    "ai_usage_logs": "028_ai_usage.sql",
     "templates": "023_templates.sql",
     "audit_logs": "026_audit_logs.sql",
 }
@@ -65,6 +67,7 @@ EXPECTED_COLUMNS = {
     "tool_permissions": ["used_date", "module_id"],  # 008：自主模式每日額度；025：申請模組
     "module_steps": ["is_active", "pass_mode", "step_type", "tool_version"],  # 010 停用步驟；019 怎麼算通過；020 聊天室；024 停在舊版
     "chat_room_bots": ["use_materials", "tool_version"],  # 021：學習助教查教材；024 停在舊版
+    "courses": ["monthly_ai_budget_usd"],  # 028：每月 AI 預算
 }
 
 PLACEHOLDERS = {

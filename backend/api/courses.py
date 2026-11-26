@@ -153,6 +153,8 @@ class UpdateCourseRequest(BaseModel):
     description: Optional[str] = None
     require_approval: Optional[bool] = None
     is_archived: Optional[bool] = None
+    # 每月 AI 費用上限（美元，平台金鑰）；null = 不限（#81，需要 migration 028）
+    monthly_ai_budget_usd: Optional[float] = Field(None, ge=0, le=100000)
 
 
 class CreateInviteCodeRequest(BaseModel):

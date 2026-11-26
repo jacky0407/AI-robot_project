@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 from core.config import get_settings
 
@@ -174,9 +175,17 @@ async def invoke_with_retry(
         timeout = get_settings().llm_timeout_seconds
     last_error: Exception | None = None
 
+    from core.ai_usage import record, tokens_from_response
+
+    model = getattr(llm, "model", None)
     for attempt in range(1, max_attempts + 1):
+        started = time.monotonic()
         try:
             response = await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout)
+            # AI 用量與費用（#81）：每次成功呼叫記一筆；沒有 track_usage() 時（例如測試）不記
+            input_tokens, output_tokens = tokens_from_response(response)
+            record(label, model, input_tokens=input_tokens, output_tokens=output_tokens,
+                   latency_ms=int((time.monotonic() - started) * 1000))
             return content_to_text(getattr(response, "content", response))
 
         except asyncio.TimeoutError as e:
@@ -191,6 +200,7 @@ async def invoke_with_retry(
             await asyncio.sleep(backoff * (2 ** (attempt - 1)))
 
     logger.error(f"{label} 重試 {max_attempts} 次後仍失敗")
+    record(label, model, success=False, error=f"{type(last_error).__name__}: {last_error}")
     raise last_error
 
 
