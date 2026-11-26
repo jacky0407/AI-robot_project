@@ -231,7 +231,7 @@ class TestChatExport:
 
 class TestXlsx:
 
-    def test_xlsx_has_attempts_and_chat_sheets(self):
+    def test_xlsx_has_attempts_chat_and_form_sheets(self):
         from openpyxl import load_workbook
 
         res = post("research", chat_db(), format="xlsx")
@@ -239,7 +239,7 @@ class TestXlsx:
         assert res.headers["content-type"].startswith("application/vnd.openxmlformats")
         assert res.headers["X-Export-Row-Count"] == "3" and res.headers["X-Export-Chat-Count"] == "3"
         wb = load_workbook(io.BytesIO(res.content), read_only=True)
-        assert wb.sheetnames == ["作答", "聊天訊息"]
+        assert wb.sheetnames == ["作答", "聊天訊息", "表單填答"]
         attempts = list(wb["作答"].iter_rows(values_only=True))
         chats = list(wb["聊天訊息"].iter_rows(values_only=True))
         assert attempts[0][0] == "research_id" and len(attempts) == 4
@@ -262,3 +262,64 @@ def test_latest_teacher_review_is_exported():
     row = rows_of(post("research", db))[0]
     assert (row["teacher_decision"], row["teacher_final_score"], row["teacher_reviewed_at"]) == \
         ("override", "90", "2026-11-12T00:00:00Z")
+
+
+# ── 表單填答（#80）──────────────────────────────────────────────────────────
+
+FORM_V1 = {"title": "反思", "version": 1, "schema_json": {"questions": [
+    {"id": "q1", "type": "scale", "label": "信心", "min": 1, "max": 5},
+    {"id": "q2", "type": "multi", "label": "用了哪些策略", "options": ["觀察", "記錄", "訪談"]},
+    {"id": "q3", "type": "long", "label": "想法"},
+]}}
+
+
+def form_db():
+    db = make_db()
+    base = {"module_id": MOD, "step_id": "s1", "form_version": 1, "timing": "after_feedback",
+            "forms": FORM_V1, "module_steps": {"step_order": 1, "step_title": "案例整理"},
+            "ai_tools": {"title": "教練"}, "step_attempts": {"attempt_number": 2}, "ai_total_score": 80}
+    db.tables["form_responses"] = [
+        {**base, "id": "r1", "user_id": "u-agree", "skipped": False, "submitted_at": "2026-11-09T10:05:00Z",
+         "responses": {"answers": {"q1": 4, "q2": ["觀察", "記錄"], "q3": "聯絡家長 0912-345-678"}, "na": []}},
+        {**base, "id": "r2", "user_id": "u-agree", "skipped": True, "submitted_at": "2026-11-10T10:05:00Z",
+         "responses": {"answers": {}, "na": []}},
+        {**base, "id": "r3", "user_id": "u-no", "skipped": False, "submitted_at": "2026-11-09T10:05:00Z",
+         "responses": {"answers": {"q1": 2}, "na": ["q2"]}},
+    ]
+    return db
+
+
+class TestFormResponses:
+
+    def test_research_form_rows_are_one_per_question_and_consented_only(self):
+        rows = rows_of(post("research", form_db(), dataset="form_responses"))
+        assert {r["research_id"] for r in rows} == {"SPED-aaaa1111"}
+        answered = [r for r in rows if r["form_skipped"] == "False"]
+        assert [r["question_id"] for r in answered] == ["q1", "q2", "q3"]
+        assert answered[0]["answer"] == "4" and answered[1]["answer"] == "觀察;記錄"
+        assert answered[0]["attempt_number"] == "2" and answered[0]["ai_total_score"] == "80"
+
+    def test_text_answers_are_left_out_without_include_content(self):
+        rows = rows_of(post("research", form_db(), dataset="form_responses"))
+        assert next(r for r in rows if r["question_id"] == "q3")["answer"] == ""
+
+    def test_research_text_answers_are_masked_when_included(self):
+        rows = rows_of(post("research", form_db(), dataset="form_responses", include_content=True))
+        text = next(r for r in rows if r["question_id"] == "q3")["answer"]
+        assert "0912" not in text and "[已遮罩]" in text
+
+    def test_skipped_form_is_one_row_without_question(self):
+        rows = rows_of(post("research", form_db(), dataset="form_responses"))
+        skipped = [r for r in rows if r["form_skipped"] == "True"]
+        assert len(skipped) == 1 and skipped[0]["question_id"] == ""
+
+    def test_teaching_export_marks_not_applicable(self):
+        rows = rows_of(post("teaching", form_db(), dataset="form_responses"))
+        q2 = next(r for r in rows if r["student_name"] == "李小斌" and r["question_id"] == "q2")
+        assert q2["answer_na"] == "True" and q2["answer"] == ""
+
+    def test_missing_form_table_means_no_rows(self):
+        db = make_db()
+        db.errors[("form_responses", "select")] = RuntimeError("column form_responses.module_id does not exist")
+        res = post("research", db, dataset="form_responses")
+        assert res.status_code == 200 and rows_of(res) == []

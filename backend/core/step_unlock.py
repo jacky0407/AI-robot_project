@@ -12,6 +12,7 @@
     （老師可以把 AI 判不過的改成過，也可以把 AI 判過的改成不過）
   - 否則看 step_attempts.status == "passed"（AI 評分通過；老師要求重寫時會改成 revision_required）
   - 任何一次作答通過，這一步就算通過
+  - 機器人有「填了才算完成」（gate = completion）的表單時，還要填答過才算通過（#80，core/tool_forms.py）
 
 後端用 service_role 不受 RLS 限制，所以送出作答時必須在這裡檢查，不能只靠前端把按鈕停用。
 """
@@ -19,9 +20,10 @@
 from fastapi import HTTPException, status
 
 from core.auth import CurrentUser
+from core.tool_forms import steps_blocked_by_forms
 
-STEP_SELECT = "id, step_order, step_title, is_required, is_active, pass_score"
-STEP_SELECT_BEFORE_010 = "id, step_order, step_title, is_required, pass_score"
+STEP_SELECT = "id, tool_id, step_order, step_title, is_required, is_active, pass_score"
+STEP_SELECT_BEFORE_010 = "id, tool_id, step_order, step_title, is_required, pass_score"
 ATTEMPT_SELECT = "step_id, status, teacher_reviews(final_score, is_published)"
 
 # 與 schema.sql 的 module_steps.pass_score 預設值一致
@@ -36,7 +38,8 @@ def module_progress(db, user_id: str, module_id: str, *, bypass_locks: bool = Fa
     """
     這位使用者在模組裡每個「啟用中」步驟的進度，依步驟順序。
 
-    每一項：step_id、step_order、step_title、is_required、passed、locked、locked_by（擋住它的步驟名稱）
+    每一項：step_id、step_order、step_title、is_required、passed、form_pending（判通過了但還有要填的表單）、
+    locked、locked_by（擋住它的步驟名稱）
     """
     steps = load_active_steps(db, module_id)
 
@@ -53,6 +56,9 @@ def module_progress(db, user_id: str, module_id: str, *, bypass_locks: bool = Fa
         for a in attempts_res.data or []
         if a.get("step_id") in pass_score and attempt_passed(a, pass_score[a["step_id"]])
     }
+    # 填了表單才算完成（#80）：AI 或老師判通過了，但表單還沒填
+    form_pending = steps_blocked_by_forms(db, user_id, [s for s in steps if s["id"] in passed_steps])
+    passed_steps -= form_pending
 
     progress, blocker = [], None
     for s in steps:
@@ -63,6 +69,7 @@ def module_progress(db, user_id: str, module_id: str, *, bypass_locks: bool = Fa
             "step_title": s.get("step_title") or "",
             "is_required": bool(s.get("is_required", True)),
             "passed": passed,
+            "form_pending": s["id"] in form_pending,
             "locked": blocker is not None and not bypass_locks,
             "locked_by": None if bypass_locks else blocker,
         })
