@@ -1,13 +1,15 @@
 "use client";
 
-// 多機器人聊天室（#68）：取代原本「寫完一整份作答再送出」的關卡
+// 多機器人聊天室（#68），GPT 式對話介面
 // - 每則訊息只由一個機器人回答：打 @名稱 指定，沒指定時系統依內容挑一個
-// - @ 評分機器人或按「送出評分」：評分機器人評整段對話，結果顯示在左邊的「評分與回饋」
+// - @ 評分機器人或按「送出評分」：評分機器人評整段對話，評分結果直接出現在對話裡
 // - 每日次數按每一則訊息計算
 // 後端：GET /api/chat/steps/{step_id}、POST /api/chat/sessions/{session_id}/steps/{step_id}/messages（SSE）
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
+import Composer, { ToolChip } from "./Composer";
+import { BotTurn, EMPTY_RUN, RunResultCard, StudentTurn, applyRunEvent, type RunState } from "./RunResult";
 
 export type ChatRoomInfo = {
   chat: true;
@@ -31,15 +33,18 @@ type ChatMessage = {
 };
 
 const MAX_CHARS = 2000;
-// 評分相關的事件交給頁面原本的「評分與回饋」顯示
+// 評分相關的事件：在對話裡長成一張評分卡，也轉給頁面（下一題按鈕要知道有沒有通過）
 const EVALUATION_EVENTS = new Set(["score_start", "analysis_start", "dimension_score", "score_complete", "feedback_complete", "pass_status", "errors_detected"]);
 
 const ROUTED_LABEL: Record<string, string> = {
   mention: "你指定的",
-  router: "系統依內容挑選",
+  router: "依你的問題挑選",
   only_bot: "",
   evaluate: "評分",
 };
+
+// 對話裡的一個項目：一則訊息，或這次送出評分的結果卡
+type Item = { kind: "msg"; message: ChatMessage } | { kind: "eval"; run: RunState; streaming: boolean; botName: string };
 
 export async function loadChatRoom(stepId: string): Promise<ChatRoomInfo | null> {
   const res = await apiFetch<{ data: ChatRoomInfo | { chat: false } }>(`/api/chat/steps/${encodeURIComponent(stepId)}`);
@@ -50,6 +55,7 @@ export default function ChatRoom({
   room,
   sessionId,
   disabledReason,
+  footnote,
   onEvaluationStart,
   onEvaluationEvent,
   onFinished,
@@ -57,48 +63,77 @@ export default function ChatRoom({
   room: ChatRoomInfo;
   sessionId: string;
   disabledReason?: string;
+  footnote?: React.ReactNode;
   onEvaluationStart: () => void;
   onEvaluationEvent: (event: string, data: Record<string, unknown>) => void;
   onFinished: () => void;
 }) {
-  const [messages, setMessages] = useState<ChatMessage[]>(room.messages);
+  const [items, setItems] = useState<Item[]>(() => room.messages.map((m) => ({ kind: "msg", message: m })));
   const [text, setText] = useState("");
   const [busy, setBusy] = useState<string>("");
   const [warning, setWarning] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const firstRender = useRef(true);
 
+  // 有新訊息就捲到最下面（第一次載入不捲，讓學生先看到關卡說明）
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages, busy]);
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [items, busy]);
 
-  const everyone = [...room.bots.map((b) => b.name), ...(room.evaluator ? [room.evaluator.name] : [])];
+  const hasMessages = items.some((it) => it.kind === "msg");
+
+  // 更新最後一張評分卡
+  const updateEval = (fn: (it: Extract<Item, { kind: "eval" }>) => Extract<Item, { kind: "eval" }>) =>
+    setItems((prev) => {
+      const idx = prev.map((it) => it.kind).lastIndexOf("eval");
+      if (idx < 0) return prev;
+      const next = [...prev];
+      next[idx] = fn(prev[idx] as Extract<Item, { kind: "eval" }>);
+      return next;
+    });
 
   const send = async (evaluate: boolean) => {
     const content = text.trim();
     if (!content && !evaluate) return;
     const mentionsEvaluator = !!room.evaluator && new RegExp(`[@＠]\\s*${room.evaluator.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(content);
     const evaluating = evaluate || mentionsEvaluator;
-    setBusy(evaluating ? "評分機器人評分中…" : "機器人回覆中…");
+    setBusy(evaluating ? `${room.evaluator?.name ?? "評分機器人"} 正在看整段對話…` : "思考中…");
     setWarning("");
     if (evaluating) onEvaluationStart();
+    let evalAdded = false;
     try {
       await streamSSE(
         `/api/chat/sessions/${sessionId}/steps/${room.step_id}/messages`,
         { method: "POST", body: JSON.stringify({ content, evaluate }) },
         (event, data) => {
           if (event === "message_saved" && data.message) {
-            setMessages((prev) => [...prev, data.message as ChatMessage]);
+            setItems((prev) => [...prev, { kind: "msg", message: data.message as ChatMessage }]);
             setText("");
           } else if (event === "bot_selected") {
-            setBusy(`${String(data.bot_name ?? "機器人")} 回覆中…`);
+            setBusy(`${String(data.bot_name ?? "機器人")} 思考中…`);
           } else if (event === "materials_used") {
-            setBusy((b) => `${b.replace("回覆中…", "")}查過教材，回覆中…`);
+            setBusy((b) => `${b.replace("思考中…", "")}查過教材，正在回覆…`);
           } else if (event === "bot_reply") {
-            setMessages((prev) => [...prev, data.message as ChatMessage]);
+            const message = data.message as ChatMessage;
+            // 評分完後端會再存一則摘要；這次已經有完整的評分卡，摘要只在重新整理後的紀錄裡顯示
+            if (message.routed_by === "evaluate" && evalAdded) updateEval((it) => ({ ...it, streaming: false }));
+            else setItems((prev) => [...prev, { kind: "msg", message }]);
           } else if (event === "error") {
             setWarning(String(data.message ?? "回覆失敗，請稍後再試"));
           }
-          if (EVALUATION_EVENTS.has(event) || (evaluating && event === "error")) onEvaluationEvent(event, data);
+          if (EVALUATION_EVENTS.has(event) || (evaluating && event === "error")) {
+            if (!evalAdded) {
+              evalAdded = true;
+              setBusy("");
+              setItems((prev) => [...prev, { kind: "eval", run: { ...EMPTY_RUN }, streaming: true, botName: room.evaluator?.name ?? "評分機器人" }]);
+            }
+            updateEval((it) => ({ ...it, run: applyRunEvent(it.run, event, data) }));
+            onEvaluationEvent(event, data);
+          }
         }
       );
     } catch (err) {
@@ -109,6 +144,7 @@ export default function ChatRoom({
         setWarning(err instanceof ApiError ? (err.status === 401 ? "登入已過期，請重新登入。" : err.message) : "連不到後端，請稍後再試。");
       }
     } finally {
+      if (evalAdded) updateEval((it) => ({ ...it, streaming: false }));
       setBusy("");
       onFinished();
     }
@@ -116,118 +152,109 @@ export default function ChatRoom({
 
   const insertMention = (name: string) => setText((t) => `@${name} ${t.replace(/^[@＠]\S*\s*/, "")}`);
   const blocked = Boolean(disabledReason) || Boolean(busy);
+  const everyone = [...room.bots.map((b) => b.name), ...(room.evaluator ? [room.evaluator.name] : [])];
 
   return (
-    <div style={{ backgroundColor: "var(--t-surface)", borderRadius: "14px", padding: "16px", border: "1px solid var(--t-border)", display: "flex", flexDirection: "column", gap: "10px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
-        <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>聊天室</h3>
-        <span style={{ fontSize: "11px", color: "var(--t-text-muted)" }}>每則訊息只由一個機器人回答；打 @名稱 可以指定</span>
-      </div>
+    <>
+      {!hasMessages && (
+        <p style={{ margin: "4px 0 0 40px", fontSize: "13px", color: "var(--t-text-muted)", lineHeight: 1.7 }}>
+          這一關一起討論的有：{everyone.join("、") || "（老師還沒設定機器人）"}。直接打字開始，或在下方點 @ 指定要問誰。
+        </p>
+      )}
 
-      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-        {room.bots.map((b) => (
-          <button key={b.tool_id} type="button" onClick={() => insertMention(b.name)} title={b.when_to_use || undefined} style={chip(false)}>
-            @{b.name}
-          </button>
-        ))}
-        {room.evaluator && (
-          <button type="button" onClick={() => insertMention(room.evaluator!.name)} title="評分機器人：@ 它會評整段對話" style={chip(true)}>
-            @{room.evaluator.name}（評分）
-          </button>
-        )}
-      </div>
-
-      <div ref={listRef} style={{ height: "360px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", padding: "4px 2px" }}>
-        {messages.length === 0 && (
-          <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "var(--t-text-faint)" }}>
-            還沒有對話。先打個招呼，或用 @ 找特定的機器人。
-            <br />
-            聊天室裡有：{everyone.join("、") || "（老師還沒設定機器人）"}
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={m.id ?? i} style={{ alignSelf: m.role === "student" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
-            {m.role === "bot" && (
-              <div style={{ fontSize: "11px", color: m.routed_by === "evaluate" ? "var(--t-warning)" : "var(--t-link)", marginBottom: "2px" }}>
-                {m.bot_name ?? "機器人"}
-                {m.routed_by && ROUTED_LABEL[m.routed_by] ? <span style={{ color: "var(--t-text-faint)" }}>・{ROUTED_LABEL[m.routed_by]}</span> : null}
-              </div>
-            )}
+      {items.map((it, i) => {
+        if (it.kind === "eval") {
+          return (
+            <BotTurn key={`eval-${i}`} name={it.botName} note="評分" tone="warning">
+              <RunResultCard run={it.run} streaming={it.streaming} />
+            </BotTurn>
+          );
+        }
+        const m = it.message;
+        if (m.role === "student") return <StudentTurn key={m.id ?? i}>{m.content}</StudentTurn>;
+        const isEval = m.routed_by === "evaluate";
+        return (
+          <BotTurn key={m.id ?? i} name={m.bot_name ?? "機器人"} note={m.routed_by ? ROUTED_LABEL[m.routed_by] || undefined : undefined} tone={isEval ? "warning" : "primary"}>
             <div
               style={{
-                padding: "9px 12px",
-                borderRadius: "10px",
-                fontSize: "13px",
-                lineHeight: 1.6,
+                fontSize: "15px",
+                lineHeight: 1.8,
                 whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
                 color: "var(--t-text)",
-                backgroundColor: m.role === "student" ? "var(--t-primary)" : m.routed_by === "evaluate" ? "var(--t-warning-soft)" : "var(--t-surface-2)",
+                ...(isEval ? { padding: "10px 14px", borderRadius: "12px", backgroundColor: "var(--t-warning-soft)" } : {}),
               }}
             >
               {m.content}
             </div>
             {m.sources && m.sources.length > 0 && (
-              <div style={{ fontSize: "11px", color: "var(--t-text-muted)", marginTop: "3px" }}>參考教材：{m.sources.join("、")}</div>
+              <div style={{ fontSize: "12px", color: "var(--t-text-muted)", marginTop: "6px" }}>參考教材：{m.sources.join("、")}</div>
             )}
-          </div>
-        ))}
-        {busy && <p style={{ margin: 0, fontSize: "12px", color: "var(--t-text-muted)" }}>{busy}</p>}
-      </div>
+          </BotTurn>
+        );
+      })}
 
-      {warning && <div style={{ padding: "8px 10px", borderRadius: "8px", fontSize: "12px", color: "var(--t-danger)", backgroundColor: "var(--t-danger-soft)" }}>{warning}</div>}
+      {busy && (
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", marginLeft: "40px", fontSize: "13px", color: "var(--t-text-muted)" }}>
+          <span className="chat-dots" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          {busy}
+        </div>
+      )}
+      <div ref={endRef} style={{ scrollMarginBottom: "var(--composer-h, 200px)" }} />
 
-      <textarea
+      <Composer
         value={text}
+        onChange={setText}
+        onSend={() => send(false)}
+        sendLabel="送出"
+        sendDisabled={blocked || !text.trim()}
+        enterToSend
         maxLength={MAX_CHARS}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            if (!blocked) send(false);
-          }
-        }}
-        placeholder="輸入訊息，Enter 送出、Shift+Enter 換行。請勿輸入真實姓名、電話、身分證字號等個資"
-        style={{ width: "100%", height: "80px", boxSizing: "border-box", padding: "10px", borderRadius: "8px", border: "1px solid var(--t-border-strong)", backgroundColor: "var(--t-field)", color: "var(--t-text)", fontSize: "13px", lineHeight: 1.5, resize: "vertical", outline: "none" }}
-      />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "11px", color: "var(--t-text-faint)" }}>{disabledReason ?? `${text.length} / ${MAX_CHARS}・每則訊息扣一次今日次數`}</span>
-        <span style={{ display: "flex", gap: "8px" }}>
-          {room.evaluator && (
-            <button type="button" disabled={blocked || messages.length === 0} onClick={() => send(true)} style={btn(blocked || messages.length === 0, "var(--t-warning-strong)")}>
+        placeholder={disabledReason ?? "輸入訊息，Enter 送出、Shift+Enter 換行"}
+        warning={warning}
+        tools={
+          <>
+            {room.bots.map((b) => (
+              <ToolChip key={b.tool_id} onClick={() => insertMention(b.name)} title={b.when_to_use || undefined}>
+                @{b.name}
+              </ToolChip>
+            ))}
+            {room.evaluator && (
+              <ToolChip tone="warning" onClick={() => insertMention(room.evaluator!.name)} title="評分機器人：@ 它會評整段對話">
+                @{room.evaluator.name}
+              </ToolChip>
+            )}
+          </>
+        }
+        extraActions={
+          room.evaluator ? (
+            <button
+              type="button"
+              disabled={blocked || !hasMessages}
+              onClick={() => send(true)}
+              title="請評分機器人評整段對話"
+              style={{
+                padding: "8px 16px",
+                borderRadius: "9999px",
+                border: "1px solid var(--t-warning-border)",
+                backgroundColor: "transparent",
+                color: blocked || !hasMessages ? "var(--t-text-faint)" : "var(--t-warning)",
+                fontSize: "13px",
+                fontWeight: "bold",
+                cursor: blocked || !hasMessages ? "not-allowed" : "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
               送出評分
             </button>
-          )}
-          <button type="button" disabled={blocked || !text.trim()} onClick={() => send(false)} style={btn(blocked || !text.trim(), "var(--t-primary)")}>
-            送出訊息
-          </button>
-        </span>
-      </div>
-    </div>
+          ) : undefined
+        }
+        footnote={footnote ?? `${text.length} / ${MAX_CHARS}・每則訊息扣一次今日次數`}
+      />
+    </>
   );
-}
-
-function chip(evaluator: boolean): React.CSSProperties {
-  return {
-    padding: "3px 10px",
-    fontSize: "12px",
-    borderRadius: "9999px",
-    border: `1px solid ${evaluator ? "var(--t-warning-border)" : "var(--t-link-border)"}`,
-    backgroundColor: "transparent",
-    color: evaluator ? "var(--t-warning)" : "var(--t-link)",
-    cursor: "pointer",
-  };
-}
-
-function btn(disabled: boolean, color: string): React.CSSProperties {
-  return {
-    padding: "8px 16px",
-    borderRadius: "8px",
-    border: "none",
-    backgroundColor: disabled ? "var(--t-text-faint)" : color,
-    color: "var(--t-on-primary)",
-    fontSize: "13px",
-    fontWeight: "bold",
-    cursor: disabled ? "not-allowed" : "pointer",
-    whiteSpace: "nowrap",
-  };
 }

@@ -1,12 +1,14 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ApiError, apiFetch, streamSSE } from "@/utils/api";
 import VersionCompare, { type HistoryAttempt } from "./VersionCompare";
 import BotMemoryPanel from "./BotMemoryPanel";
 import ChatRoom, { loadChatRoom, type ChatRoomInfo } from "./ChatRoom";
+import Composer, { ToolChip } from "./Composer";
+import { BotTurn, EMPTY_RUN, HintCard, RunResultCard, StudentTurn, applyRunEvent, type Hint, type RunState } from "./RunResult";
 
 // ─── 步驟與模組型別定義 ───
 
@@ -47,18 +49,7 @@ type CoherenceResult = {
   issues: CoherenceIssue[];
 };
 
-// ─── AI 評分串流事件（欄位與 backend/core/ai/agents 的 evaluator_agent、tutor_agent 一致） ───
-type DimensionScore = { dimension: string; score: number; max_score: number; reason?: string; evidence?: string };
-type ScoreComplete = {
-  total_score: number;
-  percentage?: number;
-  passed: boolean;
-  overall_feedback: string;
-  confidence?: number;
-  needs_teacher_review?: boolean;
-};
-type Hint = { level: number; content: string; source?: "teacher" | "generated"; is_example?: boolean; warning?: string };
-type DetectedError = { code: string; label: string; severity?: string; evidence?: string; explanation?: string };
+// AI 評分串流的型別與處理在 RunResult.tsx（一般作答與聊天室共用）
 type HintStatus = { hints_used: number; total_levels: number | null; next_level_available: boolean };
 // GET /api/practice/modules/{id}/progress：只列啟用中的步驟；locked = 前面的必修步驟還沒通過
 type StepProgress = { step_id: string; passed: boolean; locked: boolean; locked_by: string | null };
@@ -67,30 +58,9 @@ type CaseData = { id: string; title: string; case_background: string };
 // 歷次作答（GET /history），型別與版本比對共用
 type Submission = HistoryAttempt;
 
-// 一次送出的串流結果（逐事件累積）
-type RunState = {
-  decision?: string;
-  dimensions: DimensionScore[];
-  totalDimensions?: number;
-  score?: ScoreComplete;
-  hint?: Hint;
-  encouragement?: string;
-  escalation?: string;
-  errors: DetectedError[];
-  failure?: string;
-  // 沒有評分規準的機器人只給文字回饋、不評分（#65）
-  feedback?: string;
-  // 依關卡通過方式算出的最終結果（score_complete.passed 只代表 AI 分數有沒有過門檻）
-  pass?: { pass_mode: string; status: string; passed: boolean; awaiting_teacher: boolean };
-};
-const EMPTY_RUN: RunState = { dimensions: [], errors: [] };
-
-const DECISION_LABEL: Record<string, string> = {
-  evaluate: "AI 正在依評分規準評分",
-  encourage: "接近通過門檻，AI 會評分並給你鼓勵",
-  give_hint: "AI 判斷先給你一則提示，修改後再送出",
-  escalate: "AI 建議你先和老師討論",
-};
+// 一般作答關卡的對話紀錄（這次進到關卡後的：取用的提示、送出的作答、之前幾次的評分結果）
+// 正在評分的那一次放在 run，送出下一次時才收進這裡
+type TimelineItem = { kind: "hint"; hint: Hint } | { kind: "answer"; text: string } | { kind: "result"; run: RunState };
 
 const panel: React.CSSProperties = {
   backgroundColor: "var(--t-surface)",
@@ -181,7 +151,11 @@ function StudentWorkspace() {
   // 分層提示與作答紀錄（GET /hints、GET /history）；送出或取用提示後 progressKey +1 重新抓
   const [hintStatus, setHintStatus] = useState<HintStatus | null>(null);
   const [hintStatusError, setHintStatusError] = useState(false);
-  const [revealedHints, setRevealedHints] = useState<Hint[]>([]);
+  const [timeline, setTimeline] = useState<TimelineItem[]>([]);
+  // 上一次送出的作答：送出後輸入框會清空，可以按「帶入上一次作答」接著改
+  const [lastAnswer, setLastAnswer] = useState("");
+  // 對話最底部：送出作答、評分逐項出來、取用提示時捲到這裡（像 ChatGPT）
+  const threadEndRef = useRef<HTMLDivElement>(null);
   const [hintMessage, setHintMessage] = useState("");
   const [history, setHistory] = useState<Submission[]>([]);
   const [showCompare, setShowCompare] = useState(false);
@@ -202,7 +176,8 @@ function StudentWorkspace() {
     setStudentAnswer("");
     setRun(null);
     setPiiWarning("");
-    setRevealedHints([]);
+    setTimeline([]);
+    setLastAnswer("");
     setHintMessage("");
     setHintStatus(null);
     setHintStatusError(false);
@@ -332,6 +307,13 @@ function StudentWorkspace() {
     };
   }, [supabase]);
 
+  // 對話有新東西就捲到最下面；沒有新東西（剛進關卡）時不捲，讓學生先看關卡說明
+  const runProgress = run ? run.dimensions.length + (run.score ? 1 : 0) + run.errors.length + (run.feedback ? 1 : 0) + (run.failure ? 1 : 0) : -1;
+  useEffect(() => {
+    if (timeline.length === 0 && runProgress < 0) return;
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [timeline.length, runProgress]);
+
   // 分層提示狀態（只查不取用）與這一步的作答紀錄
   useEffect(() => {
     if (!selectedStep) return;
@@ -425,7 +407,7 @@ function StudentWorkspace() {
       const res = await apiFetch<{ data: HintStatus & { hint: Hint | null; message?: string } }>(
         `/api/practice/sessions/${sessionId}/hints?${params}`
       );
-      if (res.data.hint) setRevealedHints((prev) => [...prev, res.data.hint as Hint]);
+      if (res.data.hint) setTimeline((prev) => [...prev, { kind: "hint", hint: res.data.hint as Hint }]);
       if (res.data.message) setHintMessage(res.data.message);
       setHintStatus(res.data);
     } catch (err) {
@@ -437,35 +419,7 @@ function StudentWorkspace() {
 
   // 3. 送出作答並逐事件接收 SSE 評分（streamSSE 會自動帶登入 token）
   const handleEvent = (event: string, data: Record<string, unknown>) => {
-    setRun((prev) => {
-      const r = prev ?? EMPTY_RUN;
-      switch (event) {
-        case "tutor_decision":
-          return { ...r, decision: String(data.action ?? "") };
-        case "analysis_start":
-          return { ...r, totalDimensions: Number(data.total_dimensions ?? 0) };
-        case "dimension_score":
-          return { ...r, dimensions: [...r.dimensions, data as unknown as DimensionScore] };
-        case "score_complete":
-          return { ...r, score: data as unknown as ScoreComplete };
-        case "hint":
-          return { ...r, hint: data as unknown as Hint };
-        case "encouragement":
-          return { ...r, encouragement: String(data.message ?? "") };
-        case "escalation":
-          return { ...r, escalation: String(data.message ?? "") };
-        case "errors_detected":
-          return { ...r, errors: (data.errors as DetectedError[]) ?? [] };
-        case "feedback_complete":
-          return { ...r, feedback: String(data.feedback ?? "") };
-        case "pass_status":
-          return { ...r, pass: data as unknown as NonNullable<RunState["pass"]> };
-        case "error":
-          return { ...r, failure: `${String(data.message ?? "AI 評分失敗")}，請稍後再試。` };
-        default:
-          return r;
-      }
-    });
+    setRun((prev) => applyRunEvent(prev ?? EMPTY_RUN, event, data));
     // 是否通過以 pass_status 為準：關卡可能是「作答即通過」或「教師複核後通過」（#65）
     if (event === "pass_status" && selectedStep) {
       const status = String(data.status ?? "submitted");
@@ -475,13 +429,16 @@ function StudentWorkspace() {
 
   const handleSubmit = async () => {
     if (!selectedStep) return;
-    if (!studentAnswer.trim()) {
-      setRun({ ...EMPTY_RUN, failure: "請先輸入作答內容再送出。" });
+    const answer = studentAnswer;
+    if (!answer.trim()) {
+      setPiiWarning("請先輸入作答內容再送出。");
       return;
     }
 
     setIsSubmitting(true);
     setPiiWarning("");
+    // 對話裡先出現學生的作答，上一次的評分結果收進紀錄，這次的評分接在後面長出來
+    setTimeline((prev) => [...prev, ...(run ? [{ kind: "result" as const, run }] : []), { kind: "answer", text: answer }]);
     setRun({ ...EMPTY_RUN });
 
     try {
@@ -493,17 +450,21 @@ function StudentWorkspace() {
             module_id: selectedStep.module_id,
             step_id: selectedStep.id,
             case_id: caseData?.id ?? null,
-            content: studentAnswer,
+            content: answer,
             version_note: "學生工作台提交",
           }),
         },
         handleEvent
       );
+      setLastAnswer(answer);
+      setStudentAnswer("");
     } catch (err) {
       // 顯示真正原因（個資偵測、未登入、沒被指派 403、次數用完 429…），不用假資料蓋掉
       if (err instanceof ApiError && err.code === "PII_DETECTED") {
         const types = (err.detail as { detected_types?: string[] })?.detected_types ?? [];
         setPiiWarning(`${err.message}${types.length ? `（偵測到：${types.join("、")}）` : ""}`);
+        // 被個資偵測擋下：沒有送出，把剛剛的作答氣泡拿掉，內容留在輸入框
+        setTimeline((prev) => prev.slice(0, -1));
         setRun(null);
       } else {
         const message =
@@ -590,6 +551,21 @@ function StudentWorkspace() {
     selectStep(step);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  // 對話裡 AI 的名稱：用這一關的機器人名稱
+  const botName = selectedStep?.ai_tools?.title || "AI 助教";
+  const stepPassed = (run?.pass ? run.pass.passed : Boolean(run?.score?.passed)) || (selectedStep ? statusByStep[selectedStep.id] === "passed" : false);
+  // 還沒送出過作答時提示無處記錄，先送出一次再索取
+  const hintDisabled = isLoadingHint || !hintStatus?.next_level_available || history.length === 0;
+  const hintTitle = !hintStatus
+    ? hintStatusError
+      ? "讀不到提示狀態，請稍後重新整理頁面"
+      : "讀取提示狀態中…"
+    : history.length === 0
+      ? "先送出一次作答後才能索取提示"
+      : !hintStatus.next_level_available
+        ? "目前沒有可用的下一層提示"
+        : `已使用 ${hintStatus.hints_used} 則提示`;
 
   return (
     <div data-theme={theme} style={{ minHeight: "100vh", backgroundColor: "var(--t-bg)", color: "var(--t-text)", fontFamily: "sans-serif" }}>
@@ -691,247 +667,140 @@ function StudentWorkspace() {
         </div>
       )}
 
-      {/* 主體三欄：提示與評分｜題目與作答｜記憶、作答紀錄與跨步驟檢核（欄寬與窄螢幕排法見下方 <style>） */}
+      {/* 主體：中間是 GPT 式對話（關卡說明 → 提示、作答、評分依時間排下來，輸入框固定在底部），右邊是記憶與作答紀錄 */}
       {!loading && modules.length > 0 && (
-      <main className="ws-grid" style={{ padding: "20px 24px", display: "grid", gap: "20px", alignItems: "start" }}>
-        {/* ─── 左邊：分層提示與評分回饋 ─── */}
-        <div className="ws-col ws-left" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
-            {/* 分層提示：先顯示還有沒有下一層，按下去才真的取用（聊天室關卡不用：直接問機器人） */}
-            {!chat && (
-            <div style={panel}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: 0 }}>分層提示</h3>
-                <button
-                  onClick={handleRevealHint}
-                  // 還沒送出過作答時提示無處記錄，先送出一次再索取
-                  disabled={isLoadingHint || !hintStatus?.next_level_available || history.length === 0}
-                  style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "8px", border: "1px solid var(--t-link)", background: "none", color: "var(--t-link)", fontSize: "12px", fontWeight: "bold", cursor: "pointer", opacity: isLoadingHint || !hintStatus?.next_level_available || history.length === 0 ? 0.4 : 1 }}
-                >
-                  {isLoadingHint ? "取得中…" : "我需要提示"}
-                </button>
-              </div>
-              <p style={{ fontSize: "12px", color: "var(--t-text-muted)", margin: "8px 0 0" }}>
-                {hintStatus
-                  ? `已使用 ${hintStatus.hints_used} 則${hintStatus.total_levels != null ? ` / 共 ${hintStatus.total_levels} 層` : ""}${!hintStatus.next_level_available ? "・目前沒有可用的下一層提示" : ""}`
-                  : hintStatusError
-                    ? "讀不到提示狀態，請稍後重新整理頁面"
-                    : "讀取提示狀態中…"}
-                {history.length === 0 && "・先送出一次作答後才能索取提示"}
-              </p>
-              {hintMessage && <p style={{ fontSize: "12px", color: "var(--t-text-2)", margin: "8px 0 0" }}>{hintMessage}</p>}
-              {[...revealedHints, ...(run?.hint ? [run.hint] : [])].map((h, i) => (
-                <div key={`${h.level}-${i}`} style={{ marginTop: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "var(--t-indigo-soft)", border: "1px solid var(--t-indigo-border)" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "bold", color: "var(--t-indigo)" }}>
-                    第 {h.level} 層{h.source === "generated" ? "（AI 依評分結果生成）" : ""}
-                  </div>
-                  <p style={{ fontSize: "13px", color: "var(--t-text)", margin: "4px 0 0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{h.content}</p>
-                  {h.warning && <p style={{ fontSize: "11px", color: "var(--t-indigo)", margin: "4px 0 0" }}>{h.warning}</p>}
-                </div>
-              ))}
-            </div>
+      <main className="ws-grid" style={{ padding: "0 24px", display: "grid", gap: "24px", alignItems: "start" }}>
+        <section className="ws-chat" style={{ minWidth: 0, width: "100%", maxWidth: "820px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "22px", paddingTop: "20px" }}>
+          {/* 題目切換 */}
+          <StepNav
+            position={stepPos}
+            total={flatSteps.length}
+            prev={prevItem}
+            next={nextItem}
+            nextLockedReason={nextLockedReason}
+            justPassed={stepPassed}
+            onGo={(item) => goToStep(item.moduleId, item.step)}
+            onOverview={() => router.push(backHref)}
+            overviewLabel={courseId ? "回到課程簡介" : "回到自主探索"}
+          />
 
-            )}
-
-            {/* AI 評分回饋 */}
-            <div style={{ ...panel, minHeight: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
-              <h3 style={{ fontSize: "15px", fontWeight: "bold", margin: 0, paddingBottom: "12px", borderBottom: "1px solid var(--t-border)" }}>
-                評分與回饋
-              </h3>
-
-              {!run && !isSubmitting && (
-                <p style={{ margin: "auto", textAlign: "center", fontSize: "13px", color: "var(--t-text-faint)" }}>{chat ? "和機器人聊完後，按「送出評分」或 @ 評分機器人，評分結果會顯示在這裡。" : "尚未送出作答。完成撰寫後按「送出作答並評分」。"}</p>
-              )}
-
-              {run?.failure && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "var(--t-danger)", backgroundColor: "var(--t-danger-soft)" }}>{run.failure}</div>
-              )}
-
-              {run?.decision && <p style={{ margin: 0, fontSize: "13px", color: "var(--t-text-muted)" }}>{DECISION_LABEL[run.decision] ?? run.decision}</p>}
-              {run?.encouragement && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "var(--t-success)", backgroundColor: "var(--t-success-soft)" }}>{run.encouragement}</div>}
-              {run?.escalation && <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "var(--t-orange)", backgroundColor: "var(--t-orange-soft)" }}>{run.escalation}</div>}
-              {run?.hint && <p style={{ margin: 0, fontSize: "12px", color: "var(--t-indigo)" }}>AI 給了一則提示，請看上方「分層提示」。</p>}
-
-              {run?.feedback && (
-                <div style={{ padding: "16px", borderRadius: "10px", backgroundColor: "var(--t-surface-2)", border: "1px solid var(--t-border)" }}>
-                  <p style={{ margin: 0, fontSize: "12px", color: "var(--t-text-muted)" }}>這個關卡不評分，以下是 AI 的回饋</p>
-                  <p style={{ margin: "8px 0 0", fontSize: "13px", lineHeight: 1.6, color: "var(--t-text)", whiteSpace: "pre-wrap" }}>{run.feedback}</p>
-                </div>
-              )}
-
-              {run?.pass && run.pass.pass_mode !== "score" && (
-                <p style={{ margin: 0, fontSize: "13px", color: run.pass.passed ? "var(--t-success)" : "var(--t-warning)" }}>
-                  {run.pass.passed
-                    ? "✓ 這個關卡送出作答即通過"
-                    : run.pass.awaiting_teacher
-                      ? "已送出，等老師複核後才會通過"
-                      : "這次還沒通過，請修改後再送出"}
-                </p>
-              )}
-
-              {run?.score && (
-                <div
-                  style={{
-                    padding: "16px",
-                    borderRadius: "10px",
-                    backgroundColor: run.score.passed ? "var(--t-success-soft)" : "var(--t-danger-soft)",
-                    border: `1px solid ${run.score.passed ? "var(--t-success-border)" : "var(--t-danger-border)"}`,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: "26px", fontWeight: "bold", color: run.score.passed ? "var(--t-success)" : "var(--t-danger)" }}>
-                      {Math.round(run.score.percentage ?? run.score.total_score)} 分
-                    </span>
-                    <span style={{ fontSize: "12px", fontWeight: "bold", padding: "4px 10px", borderRadius: "9999px", color: "var(--t-on-primary)", backgroundColor: run.score.passed ? "var(--t-success-strong)" : "var(--t-danger-strong)" }}>
-                      {run.pass && run.pass.pass_mode !== "score"
-                        ? "AI 分數僅供參考"
-                        : run.score.passed
-                          ? "✓ 已達通過門檻"
-                          : "✕ 尚未達標，請依回饋修改"}
-                    </span>
-                  </div>
-                  {run.score.overall_feedback && (
-                    <p style={{ margin: "10px 0 0", fontSize: "13px", lineHeight: 1.6, color: "var(--t-text)", whiteSpace: "pre-wrap" }}>{run.score.overall_feedback}</p>
-                  )}
-                  {run.score.needs_teacher_review && <p style={{ margin: "8px 0 0", fontSize: "12px", color: "var(--t-warning)" }}>這次 AI 評分較沒把握，老師會再複核。</p>}
-                </div>
-              )}
-
-              {run && run.dimensions.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {run.dimensions.map((d) => (
-                    <div key={d.dimension} style={{ padding: "10px 12px", borderRadius: "8px", backgroundColor: "var(--t-surface-2)", fontSize: "13px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
-                        <span>{d.dimension}</span>
-                        <span style={{ color: "var(--t-link)" }}>
-                          {d.score} / {d.max_score}
-                        </span>
-                      </div>
-                      {d.reason && <p style={{ margin: "4px 0 0", color: "var(--t-text-2)", lineHeight: 1.5 }}>{d.reason}</p>}
-                      {d.evidence && <p style={{ margin: "4px 0 0", fontSize: "12px", color: "var(--t-text-muted)", fontStyle: "italic" }}>引用：{d.evidence}</p>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {isSubmitting && (
-                <p style={{ margin: 0, fontSize: "12px", color: "var(--t-text-muted)" }}>
-                  AI 評分中{run?.totalDimensions ? `（${run.dimensions.length} / ${run.totalDimensions} 個構面）` : "…"}
-                </p>
-              )}
-
-              {run && run.errors.length > 0 && (
-                <div style={{ padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "var(--t-orange)", backgroundColor: "var(--t-orange-soft)", border: "1px solid var(--t-orange-border)" }}>
-                  <div style={{ fontWeight: "bold", marginBottom: "4px" }}>需要留意的常見錯誤</div>
-                  {run.errors.map((err) => (
-                    <div key={err.code} style={{ marginTop: "6px" }}>
-                      <b>{err.label}</b>
-                      {err.explanation && <span style={{ color: "var(--t-orange)" }}>：{err.explanation}</span>}
-                      {err.evidence && <div style={{ fontSize: "12px", fontStyle: "italic", color: "var(--t-orange)" }}>原文：{err.evidence}</div>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-        </div>
-
-        {/* ─── 中間：題目與作答 ─── */}
-        <div className="ws-col ws-mid" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
-            {/* 本關任務與教學案例（從資料庫讀，不再寫死） */}
-            <div style={panel}>
-              <div style={{ fontSize: "12px", color: "var(--t-text-muted)", marginBottom: "6px" }}>
-                關卡 {selectedStep?.step_order}：{selectedStep?.step_title}
-                {selectedStep?.ai_tools?.title && <span>・AI 助教：{selectedStep.ai_tools.title}</span>}
+          {/* 關卡說明：對話的第一則，告訴學生這一關要做什麼 */}
+          <BotTurn name={botName} note="關卡說明">
+            <div style={{ padding: "14px 16px", borderRadius: "14px", backgroundColor: "var(--t-surface)", border: "1px solid var(--t-border)" }}>
+              <div style={{ fontSize: "16px", fontWeight: "bold", lineHeight: 1.5 }}>
+                第 {selectedStep?.step_order} 關：{selectedStep?.step_title}
               </div>
               {selectedStep?.ai_tools?.target_competency && (
-                <div style={{ fontSize: "13px", color: "var(--t-text-2)", marginBottom: "12px" }}>練習能力：{selectedStep.ai_tools.target_competency}</div>
+                <div style={{ fontSize: "13px", color: "var(--t-text-muted)", marginTop: "4px" }}>練習能力：{selectedStep.ai_tools.target_competency}</div>
               )}
               {caseData ? (
-                <>
-                  <span style={{ fontSize: "12px", fontWeight: "bold", color: "var(--t-link)", backgroundColor: "var(--t-link-soft)", padding: "4px 10px", borderRadius: "6px" }}>
-                    教學案例：{caseData.title}
-                  </span>
-                  <p style={{ fontSize: "14px", lineHeight: 1.7, color: "var(--t-text)", margin: "10px 0 0", whiteSpace: "pre-wrap" }}>{caseData.case_background}</p>
-                </>
-              ) : (
-                <p style={{ fontSize: "13px", color: "var(--t-warning)", margin: 0 }}>讀不到教學案例，請聯絡老師確認案例已建立。</p>
-              )}
-            </div>
-
-            {/* 作答：聊天室關卡改成聊天室 */}
-            {chat ? (
-              <ChatRoom
-                key={chat.step_id}
-                room={chat}
-                sessionId={sessionId}
-                disabledReason={lockReason ?? quotaBlockReason}
-                onEvaluationStart={() => setRun({ ...EMPTY_RUN })}
-                onEvaluationEvent={handleEvent}
-                onFinished={() => {
-                  setQuotaKey((k) => k + 1);
-                  setProgressKey((k) => k + 1);
-                }}
-              />
-            ) : (
-            <div style={panel}>
-              <h3 style={{ fontSize: "14px", fontWeight: "bold", margin: "0 0 10px 0" }}>你的作答</h3>
-              {piiWarning && (
-                <div style={{ marginBottom: "10px", padding: "10px 12px", borderRadius: "8px", fontSize: "13px", color: "var(--t-danger)", backgroundColor: "var(--t-danger-soft)", border: "1px solid var(--t-danger-border)" }}>
-                  {piiWarning}
+                <div style={{ marginTop: "12px", padding: "12px 14px", borderRadius: "10px", backgroundColor: "var(--t-surface-2)", border: "1px solid var(--t-border)" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--t-link)" }}>教學案例：{caseData.title}</div>
+                  <p style={{ fontSize: "14px", lineHeight: 1.8, color: "var(--t-text)", margin: "6px 0 0", whiteSpace: "pre-wrap" }}>{caseData.case_background}</p>
                 </div>
+              ) : (
+                <p style={{ fontSize: "13px", color: "var(--t-warning)", margin: "10px 0 0" }}>讀不到教學案例，請聯絡老師確認案例已建立。</p>
               )}
-              <textarea
-                value={studentAnswer}
-                onChange={(e) => setStudentAnswer(e.target.value)}
-                maxLength={MAX_ANSWER_CHARS}
-                placeholder="請依案例情境完成本關卡的撰寫…"
-                style={{ width: "100%", height: "220px", boxSizing: "border-box", padding: "12px", borderRadius: "8px", border: "1px solid var(--t-border-strong)", backgroundColor: "var(--t-field)", color: "var(--t-text)", fontSize: "14px", lineHeight: 1.6, resize: "vertical", outline: "none" }}
-              />
-              <div style={{ fontSize: "11px", color: "var(--t-text-faint)", margin: "6px 0 12px" }}>
-                字數：{studentAnswer.length} / {MAX_ANSWER_CHARS}・請勿輸入真實姓名、電話、身分證字號等個資
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                {lockReason ? (
-                  <span style={{ fontSize: "12px", color: "var(--t-text-muted)" }}>{lockReason}</span>
-                ) : (
-                  <QuotaBadge state={quotaState} />
-                )}
-                <button
-                  onClick={handleSubmit}
-                  disabled={submitDisabled}
-                  title={lockReason ?? quotaBlockReason}
-                  style={{
-                    flexShrink: 0,
-                    whiteSpace: "nowrap",
-                    padding: "10px 22px",
-                    borderRadius: "8px",
-                    border: "none",
-                    backgroundColor: submitDisabled ? "var(--t-text-faint)" : "var(--t-primary)",
-                    color: "var(--t-on-primary)",
-                    fontSize: "13px",
-                    fontWeight: "bold",
-                    cursor: submitDisabled ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {isSubmitting ? "AI 評分中…" : "送出作答並評分"}
-                </button>
-              </div>
+              <p style={{ fontSize: "14px", lineHeight: 1.7, color: "var(--t-text-2)", margin: "12px 0 0" }}>
+                {chat
+                  ? "和下面的機器人討論這個案例，想清楚後按「送出評分」，評分機器人會看整段對話給你回饋。"
+                  : "請依案例寫下你的作答，送出後會逐項評分並給你回饋；可以依回饋修改後再送出。卡住時可以按「我需要提示」。"}
+              </p>
             </div>
-            )}
-                    {/* 題目切換：取代原本左側的關卡清單 */}
-            <StepNav
-              position={stepPos}
-              total={flatSteps.length}
-              prev={prevItem}
-              next={nextItem}
-              nextLockedReason={nextLockedReason}
-              justPassed={(run?.pass ? run.pass.passed : Boolean(run?.score?.passed)) || (selectedStep ? statusByStep[selectedStep.id] === "passed" : false)}
-              onGo={(item) => goToStep(item.moduleId, item.step)}
-              onOverview={() => router.push(backHref)}
-              overviewLabel={courseId ? "回到課程簡介" : "回到自主探索"}
-            />
-        </div>
+          </BotTurn>
 
-        {/* ─── 右邊：AI 助教記得你、作答紀錄、跨步驟檢核 ─── */}
-        <div className="ws-col ws-right" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
+          {chat ? (
+            <ChatRoom
+              key={chat.step_id}
+              room={chat}
+              sessionId={sessionId}
+              disabledReason={lockReason ?? quotaBlockReason}
+              footnote={lockReason ? <span>{lockReason}</span> : <QuotaBadge state={quotaState} />}
+              onEvaluationStart={() => setRun({ ...EMPTY_RUN })}
+              onEvaluationEvent={handleEvent}
+              onFinished={() => {
+                setQuotaKey((k) => k + 1);
+                setProgressKey((k) => k + 1);
+              }}
+            />
+          ) : (
+            <>
+              {timeline.map((it, i) =>
+                it.kind === "answer" ? (
+                  <StudentTurn key={i} label="你的作答">{it.text}</StudentTurn>
+                ) : it.kind === "hint" ? (
+                  <BotTurn key={i} name={botName} note="提示" tone="indigo">
+                    <HintCard hint={it.hint} />
+                  </BotTurn>
+                ) : (
+                  <BotTurn key={i} name={botName} note="評分與回饋">
+                    <RunResultCard run={it.run} />
+                  </BotTurn>
+                )
+              )}
+
+              {run && (
+                <BotTurn name={botName} note="評分與回饋">
+                  <RunResultCard run={run} streaming={isSubmitting} />
+                  {!isSubmitting && stepPassed && nextItem && !nextLockedReason && (
+                    <button
+                      onClick={() => goToStep(nextItem.moduleId, nextItem.step)}
+                      style={{ marginTop: "12px", padding: "8px 18px", borderRadius: "9999px", border: "none", backgroundColor: "var(--t-success-strong)", color: "var(--t-on-primary)", fontSize: "13px", fontWeight: "bold", cursor: "pointer" }}
+                    >
+                      前往下一題：{nextItem.step.step_title} →
+                    </button>
+                  )}
+                </BotTurn>
+              )}
+
+              {hintMessage && <p style={{ margin: "0 0 0 40px", fontSize: "13px", color: "var(--t-text-muted)" }}>{hintMessage}</p>}
+              {/* 捲動時留出底部輸入框的高度，最後一則才不會被蓋住 */}
+              <div ref={threadEndRef} style={{ scrollMarginBottom: "var(--composer-h, 220px)" }} />
+
+              <Composer
+                value={studentAnswer}
+                onChange={(v) => {
+                  setStudentAnswer(v);
+                  if (piiWarning) setPiiWarning("");
+                }}
+                onSend={handleSubmit}
+                sendLabel={isSubmitting ? "評分中…" : "送出作答"}
+                sendDisabled={submitDisabled || !studentAnswer.trim()}
+                enterToSend={false}
+                minHeight={96}
+                maxLength={MAX_ANSWER_CHARS}
+                placeholder={lockReason ?? quotaBlockReason ?? "依案例寫下你的作答（Enter 換行，Ctrl+Enter 送出）"}
+                warning={piiWarning}
+                tools={
+                  <>
+                    <ToolChip
+                      tone="indigo"
+                      onClick={handleRevealHint}
+                      disabled={hintDisabled}
+                      title={hintTitle}
+                    >
+                      {isLoadingHint ? "取得提示中…" : `我需要提示${hintStatus?.total_levels != null ? `（${hintStatus.hints_used} / ${hintStatus.total_levels}）` : ""}`}
+                    </ToolChip>
+                    {lastAnswer && lastAnswer !== studentAnswer && (
+                      <ToolChip onClick={() => setStudentAnswer(lastAnswer)} title="把上一次送出的內容放回輸入框，接著修改">
+                        帶入上一次作答
+                      </ToolChip>
+                    )}
+                  </>
+                }
+                footnote={
+                  <>
+                    {lockReason ? <span>{lockReason}</span> : <QuotaBadge state={quotaState} />}
+                    <span>・{studentAnswer.length} / {MAX_ANSWER_CHARS} 字・請勿輸入真實姓名、電話等個資</span>
+                  </>
+                }
+              />
+            </>
+          )}
+        </section>
+
+        {/* 右邊：AI 助教記得你、作答紀錄、跨步驟檢核 */}
+        <aside className="ws-side" style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0, paddingTop: "20px" }}>
             {/* 機器人記憶：送出後（progressKey 變動）重新讀 */}
             {selectedStep && <BotMemoryPanel stepId={selectedStep.id} refreshKey={progressKey} panelStyle={panel} />}
 
@@ -1043,27 +912,28 @@ function StudentWorkspace() {
                 </div>
               )}
             </div>
-        </div>
-
+        </aside>
       </main>
       )}
 
       <style>{`
-        /* 寬螢幕：三欄（左：提示與評分｜中：題目與作答｜右：記憶與紀錄） */
-        .ws-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 0.9fr); }
-        .ws-left { order: 1; } .ws-mid { order: 2; } .ws-right { order: 3; }
-        /* 筆電：題目與作答佔滿上方，提示評分與記憶紀錄並排在下方 */
-        @media (max-width: 1200px) {
-          .ws-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-          .ws-mid { order: 0; grid-column: 1 / span 2; }
+        /* 寬螢幕：對話＋右側欄；筆電以下右側欄移到對話下方 */
+        .ws-grid { grid-template-columns: minmax(0, 1fr) 340px; }
+        @media (max-width: 1100px) {
+          .ws-grid { grid-template-columns: minmax(0, 1fr); }
+          .ws-side { padding-bottom: 32px; }
         }
-        /* 手機：單欄，題目與作答在最上面 */
+        .chat-dots { display: inline-flex; gap: 3px; }
+        .chat-dots i { width: 6px; height: 6px; border-radius: 9999px; background: var(--t-text-faint); animation: chatdot 1s infinite ease-in-out; }
+        .chat-dots i:nth-child(2) { animation-delay: 0.15s; }
+        .chat-dots i:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes chatdot { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
+        /* 手機 */
         @media (max-width: 760px) {
           .ws-theme-label { display: none; }
           .ws-header { padding: 12px 16px !important; }
           .ws-header-actions { width: 100%; justify-content: flex-end; }
-          .ws-grid { grid-template-columns: minmax(0, 1fr); }
-          .ws-mid { grid-column: auto; }
+          .ws-grid { padding: 0 12px !important; }
         }
       `}</style>
 
