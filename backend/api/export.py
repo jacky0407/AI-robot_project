@@ -7,8 +7,12 @@
 兩者都只限教授（owner），回傳 UTF-8（含 BOM，Excel 開中文不亂碼）的 CSV 檔，
 並在 export_logs 記一筆稽核紀錄（migration 018；寫入失敗只記 log，不擋匯出）。
 
-一列 = 一次作答：作答者、步驟、AI 評分（逐構面）、錯誤分類、提示使用、教師最終判定。
-作答原文預設不匯出（include_content），研究用時就算勾選也會再過一次個資遮罩。
+兩種資料集（dataset）：
+  attempts       一列 = 一次作答：作答者、步驟、AI 評分（逐構面）、錯誤分類、提示使用、教師最終判定
+  chat_messages  一列 = 一則聊天室訊息：誰說的、哪個機器人回答、怎麼選的、學習助教引用與是否給答案（#83）
+格式（format）：csv 一次一個資料集；xlsx 一個檔兩個工作表（作答、聊天訊息）。
+作答原文與訊息內容預設不匯出（include_content），研究用時就算勾選也會再過一次個資遮罩。
+欄位定義見 docs/DATA_DICTIONARY.md。
 """
 
 import csv
@@ -45,8 +49,18 @@ COMMON_COLUMNS = [
     "module_title", "step_order", "step_title", "tool_title", "attempt_number", "submitted_at",
     "status", "tutor_action", "answer_chars", "ai_total_score", "ai_confidence", "ai_dimensions",
     "detected_errors", "hints_used", "hint_levels", "teacher_decision", "teacher_final_score",
-    "teacher_published",
+    "teacher_published", "teacher_reviewed_at",
 ]
+
+CHAT_SELECT = (
+    "id, user_id, module_id, step_id, role, bot_name, content, routing, attempt_id, created_at, "
+    "module_steps(step_order, step_title)"
+)
+CHAT_COLUMNS = [
+    "module_title", "step_order", "step_title", "sent_at", "role", "bot_name", "routed_by", "routing_reason",
+    "is_tutor", "answer_mode", "times_asked", "sources", "evaluation_attempt_number", "message_chars",
+]
+SHEET_TITLES = {"attempts": "作答", "chat_messages": "聊天訊息"}
 
 
 class ExportRequest(BaseModel):
@@ -55,7 +69,9 @@ class ExportRequest(BaseModel):
     date_from: Optional[date] = None
     date_to: Optional[date] = None
     include_content: bool = False
-    format: Literal["csv"] = "csv"
+    # attempts：一列一次作答；chat_messages：一列一則聊天訊息（#83）。xlsx 會兩個都放（各一個工作表）
+    dataset: Literal["attempts", "chat_messages"] = "attempts"
+    format: Literal["csv", "xlsx"] = "csv"
 
 
 def _error(status_code: int, code: str, message: str) -> HTTPException:
@@ -89,7 +105,8 @@ def mask_pii(text: str) -> str:
 def _row(attempt: dict, modules: dict[str, str]) -> dict:
     step = _first(attempt.get("module_steps"))
     evaluation = _first(attempt.get("ai_evaluations"))
-    review = (_as_list(attempt.get("teacher_reviews")) or [{}])[-1]
+    # 同一次作答有多筆教師判定時取最新一筆（依 reviewed_at）
+    review = max(_as_list(attempt.get("teacher_reviews")), key=lambda r: r.get("reviewed_at") or "", default={})
     hints = sorted(_as_list(attempt.get("prompt_logs")), key=lambda h: h.get("hint_level") or 0)
     dims = ";".join(
         f"{d.get('dimension')}:{d.get('score')}/{d.get('max_score')}"
@@ -117,7 +134,53 @@ def _row(attempt: dict, modules: dict[str, str]) -> dict:
         "teacher_decision": review.get("decision") or "",
         "teacher_final_score": review.get("final_score"),
         "teacher_published": review.get("is_published") if review else "",
+        "teacher_reviewed_at": review.get("reviewed_at") or "",
     }
+
+
+def _chat_row(msg: dict, modules: dict[str, str], attempt_numbers: dict[str, int]) -> dict:
+    step = _first(msg.get("module_steps"))
+    routing = msg.get("routing") if isinstance(msg.get("routing"), dict) else {}
+    return {
+        "module_title": modules.get(msg.get("module_id"), ""),
+        "step_order": step.get("step_order"),
+        "step_title": step.get("step_title") or "",
+        "sent_at": msg.get("created_at"),
+        "role": msg.get("role"),
+        "bot_name": msg.get("bot_name") or "",
+        "routed_by": routing.get("by") or "",
+        "routing_reason": routing.get("reason") or "",
+        # 學習助教的回覆才有 answer_mode（guide / answer）
+        "is_tutor": bool(routing.get("answer_mode")) if msg.get("role") == "bot" else "",
+        "answer_mode": routing.get("answer_mode") or "",
+        "times_asked": routing.get("times_asked") if routing.get("times_asked") is not None else "",
+        "sources": ";".join(str(x) for x in routing.get("sources") or []),
+        "evaluation_attempt_number": attempt_numbers.get(msg.get("attempt_id"), "") if msg.get("attempt_id") else "",
+        "message_chars": len(msg.get("content") or ""),
+    }
+
+
+def _load_chat(db, body: ExportRequest, user_ids: list[str], modules: dict[str, str]) -> list[dict]:
+    """聊天室訊息；還沒跑 migration 020（沒有 chat_messages）時當作沒有"""
+    if not user_ids or not modules:
+        return []
+    try:
+        rows = (
+            db.table("chat_messages").select(CHAT_SELECT)
+            .in_("module_id", list(modules)).in_("user_id", user_ids).execute()
+        ).data or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"讀取聊天訊息失敗（是否尚未執行 migration 020？）：{e}")
+        return []
+    return sorted(_date_filter(rows, body), key=lambda m: (m.get("user_id") or "", m.get("created_at") or ""))
+
+
+def _date_filter(rows: list[dict], body: ExportRequest) -> list[dict]:
+    if body.date_from:
+        rows = [r for r in rows if (r.get("created_at") or "")[:10] >= body.date_from.isoformat()]
+    if body.date_to:
+        rows = [r for r in rows if (r.get("created_at") or "")[:10] <= body.date_to.isoformat()]
+    return rows
 
 
 def _load(db, body: ExportRequest) -> tuple[dict, list[dict], list[dict], dict[str, str]]:
@@ -151,10 +214,7 @@ def _load(db, body: ExportRequest) -> tuple[dict, list[dict], list[dict], dict[s
             db.table("step_attempts").select(ATTEMPT_SELECT)
             .in_("module_id", list(modules)).in_("user_id", user_ids).execute()
         ).data or []
-    if body.date_from:
-        attempts = [a for a in attempts if (a.get("created_at") or "")[:10] >= body.date_from.isoformat()]
-    if body.date_to:
-        attempts = [a for a in attempts if (a.get("created_at") or "")[:10] <= body.date_to.isoformat()]
+    attempts = _date_filter(attempts, body)
     attempts.sort(key=lambda a: (a.get("user_id") or "", a.get("created_at") or ""))
     return course[0], members, attempts, modules
 
@@ -185,17 +245,90 @@ def _audit(db, user: CurrentUser, kind: str, body: ExportRequest, row_count: int
         logger.warning(f"匯出稽核紀錄寫入失敗（請確認已執行 migration 018）：{e}")
 
 
-def _download(content: bytes, kind: str, row_count: int) -> Response:
+def _xlsx(sheets: list[tuple[str, list[str], list[dict]]]) -> bytes:
+    """一個檔多個工作表；第一列是欄位名稱（與 CSV 相同，對照 docs/DATA_DICTIONARY.md）"""
+    from openpyxl import Workbook
+
+    wb = Workbook(write_only=True)
+    for title, columns, rows in sheets:
+        ws = wb.create_sheet(title)
+        ws.append(columns)
+        for row in rows:
+            ws.append([_cell(row.get(c)) for c in columns])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _download(content: bytes, kind: str, fmt: str, counts: dict[str, int], dataset: str) -> Response:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    suffix = "" if fmt == "xlsx" or dataset == "attempts" else "-chat"
+    media = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fmt == "xlsx"
+             else "text/csv; charset=utf-8")
     return Response(
         content=content,
-        media_type="text/csv; charset=utf-8",
+        media_type=media,
         headers={
-            "Content-Disposition": f'attachment; filename="{kind}-export-{stamp}.csv"',
-            "X-Export-Row-Count": str(row_count),
-            "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Row-Count",
+            "Content-Disposition": f'attachment; filename="{kind}-export{suffix}-{stamp}.{fmt}"',
+            # 主要資料集的列數（csv 是選的那個；xlsx 是作答），聊天訊息另外給
+            "X-Export-Row-Count": str(counts["attempts"] if fmt == "xlsx" else counts[dataset]),
+            "X-Export-Chat-Count": str(counts["chat_messages"]),
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Row-Count, X-Export-Chat-Count",
         },
     )
+
+
+def _respond(db, user, kind: str, body: ExportRequest, identity, attempts, chat, modules, *, mask: bool) -> Response:
+    """
+    identity(user_id) → 識別欄位 dict（研究用：匿名編號；教學用：姓名與 Email），回 None 表示這位學生不匯出。
+    """
+    id_columns = ["research_id"] if kind == "research" else ["student_name", "student_email"]
+    numbers = {a.get("id"): a.get("attempt_number") for a in attempts}
+
+    attempt_rows, chat_rows = [], []
+    for a in attempts:
+        who = identity(a.get("user_id"))
+        if who is None:
+            continue
+        row = {**who, **_row(a, modules)}
+        if body.include_content:
+            text = a.get("user_input_content") or ""
+            row["answer_text"] = mask_pii(text) if mask else text
+        attempt_rows.append(row)
+    for m in chat:
+        who = identity(m.get("user_id"))
+        if who is None:
+            continue
+        row = {**who, **_chat_row(m, modules, numbers)}
+        if body.include_content:
+            text = m.get("content") or ""
+            row["message_text"] = mask_pii(text) if mask else text
+        chat_rows.append(row)
+
+    attempt_columns = [*id_columns, *COMMON_COLUMNS] + (["answer_text"] if body.include_content else [])
+    chat_columns = [*id_columns, *CHAT_COLUMNS] + (["message_text"] if body.include_content else [])
+    counts = {"attempts": len(attempt_rows), "chat_messages": len(chat_rows)}
+
+    if body.format == "xlsx":
+        content = _xlsx([
+            (SHEET_TITLES["attempts"], attempt_columns, attempt_rows),
+            (SHEET_TITLES["chat_messages"], chat_columns, chat_rows),
+        ])
+    elif body.dataset == "chat_messages":
+        content = _csv(chat_columns, chat_rows)
+    else:
+        content = _csv(attempt_columns, attempt_rows)
+
+    _audit(db, user, kind, body, counts["attempts"] if body.format == "xlsx" else counts[body.dataset])
+    return _download(content, kind, body.format, counts, body.dataset)
 
 
 @router.post("/research")
@@ -215,20 +348,13 @@ async def export_research(body: ExportRequest, user: CurrentUser = Depends(requi
         for c in consents or []
         if c.get("is_consented") and not c.get("withdrawn_at") and c.get("anonymous_research_id")
     }
+    chat = _load_chat(db, body, list(anon), modules) if (body.dataset == "chat_messages" or body.format == "xlsx") else []
 
-    rows = []
-    for a in attempts:
-        rid = anon.get(a.get("user_id"))
-        if not rid:
-            continue  # 沒同意或已撤回：不匯出
-        row = {"research_id": rid, **_row(a, modules)}
-        if body.include_content:
-            row["answer_text"] = mask_pii(a.get("user_input_content") or "")
-        rows.append(row)
+    def identity(uid):
+        rid = anon.get(uid)
+        return {"research_id": rid} if rid else None  # 沒同意或已撤回：不匯出
 
-    columns = ["research_id", *COMMON_COLUMNS] + (["answer_text"] if body.include_content else [])
-    _audit(db, user, "research", body, len(rows))
-    return _download(_csv(columns, rows), "research", len(rows))
+    return _respond(db, user, "research", body, identity, attempts, chat, modules, mask=True)
 
 
 @router.post("/teaching")
@@ -238,15 +364,12 @@ async def export_teaching(body: ExportRequest, user: CurrentUser = Depends(requi
     db = get_supabase()
     _, members, attempts, modules = _load(db, body)
     people = {m["user_id"]: _first(m.get("profiles")) for m in members}
+    chat = _load_chat(db, body, list(people), modules) if (body.dataset == "chat_messages" or body.format == "xlsx") else []
 
-    rows = []
-    for a in attempts:
-        p = people.get(a.get("user_id")) or {}
-        row = {"student_name": p.get("full_name") or "", "student_email": p.get("email") or "", **_row(a, modules)}
-        if body.include_content:
-            row["answer_text"] = a.get("user_input_content") or ""
-        rows.append(row)
+    def identity(uid):
+        p = people.get(uid)
+        if p is None:
+            return None
+        return {"student_name": p.get("full_name") or "", "student_email": p.get("email") or ""}
 
-    columns = ["student_name", "student_email", *COMMON_COLUMNS] + (["answer_text"] if body.include_content else [])
-    _audit(db, user, "teaching", body, len(rows))
-    return _download(_csv(columns, rows), "teaching", len(rows))
+    return _respond(db, user, "teaching", body, identity, attempts, chat, modules, mask=False)
