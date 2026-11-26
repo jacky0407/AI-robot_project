@@ -1502,7 +1502,7 @@ Body：`{"content": "…（最多 2000 字）", "evaluate": false}`；`evaluate:
 >
 > ✅ 2026-11 已實作（`backend/api/export.py`、migration 018）。與下方原始規格的差異：
 > - 權限：只限教授（owner），助教 403
-> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, format: "csv"}`；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
+> - Request：`{course_id, module_id?, date_from?, date_to?, include_content?, dataset?: "attempts" | "chat_messages", format?: "csv" | "xlsx"}`（#83：`chat_messages` 一列一則聊天訊息；`xlsx` 一個檔兩個工作表）；研究用只匯出 `research_consents.is_consented` 且未撤回的學生（沒有 `consent_status` 參數）
 > - 一列 = 一次作答：步驟、AI 總分與逐構面（`名稱:分/滿分;…`）、錯誤代碼、提示層級、教師判定；作答原文預設不匯出，研究用勾選時會遮罩個資
 > - CSV 為 UTF-8 含 BOM；回應標頭 `X-Export-Row-Count`；每次匯出寫入 `export_logs`
 > - 前端：`/admin/tools` 的「資料匯出」

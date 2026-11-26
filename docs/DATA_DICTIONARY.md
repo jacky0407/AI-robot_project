@@ -20,12 +20,16 @@
 
 **共同規格**
 
-- 一列 = **一次作答**（`step_attempts` 一筆）。聊天室關卡是「送出評分」那一次，作答內容是當時整理的整段對話。
-- 編碼 UTF-8，開頭有 BOM（Excel 直接開中文不亂碼）；分隔符號為逗號，含逗號或換行的欄位以雙引號包住（RFC 4180）。
+- 兩種資料集（請求的 `dataset`）：
+  - `attempts`（預設）：一列 = **一次作答**（`step_attempts` 一筆）。聊天室關卡是「送出評分」那一次，作答內容是當時整理的整段對話。欄位見 2.1～2.5
+  - `chat_messages`：一列 = **一則聊天室訊息**（`chat_messages` 一筆），學生與機器人的訊息都有。欄位見 2.1、2.6
+- 兩種格式（請求的 `format`）：
+  - `csv`（預設）：一次一個資料集。UTF-8、開頭有 BOM（Excel 直接開中文不亂碼）；逗號分隔，含逗號或換行的欄位以雙引號包住（RFC 4180）
+  - `xlsx`：一個 Excel 檔兩個工作表「作答」「聊天訊息」，欄位名稱與 CSV 相同
 - 排序：依學生、再依作答時間（舊 → 新）。
 - 篩選條件（請求 body）：`course_id`（必填）、`module_id`、`date_from`、`date_to`（以作答時間的 UTC 日期比較，含首尾）、`include_content`。
 - 只匯出「指派給這門課的模組」裡的作答；老師與助理自己的試作不匯出。
-- 回應標頭 `X-Export-Row-Count` = 資料列數。
+- 回應標頭 `X-Export-Row-Count` = 資料列數（CSV 是選的資料集；xlsx 是「作答」）；`X-Export-Chat-Count` = 聊天訊息列數。
 
 > ⚠️ 研究同意書流程（PRI-004）尚未上線：在此之前所有學生的 `is_consented` 都是 false，研究用匯出會是空的（只有欄位名稱）。
 
@@ -78,11 +82,32 @@
 
 | 欄位 | 意義 | 格式 | 缺失值 | 計算方式／來源 |
 |---|---|---|---|---|
-| `teacher_decision` | 教師判定 | `accept_ai` 採用 AI 評分／`modify` 調整分數／`override` 推翻 AI 判定／`request_retry` 要求重做 | 還沒複核時空白 | `teacher_reviews.decision`；同一次作答有多筆判定時取資料庫回傳的最後一筆（通常是最新一筆，見第 5 節） |
+| `teacher_decision` | 教師判定 | `accept_ai` 採用 AI 評分／`modify` 調整分數／`override` 推翻 AI 判定／`request_retry` 要求重做 | 還沒複核時空白 | `teacher_reviews.decision`；同一次作答有多筆判定時取 `reviewed_at` 最新的一筆 |
 | `teacher_final_score` | 教師最終分數 | 整數 0–100（與 `ai_total_score` 同一個尺度） | 老師沒給分或還沒複核時空白 | `teacher_reviews.final_score` |
 | `teacher_published` | 教師判定是否已發布給學生 | `True`／`False` | 還沒複核時空白 | `teacher_reviews.is_published` |
+| `teacher_reviewed_at` | 教師判定的時間 | UTC，ISO 8601 | 還沒複核時空白 | `teacher_reviews.reviewed_at`；同一次作答有多筆判定時，上面四個教師欄位都取這個時間最新的一筆 |
 
 **「是否通過」的判斷規則**（解鎖下一關、學習監控都用這套，`core/step_unlock.attempt_passed`）：有「已發布且有給分」的教師判定時，以教師分數 ≥ 關卡通過分數為準；否則看 `status = passed`。
+
+### 2.6 聊天室訊息（`dataset = chat_messages`，#83）
+
+識別欄位同 2.1（研究用 `research_id`；教學用 `student_name`、`student_email`），只匯出這門課指派的模組裡的訊息，研究用只含已同意研究使用的學生。
+
+| 欄位 | 意義 | 格式 | 缺失值 | 計算方式／來源 |
+|---|---|---|---|---|
+| `module_title`、`step_order`、`step_title` | 訊息所在的模組與關卡 | 同 2.2 | — | 同 2.2 |
+| `sent_at` | 訊息時間 | UTC，ISO 8601 | — | `chat_messages.created_at` |
+| `role` | 誰說的 | `student`／`bot` | — | `chat_messages.role` |
+| `bot_name` | 回答的機器人在聊天室的名稱 | 文字 | 學生訊息空白 | `chat_messages.bot_name`（當時的名稱） |
+| `routed_by` | 為什麼由這個機器人回答 | `mention` 學生 @ 指定／`router` 調度員依內容選／`only_bot` 聊天室只有一個對話機器人／`evaluate` 評分結果 | 學生訊息空白 | `chat_messages.routing.by` |
+| `routing_reason` | 調度員選這個機器人的理由 | 文字 | 學生訊息空白 | `routing.reason` |
+| `is_tutor` | 這則是不是學習助教的回覆 | `True`／`False` | 學生訊息空白 | 有 `routing.answer_mode` 就是 |
+| `answer_mode` | 學習助教這次是引導還是直接給答案 | `guide`／`answer` | 不是學習助教時空白 | `routing.answer_mode`（同一個問題問到 `TUTOR_ANSWER_AFTER` 次才 `answer`） |
+| `times_asked` | 包含這次在內，同一個問題問了學習助教幾次 | 整數 | 不是學習助教時空白 | `routing.times_asked` |
+| `sources` | 學習助教引用的教材段落 | `教材名・第 N 段`，以 `;` 分隔 | 沒有引用時空白 | `routing.sources` |
+| `evaluation_attempt_number` | 評分結果對應的作答是第幾次 | 整數 | 不是評分結果時空白 | `chat_messages.attempt_id` 對到 `step_attempts.attempt_number`；可以和「作答」資料集用 學生＋關卡＋次數 對起來 |
+| `message_chars` | 訊息字數 | 整數 | 0 | `content` 的字元數 |
+| `message_text` | 訊息內容（勾選「含作答內容」才有這欄） | 文字 | — | 研究用：個資片段換成 `[已遮罩]`；教學用：原文 |
 
 ---
 
@@ -156,11 +181,10 @@ erDiagram
 
 以下資料有存在資料庫，但還沒進匯出檔（之後加入時更新本文件）：
 
-- 聊天室逐則訊息、調度理由、學習助教的引用與 `answer_mode`（#83）
 - 評分當時的機器人版本 `ai_evaluations.tool_version`、AI 當時參考的記憶 `memory_snapshot`
 - 關卡的通過方式 `pass_mode`、關卡類型 `step_type`
 - 提示的觸發方式與來源 `hint_trigger`、`hint_source`
 - 學習者側寫 `learner_profiles`
-- 同一次作答有多筆教師判定時，目前只匯出一筆；之後應明確依 `reviewed_at` 取最新並加入判定時間欄位
+- 同一次作答的「全部」教師判定歷程（目前只匯出最新一筆）
 - 工具專屬表單與質性反思（#80，功能尚未完成）
 - AI 用量與費用 `ai_usage_logs`（已記錄，老師可在課程的「AI 用量」分頁看；尚未進匯出檔）

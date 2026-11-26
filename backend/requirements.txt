@@ -24,6 +24,8 @@ python-multipart==0.0.32
 pypdf==6.17.0
 python-docx==1.2.0
 python-pptx==1.0.2
+# Excel export (api/export.py, format=xlsx)
+openpyxl==3.1.5
 
 # Tests: run "py -m pytest tests/ -v" before every PR (see AGENTS.md)
 pytest==9.1.1
