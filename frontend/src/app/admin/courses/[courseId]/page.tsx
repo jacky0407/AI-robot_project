@@ -19,9 +19,10 @@ import MonitorTab from "./MonitorTab";
 import ReviewTab from "./ReviewTab";
 import ExportTab from "./ExportTab";
 import MaterialsTab from "./MaterialsTab";
+import UsageTab from "./UsageTab";
 
-type Tab = "monitor" | "review" | "members" | "invites" | "modules" | "materials" | "export";
-const TABS: Tab[] = ["monitor", "review", "members", "invites", "modules", "materials", "export"];
+type Tab = "monitor" | "review" | "members" | "invites" | "modules" | "materials" | "usage" | "export";
+const TABS: Tab[] = ["monitor", "review", "members", "invites", "modules", "materials", "usage", "export"];
 const isTab = (v: string | null): v is Tab => TABS.includes(v as Tab);
 
 // useSearchParams() 必須包在 <Suspense> 裡，否則 next build 預先產生頁面時會失敗
@@ -114,6 +115,7 @@ function CourseDetail() {
     { id: "invites", label: "邀請碼清單", count: course?.invite_codes.length, alert: course ? course.invite_codes.length === 0 && !course.is_archived : false },
     { id: "modules", label: "模組管理", count: assigned?.length, alert: assigned?.length === 0 },
     { id: "materials", label: "教材" },
+    { id: "usage", label: "AI 用量" },
     { id: "export", label: "資料匯出" },
   ];
 
@@ -204,6 +206,7 @@ function CourseDetail() {
                 {tab === "invites" && <InviteCodesTab course={course} openFormInitially={openCodeForm} onChanged={loadCourse} />}
                 {tab === "modules" && <ModulesTab courseId={course.id} assigned={assigned} reload={loadAssigned} />}
                 {tab === "materials" && <MaterialsTab courseId={course.id} />}
+                {tab === "usage" && <UsageTab courseId={course.id} />}
                 {tab === "export" && <ExportTab courseId={course.id} />}
               </section>
             </div>
