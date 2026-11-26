@@ -10,6 +10,15 @@ import ChatRoom, { loadChatRoom, type ChatRoomInfo } from "./ChatRoom";
 
 // ─── 步驟與模組型別定義 ───
 
+// 介面風格預覽（#64）：value 對應 themes.css 的 data-theme；空字串 = 目前的深色
+const THEME_OPTIONS = [
+  { value: "", label: "目前深色" },
+  { value: "b", label: "B 嫩芽溫暖" },
+  { value: "b-dark", label: "B 嫩芽溫暖・深色" },
+  { value: "f", label: "F 溫柔藍紫" },
+  { value: "f-dark", label: "F 溫柔藍紫・深色" },
+];
+
 // 與 backend/api/practice.py 的 MAX_ANSWER_CHARS 一致：超過會被後端拒絕（422）
 const MAX_ANSWER_CHARS = 8000;
 type Step = {
@@ -129,7 +138,14 @@ function StudentWorkspace() {
   const searchParams = useSearchParams();
   // 介面風格預覽（#64）：?theme=b 嫩芽溫暖、f 溫柔藍紫、b-dark／f-dark 各自的深色版；沒帶時用目前的深色
   const themeParam = searchParams.get("theme");
-  const theme = themeParam && ["b", "f", "b-dark", "f-dark"].includes(themeParam) ? themeParam : undefined;
+  const theme = themeParam && THEME_OPTIONS.some((o) => o.value && o.value === themeParam) ? themeParam : undefined;
+  // 右上角切換風格：用 replaceState 改網址（不重新載入），useSearchParams 會跟著更新
+  const changeTheme = (value: string) => {
+    const q = new URLSearchParams(window.location.search);
+    if (value) q.set("theme", value);
+    else q.delete("theme");
+    window.history.replaceState(null, "", `?${q.toString()}`);
+  };
   const [supabase] = useState(() => createClient());
 
   // 學生與課程模組資料
@@ -579,19 +595,24 @@ function StudentWorkspace() {
     <div data-theme={theme} style={{ minHeight: "100vh", backgroundColor: "var(--t-bg)", color: "var(--t-text)", fontFamily: "sans-serif" }}>
       {/* 頂部導航 */}
       <header
+        className="ws-header"
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
+          gap: "10px 16px",
+          flexWrap: "wrap",
           padding: "14px 28px",
           borderBottom: "1px solid var(--t-border)",
           backgroundColor: "var(--t-surface)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0, flex: "1 1 320px" }}>
           <button
             onClick={() => router.push(backHref)}
             style={{
+              flexShrink: 0,
+              whiteSpace: "nowrap",
               padding: "6px 12px",
               borderRadius: "6px",
               backgroundColor: "var(--t-surface-3)",
@@ -612,20 +633,46 @@ function StudentWorkspace() {
             </p>
           </div>
         </div>
-        <button
-          onClick={handleSignOut}
-          style={{
-            padding: "6px 14px",
-            borderRadius: "6px",
-            border: "1px solid var(--t-border-strong)",
-            backgroundColor: "transparent",
-            color: "var(--t-text-2)",
-            fontSize: "12px",
-            cursor: "pointer",
-          }}
-        >
-          登出
-        </button>
+        <div className="ws-header-actions" style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+          {/* 介面風格切換（#64 預覽）：選了就換，網址同步 ?theme=，重新整理後保留 */}
+          <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--t-text-muted)" }}>
+            <span className="ws-theme-label">風格</span>
+            <select
+              aria-label="介面風格"
+              value={theme ?? ""}
+              onChange={(e) => changeTheme(e.target.value)}
+              style={{
+                padding: "6px 8px",
+                borderRadius: "6px",
+                border: "1px solid var(--t-border-strong)",
+                backgroundColor: "var(--t-field)",
+                color: "var(--t-text)",
+                fontSize: "12px",
+                cursor: "pointer",
+              }}
+            >
+              {THEME_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={handleSignOut}
+            style={{
+              padding: "6px 14px",
+              borderRadius: "6px",
+              border: "1px solid var(--t-border-strong)",
+              backgroundColor: "transparent",
+              color: "var(--t-text-2)",
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            登出
+          </button>
+        </div>
       </header>
 
       {(loading || modules.length === 0) && (
@@ -1012,6 +1059,9 @@ function StudentWorkspace() {
         }
         /* 手機：單欄，題目與作答在最上面 */
         @media (max-width: 760px) {
+          .ws-theme-label { display: none; }
+          .ws-header { padding: 12px 16px !important; }
+          .ws-header-actions { width: 100%; justify-content: flex-end; }
           .ws-grid { grid-template-columns: minmax(0, 1fr); }
           .ws-mid { grid-column: auto; }
         }
